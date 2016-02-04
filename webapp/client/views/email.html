@@ -1,0 +1,163 @@
+<template name="email_container">
+    <div class="container">
+        <div class="row">
+          {{> new_email}}
+        </div>
+        <div class="row">
+          {{> email_list}}
+          {{> sent_email_list}}
+        </div>
+    </div>
+</template>
+<template name="new_email">
+    <h2>New Email Campaign</h2>
+    <div class="email-container" data-id="{{draft_id}}">
+      <div class="row">
+          <div class="col-sm-4 col-sm-offset-2">
+          <div class="control-group">
+              <label class="control-label" for="from_address">From Address:</label>
+              <div class="controls">
+                  <input type="text" class="from-address input-gray my-width"
+                         name='from_address' id='from_address' placeholder="Real Name<email@domain.com>" />
+              </div>
+          </div>
+
+          <div class="control-group">
+              <label class="control-label" for="subject">Subject:</label>
+              <div class="controls">
+                  <input type="text" class="subject input-gray my-width"
+                         name='subject' id='subject' placeholder="Greeting"/>
+              </div>
+          </div>
+
+          <div class="control-group">
+              <label class="control-label" for="recipients">Recipients:</label>
+              <div class="controls">
+                  <input type="text" class="recipients input-gray my-width"
+                         name='recipients' id='recipients' placeholder="abc@knotable.com"/>
+              </div>
+          </div>
+          <div class="control-group">
+              <label class="control-label" for="campaign">Campaign:</label>
+              <div class="controls">
+                  <input type="text" class="input-gray my-width" name='compaigns' id='compaigns'/>
+              </div>
+          </div>
+          {{#unless hasUploadedFile}}
+              <div class="control-group">
+                  <label class="control-label"></label>
+                  <div class="controls">
+                      {{> file_upload}}
+                  </div>
+              </div>
+          {{/unless}}
+          <div class="control-group">
+              <label class="control-label"></label>
+              <div class="controls">
+                  {{> file_upload_progress}}
+                  {{> files }}
+              </div>
+          </div>
+        </div>
+        <div class="col-sm-4">
+          <div class="control-group">
+              <label class="control-label"></label>
+              <div class="controls">
+                  {{> change_due_date_popup}}
+              </div>
+          </div>
+
+          <div class="control-group">
+              <label class="control-label"></label>
+              <div class="controls">
+                  <button class="btn btn-primary btn-md btn-send"><span>Add To Queue</span></button>
+                  <div class="checkbox chk-test-email">
+                      <label><input type="checkbox" value="false" class="input-gray test-email">Test?</label>
+                  </div>
+              </div>
+          </div>
+        </div>
+      </div>
+    </div>
+</template>
+
+<template name="email_list">
+    <div class="email-event-list col-sm-4 col-sm-offset-2">
+        {{#if email_events}}
+            <h3>Emails In Queue</h3>
+        {{/if}}
+        <ul class="list-group">
+            {{#each email_events}}
+                <li class="list-group-item email-box" data-id="{{_id}}">
+                    {{> email_box }}
+                </li>
+            {{/each}}
+        </ul>
+    </div>
+</template>
+
+<template name="sent_email_list">
+    <div class="email-event-list col-sm-4">
+        {{#if email_events}}
+            <h3>Emails that have been sent</h3>
+        {{/if}}
+        <ul class="list-group">
+            {{#each sent_email_events}}
+                <li class="list-group-item email-box" data-id="{{_id}}">
+                    {{> sent_email_box }}
+                </li>
+            {{/each}}
+        </ul>
+    </div>
+</template>
+
+<template name="email_box">
+    <span class="badge email-box-badge"><img src="/images/_close.png" width="15" height="15" class="delete_file_ico email-box-badge-delete" data-id="{{_id}}" title="Delete"/></span>
+    <h4 class="list-group-item-heading">{{subject}}</h4>
+    <p lass="list-group-item" title="Change date">{{date}} <i class="fa fa-edit edit-email-event"><span class="change-date">Change Date</span></i></p>
+    <div class="email-box-change-date hidden">
+        {{> change_due_date_popup due_date}}
+        <ul class="list-inline right email-box-date-buttons">
+            <button type="button" class="btn btn-primary btn-xs save-update-date">Save</button>
+            <button type="button" class="btn btn-primary btn-xs cancel-update-date">Cancel</button>
+        </ul>
+    </div>
+    {{#if plainTextFile}}
+        {{> file_attachment_box plainTextFile}}
+    {{/if}}
+    {{#if htmlFile}}
+      {{> file_attachment_box htmlFile}}
+    {{/if}}
+
+</template>
+
+<template name="sent_email_box">
+    <span class="badge email-box-badge"><img src="/images/_close.png" width="15" height="15" class="delete_file_ico email-box-badge-delete" data-id="{{_id}}" title="Delete"/></span>
+    <h4 class="list-group-item-heading">{{subject}}</h4>
+    <p lass="list-group-item" title="Change date">{{date}} <i class="fa fa-edit edit-email-event"><span class="change-date">Change Date</span></i></p>
+    <div class="email-box-change-date hidden">
+        <!-- {{> change_due_date_popup due_date}}
+        <ul class="list-inline right email-box-date-buttons">
+            <button type="button" class="btn btn-primary btn-xs save-update-date">Save</button>
+            <button type="button" class="btn btn-primary btn-xs cancel-update-date">Cancel</button>
+        </ul> -->
+    </div>
+    {{#if plainTextFile}}
+        {{> file_attachment_box plainTextFile}}
+    {{/if}}
+    {{#if htmlFile}}
+    {{> file_attachment_box htmlFile}}
+    {{/if}}
+
+</template>
+
+<template name="file_attachment_box">
+    <div class="list-group-item file-box file-attachment-box" data-id="{{_id}}">
+        <a href="{{s3_url}}" title="{{name}}" file_id="{{_id}}" class="file-review" target="_blank" >Preview</a>
+        <div class="file {{file_ext}}">
+            <a href="{{s3_url}}" title="{{name}}" file_id="{{_id}}" class="file-url" target="_blank" >
+            </a>
+        </div>
+        <div>{{name}}</div>
+    </div>
+</template>

@@ -1,0 +1,88 @@
+<template name="layout">
+  <nav class="navbar navbar-default navbar-knotable" role="navigation">
+    <div class="container-fluid">
+      <!-- Brand and toggle get grouped for better mobile display -->
+      <div class="navbar-header">
+        <button type="button" class="navbar-toggle" data-toggle="collapse" data-target="#bs-example-navbar-collapse-1">
+          <span class="sr-only">Toggle navigation</span>
+          <span class="icon-bar"></span>
+          <span class="icon-bar"></span>
+          <span class="icon-bar"></span>
+        </button>
+        <a class="navbar-brand" href="#">Knotable Props</a>
+
+      </div>
+
+      <!-- Collect the nav links, forms, and other content for toggling -->
+      <div class="collapse navbar-collapse" id="bs-example-navbar-collapse-1">
+        <ul class="nav navbar-nav">
+          <li id="admin-li">
+            <a href="#" class="dropdown-toggle" data-toggle="dropdown">Admin : {{selected_domain}} <b class="caret"></b></a>
+            <ul class="dropdown-menu">
+              {{#each domains}}
+                <li><a class="admin-domain" data-domain="{{this}}" href="#">{{this}}</a></li>
+              {{/each}}
+            </ul>
+          </li>
+            <li id="email-li">
+                <a href="#" class="dropdown-toggle email-tab" data-toggle="dropdown">Email</a>
+            </li>
+            <li id="list-li">
+                <a href="#" class="dropdown-toggle list-tab" data-toggle="dropdown">List</a>
+            </li>
+        </ul>
+
+        <ul class="nav pull-right">
+          {{> user_info }}
+        </ul>
+
+
+      </div><!-- /.navbar-collapse -->
+    </div><!-- /.container-fluid -->
+  </nav>
+  <div class="row">
+    {{> yield }}
+    {{> loading_circle}}
+  </div>
+</template>
+
+<template name="login">
+  <div class="jumbotron">
+    <h1>Welcome Guest</h1>
+    <p>Welcome, please login to continue</p>
+    {{> user_loggedout}}
+  </div>
+</template>
+
+<template name="user_info">
+    {{#if currentUser}}
+        {{> user_loggedin}}
+    {{else}}
+        <li>{{> user_loggedout}}</li>
+    {{/if}}
+</template>
+
+<template name="user_loggedin">
+    {{#if logginIn}}
+        <li>Logging in...</li>
+    {{else}}
+        <li class="dropdown">
+            <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+                <img src="{{currentUser.profile.avatar_url}}" class="img-rounded" style="width:25px" />
+                {{currentUser.profile.name}}
+                <b class="caret"></b>
+            </a>
+            <ul class="dropdown-menu">
+                <li><a id="logout">Logout</a></li>
+            </ul>
+        </li>
+    {{/if}}
+</template>
+
+<template name="user_loggedout">
+    <a href="#" id="login">Login with Github</a>
+</template>
+
+<Template name="loading_circle">
+  <div class="loading-circle hidden"></div>
+</Template>

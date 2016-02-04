@@ -1,0 +1,37 @@
+<Template name="file_upload">
+  <form class=" file_upload_s3" action="{{fileUpload.action}}" method="post" enctype="multipart/form-data">
+     {{#if fileUpload.isS3_credentials}}
+        {{#with s3_credentials}}
+          <input type="hidden" name="key" value="uploads/${filename}">
+          <input type="hidden" name="AWSAccessKeyId" value="{{s3_key}}">
+          <input type="hidden" name="acl" value="public-read">
+          <input type="hidden" name="success_action_status" value="200">
+          <input type="hidden" name="policy" value="{{s3_policy}}">
+          <input type="hidden" name="signature"  value="{{s3_signature}}">
+          <input type="hidden" name="Content-Type" value="image/jpeg">
+          <input name="file" class="upload-file-input upload-photo-btn-large transparent upload-file-input-html" type="file" accept=".html">
+          <input name="file" class="upload-file-input upload-photo-btn-large transparent upload-file-input-txt" type="file" accept=".txt">
+        {{#unless hasUploadedHtml}}
+          <button class="btn btn-info btn-md btn-select-file btn-select-file-html"><span>Upload HTML</span></button>
+        {{/unless}}
+        {{#unless hasUploadedPlainText}}
+          <button class="btn btn-info btn-md btn-select-file btn-select-file-txt"><span>Upload Plaintext</span></button>
+        {{/unless}}
+        <input type="submit" class="hidden" value="Upload File to S3">
+        {{/with}}
+     {{/if}}
+  </form>
+</Template>
+
+
+
+<Template name="file_upload_progress">
+    {{#each files}}
+    <div class="file_upload_progress">
+        <span class="fileName">{{name}}</span>
+        <div class="pro-bar">
+            <div class="pro-bar-process"  style="width: {{process}}%"></div>
+        </div>
+    </div>
+    {{/each}}
+</Template>

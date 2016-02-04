@@ -1,0 +1,79 @@
+<template name="mailing_list_container">
+    <div class="container">
+        <div class="row">
+          {{> knotable_active_users knotableWeeklyUpdate}}
+          {{> knote_mailing_list knoteBlogList}}
+        </div>
+    </div>
+</template>
+
+<template name="knotable_active_users">
+    <div class="col-sm-6 mailing-list mailgun-mailing-list" data-id="{{_id}}">
+        <h2>Knotable Active Users</h2>
+        <div class="control-group">
+            <label class="control-label" for="mailing_list_knotable_weekly_name">Name:</label>
+            <div class="controls">
+                <input type="text" class="mailing-list-name input-gray my-width"
+                       name='mailing_list_knotable_weekly_name' id='mailing_list_knotable_weekly_name' value="{{name}}"/>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label class="control-label" for="mailing_list_knotable_weekly_alias">Alias :</label>
+            <div class="controls">
+                <input type="text" class="mailing-list-alias input-gray .my-small-width"
+                       name='mailing_list_knotable_weekly_alias' id='mailing_list_knotable_weekly_alias' value="{{aliasWithoutDomain}}" /> <span class="alias-domain">{{domain}}</span>
+
+            </div>
+            <button type="button" class="btn btn-primary btn-xs btn-change-properties">Change</button>
+        </div>
+
+        <div class="control-group">
+            <label class="control-label" for="description">Description:</label>
+            <div class="controls">
+                <p>{{description}}</p>
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label"></label>
+            <div class="controls">
+                <button class="btn btn-primary btn-md btn-update"><span>Update</span></button>
+            </div>
+        </div>
+    </div>
+</template>
+
+<template name="knote_mailing_list">
+    <div class="col-sm-6 mailing-list mailgun-mailing-list" data-id="{{_id}}">
+        <h2>Knote.com Mailing List</h2>
+        <div class="control-group">
+            <label class="control-label" for="mailing_list_knote_blog_name">Name:</label>
+            <div class="controls">
+                <input type="text" class="mailing-list-name input-gray my-width"
+                       name='mailing_list_knote_blog_name' id='mailing_list_knote_blog_name' value="{{name}}"/>
+            </div>
+        </div>
+
+        <div class="control-group">
+            <label class="control-label" for="mailing_list_knote_blog_alias">Alias :</label>
+            <div class="controls">
+                <input type="text" class="mailing-list-alias input-gray my-small-width"
+                       name='mailing_list_knote_blog_alias' id='mailing_list_knote_blog_alias' value="{{aliasWithoutDomain}}" /><span class="alias-domain">{{domain}}</span>
+            </div>
+            <button type="button" class="btn btn-primary btn-xs btn-change-properties">Change</button>
+        </div>
+
+        <div class="control-group">
+            <label class="control-label" for="description">Description:</label>
+            <div class="controls">
+                <p>{{description}}</p>
+            </div>
+        </div>
+        <div class="control-group">
+            <label class="control-label"></label>
+            <div class="controls">
+                <button class="btn btn-primary btn-md btn-update"><span>Update</span></button>
+            </div>
+        </div>
+    </div>
+</template>
