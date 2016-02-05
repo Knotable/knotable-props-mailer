@@ -12,7 +12,7 @@ yesterday=$day1'T00:00:00.000+0000'
 today=$day2'T00:00:00.000+0000'
 
 # Email params
-from="robot@knotable.com"
+from="help@knote.com"
 to="team@knote.com"
 cc1="a@knote.com"
 cc2="add@knotable.com"
@@ -61,7 +61,7 @@ ${password} --eval 'db.contacts.count()')
 mongodata=$(cat template.txt)" $day1
 
 Total Users - $totalusers
-Signups today - $signupstoday
+Signups - $signupstoday
 Users with pass - $userswithpass
 Users with more than 2 pads - $userswithpads
 Reply by Email events - $emailreplies
