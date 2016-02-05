@@ -49,7 +49,7 @@ totalknotes=$(mongo ${extraArgs} --quiet ${ip}/${dbname} -u ${username} \
 
 #total replyByEmail events grouped by date_created (to second)
 emailreplies=$(mongo ${extraArgs} --quiet ${ip}/${dbname} -u ${username} -p \
-${password} --eval 'db.knotable_events.aggregate([ { $match: { "event_type": "replyByEmail" } }, { $group: { "_id": { month: { $month: "$date_created"}, day: { $dayOfMonth: "$date_created"}, year: { $year: "$date_created"}, hour: { $hour: "$date_created"}, minute: { $minute: "$date_created"}, second: { $second: "$date_created"}} } } ]).itcount()')
+${password} --eval 'db.knotable_events.aggregate([ { $match: { "event_type": "replyByEmail" } }, { $group: { "_id": { month: { $month: "$date_created"}, day: { $dayOfMonth: "$date_created"}, year: { $year: "$date_created"}, hour: { $hour: "$date_created"}, minute: { $minute: "$date_created"}, second: { $second: "$date_created"}} } } ]).count()')
 
 #contact usernames in contactAddedToPad event
 contactadded=$(mongo ${extraArgs} --quiet ${ip}/${dbname} -u ${username} -p \
