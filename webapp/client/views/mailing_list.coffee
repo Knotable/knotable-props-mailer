@@ -5,6 +5,8 @@ Template.mailing_list_container.helpers
     else
       return MailingList.findOne alias: KNOTABLE_WEEKLY_UPDATE_NAME
 
+
+
   knoteBlogList : ->
     if Session.get "KNOTE_BLOG_LIST_ALIAS"
       return MailingList.findOne alias: Session.get "KNOTE_BLOG_LIST_ALIAS"
@@ -19,6 +21,8 @@ Template.knotable_active_users.helpers
 
   domain : ->
     MAILGUN_KNOTABLE_DOMAIN
+
+
 
 Template.knotable_active_users.events
   'click .btn-update': (e) ->

@@ -1,85 +1,103 @@
 <template name="email_container">
-    <div class="container">
-        <div class="row">
-          {{> new_email}}
-        </div>
-        <div class="row">
-          {{> email_list}}
-          {{> sent_email_list}}
-        </div>
-    </div>
+  {{> new_email}}
+  {{> email_list}}
+  {{> sent_email_list}}
 </template>
+
+
+
 <template name="new_email">
-    <h2>New Email Campaign</h2>
-    <div class="email-container" data-id="{{draft_id}}">
+    <h4 class="col-sm-12">New Email Campaign</h4>
+
+    <div class="email-container col-sm-12" data-id="{{draft_id}}">
+
       <div class="row">
-          <div class="col-sm-4 col-sm-offset-2">
-          <div class="control-group">
-              <label class="control-label" for="from_address">From Address:</label>
-              <div class="controls">
-                  <input type="text" class="from-address input-gray my-width"
-                         name='from_address' id='from_address' placeholder="Real Name<email@domain.com>" />
-              </div>
-          </div>
 
-          <div class="control-group">
-              <label class="control-label" for="subject">Subject:</label>
-              <div class="controls">
-                  <input type="text" class="subject input-gray my-width"
-                         name='subject' id='subject' placeholder="Greeting"/>
-              </div>
-          </div>
+        <div class="col-sm-12 col-md-6">
+            <div class="control-group">
+                <label class="control-label" for="from_address">From Address:</label>
+                <div class="controls">
+                    <input type="text" class="from-address input-gray my-width"
+                           name='from_address' id='from_address' placeholder="Real Name<email@domain.com>" />
+                </div>
+            </div>
 
-          <div class="control-group">
-              <label class="control-label" for="recipients">Recipients:</label>
-              <div class="controls">
-                  <input type="text" class="recipients input-gray my-width"
-                         name='recipients' id='recipients' placeholder="abc@knotable.com"/>
-              </div>
-          </div>
-          <div class="control-group">
-              <label class="control-label" for="campaign">Campaign:</label>
-              <div class="controls">
-                  <input type="text" class="input-gray my-width" name='compaigns' id='compaigns'/>
-              </div>
-          </div>
-          {{#unless hasUploadedFile}}
-              <div class="control-group">
-                  <label class="control-label"></label>
-                  <div class="controls">
-                      {{> file_upload}}
-                  </div>
-              </div>
-          {{/unless}}
-          <div class="control-group">
-              <label class="control-label"></label>
-              <div class="controls">
-                  {{> file_upload_progress}}
-                  {{> files }}
-              </div>
-          </div>
+            <div class="control-group">
+                <label class="control-label" for="subject">Subject:</label>
+                <div class="controls">
+                    <input type="text" class="subject input-gray my-width"
+                           name='subject' id='subject' placeholder="Greeting"/>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label class="control-label" for="recipients">Recipients:</label>
+                <div class="controls">
+                    <input type="text" class="recipients input-gray my-width"
+                           name='recipients' id='recipients' placeholder="abc@knotable.com"/>
+                </div>
+            </div>
+            <div class="control-group">
+                <label class="control-label" for="campaign">Campaign:</label>
+                <div class="controls">
+                    <input type="text" class="input-gray my-width" name='compaigns' id='compaigns'/>
+                </div>
+            </div>
+
+            {{#unless hasUploadedFile}}
+                <div class="control-group">
+                    <label class="control-label"></label>
+                    <div class="controls">
+                        {{> file_upload}}
+                    </div>
+                </div>
+            {{/unless}}
+            <div class="control-group">
+                <label class="control-label"></label>
+                <div class="controls">
+                    {{> file_upload_progress}}
+                    {{> files }}
+                </div>
+            </div>
         </div>
-        <div class="col-sm-4">
-          <div class="control-group">
-              <label class="control-label"></label>
-              <div class="controls">
-                  {{> change_due_date_popup}}
-              </div>
-          </div>
 
-          <div class="control-group">
-              <label class="control-label"></label>
-              <div class="controls">
-                  <button class="btn btn-primary btn-md btn-send"><span>Add To Queue</span></button>
-                  <div class="checkbox chk-test-email">
-                      <label><input type="checkbox" value="false" class="input-gray test-email">Test?</label>
-                  </div>
-              </div>
-          </div>
+
+
+        <div class="col-sm-12 col-md-6">
+            <div class="control-group">
+                <label class="control-label"></label>
+                <div class="controls">
+                    {{> change_due_date_popup}}
+                </div>
+            </div>
+
+            <div class="control-group">
+                <label class="control-label"></label>
+                <div class="controls">
+                    <button class="btn btn-primary btn-md btn-send"><span>Add To Queue</span></button>
+                    <div class="checkbox chk-test-email">
+                        <label><input type="checkbox" value="false" class="input-gray test-email">Test?</label>
+                    </div>
+                </div>
+            </div>
         </div>
+
       </div>
+
+
+
     </div>
+
+
+
+
+
+
+
+
 </template>
+
+
 
 <template name="email_list">
     <div class="email-event-list col-sm-4 col-sm-offset-2">

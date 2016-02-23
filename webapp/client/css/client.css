@@ -1,3 +1,7 @@
+body{
+  background-color: #f4f4f4
+}
+
 .logs-container {
   max-height: 500px;
   overflow-y: scroll;
@@ -108,8 +112,9 @@ h4 {
 }
 
 .email-container  {
-  padding: 30px 30px 10px 0;
+  padding: 30px 0;
   font-size: 14px;
+  background-color: #fff;
 }
 
 .email-container .control-group {
@@ -525,4 +530,13 @@ input.my-width {
 input.my-small-width {
   width: 170px;
 }
+
+.date-from-now{
+  overflow: hidden
+}
+
+.date-from-now select{
+  width: auto;
+}
+
 

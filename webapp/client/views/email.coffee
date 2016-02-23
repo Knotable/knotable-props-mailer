@@ -2,6 +2,8 @@ Template.new_email.helpers
   draft_id : ->
     return EmailViewerHelper.currentEmailEventId()
 
+
+
   hasUploadedFile: ->
     eventId = EmailViewerHelper.currentEmailEventId()
     unless eventId
@@ -10,6 +12,7 @@ Template.new_email.helpers
     htmlfile = Files.findOne email_event_id: eventId, extension: FileHelper.HTML_TYPE
     return true if plainTextfile and htmlfile
     return false
+
 
 
 Template.new_email.events
@@ -48,6 +51,7 @@ reset_new_email_event_form = ($form) ->
   $form.find('.test-email').removeAttr('checked')
 
 
+
 Template.email_list.helpers
   email_events : ->
     currentDate = new Date()
@@ -59,6 +63,8 @@ Template.email_list.helpers
     email_events = EmailEvents.find(query).fetch()
     return email_events
 
+
+
 Template.sent_email_list.helpers
   sent_email_events : ->
     currentDate = new Date()
@@ -69,6 +75,8 @@ Template.sent_email_list.helpers
         $lte: currentDate
     email_sent_events = EmailEvents.find(query).fetch()
     return email_sent_events
+
+
 
 Template.email_box.helpers
   plainTextFile : ->
@@ -99,7 +107,6 @@ Template.email_box.events
 
 
 
-
   'click .edit-email-event': (e) ->
     $form = $(e.target).closest('.email-box').find('.email-box-change-date')
     EmailViewerHelper.toggleDateTimeBoxInEmailBox($form)
@@ -119,6 +126,8 @@ Template.email_box.events
   'click .cancel-update-date': (e) ->
     $form = $(e.target).closest('.email-box').find('.email-box-change-date')
     EmailViewerHelper.toggleDateTimeBoxInEmailBox($form)
+
+
 
 Template.file_attachment_box.helpers
   file_ext: ->
