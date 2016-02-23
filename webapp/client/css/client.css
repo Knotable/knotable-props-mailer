@@ -532,7 +532,8 @@ input.my-small-width {
 }
 
 .date-from-now{
-  overflow: hidden
+  overflow: hidden;
+  text-align: center;
 }
 
 .date-from-now select{
