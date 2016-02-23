@@ -32,7 +32,7 @@
 
     $dueDate =  $form.find(".due-date")
     unless date = @isValidDate($dueDate, "Invalid Date")
-     return
+      return
 
 
     $dueTime =  $form.find(".due-time")
@@ -151,7 +151,7 @@
   toggleDateTimeBoxInEmailBox: ($form) ->
     $form.toggleClass('hidden')
 
-  findAndCreateNotExistingEmailEvent: () ->
+  findAndCreateNotExistingEmailEvent: ->
     Meteor.call "findAndCreateIfNotExistingDraftEmail", (e, eventId) ->
       if e
         console.log "Failed to findAndCreateIfNotExistingDraftEmail:", e

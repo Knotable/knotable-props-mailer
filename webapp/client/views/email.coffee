@@ -28,7 +28,7 @@ Template.new_email.events
     unless hasTesting
       isOk = confirm "Are you sure you're ready to send?"
       return unless isOk
-    $ele.attr('disabled','disabled')
+    $ele.attr('disabled', 'disabled')
     Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
       unless err
         EmailViewerHelper.findAndCreateNotExistingEmailEvent()
@@ -89,8 +89,16 @@ Template.email_box.helpers
     return false unless file
     return file
 
+
+
   date: ->
     return moment(@due_date).format("MMM DD YYYY, hh:mm:ss")
+
+
+
+  timeFromNow: ->
+    timeTick.depend()
+    return DateHelperShared.getCountDown @due_date
 
 
 
