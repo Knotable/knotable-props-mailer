@@ -119,10 +119,10 @@
     return value
 
 
-  currentEmailEventId: () ->
+  currentEmailEventId: ->
     return Session.get "CURRENT_DRAFT_EVENT_ID"
 
-  currentEmailEvent: () ->
+  currentEmailEvent: ->
     eventId = @currentEmailEventId()
     if eventId
       emailEvent = EmailEvents.findOne _id : eventId
@@ -204,3 +204,41 @@
 
 
 
+  # Add new draft EmailEvent
+  # Copy content from old ones including file
+  afterAddingToQueue: (emailData) ->
+    draftId = emailHelperShared.createDraftEmailEvent Meteor.userId(), EmailHelperShared.DRAFT,
+      campaigns  : emailData.campaigns
+      recipients : emailData.recipients
+      from       : emailData.from
+      due_date   : emailData.due_date
+      subject    : emailData.subject
+
+    newFileIds = []
+    Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+      delete file._id
+      file.email_event_id = draftId
+      file.created_time   = new Date()
+      fileId = Files.insert file
+      newFileIds.push fileId
+
+    EmailEvents.update {_id: draftId}, {$set:{file_ids: newFileIds}}
+    Meteor.subscribe "fileByEmailEventId", draftId
+    Session.set "CURRENT_DRAFT_EVENT_ID", draftId
+
+
+
+  resetDraftEmailEvent: ->
+    Tracker.nonreactive ->
+      EmailEventId = Session.get("CURRENT_DRAFT_EVENT_ID")
+      fileIds = EmailEvents.findOne(EmailEventId).file_ids
+      fileIds = _.union fileIds, Files.find({email_event_id: EmailEventId}).map (file) -> file._id
+      EmailEvents.update {_id: EmailEventId},
+        $unset:
+          file_ids   : ""
+          campaigns  : ""
+          recipients : ""
+          from       : ""
+          subject    : ""
+      fileIds?.forEach (id) ->
+        Files.remove {_id: id}

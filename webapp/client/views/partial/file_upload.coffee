@@ -22,7 +22,7 @@ getFileUploadOptions = (uploadForm) ->
 
 
 
-afterFinishUploadFile = () ->
+afterFinishUploadFile = ->
   currentRemainUploading = parseInt($("#uploadingItems").val())
   currentRemainUploading = currentRemainUploading - 1
   $("#uploadingItems").val(currentRemainUploading)
@@ -89,11 +89,11 @@ Template.file_upload.rendered = ->
   options.onRendered?.call @
 
   $form.on 'drop', (e) ->
-      return unless e.originalEvent.dataTransfer?.files.length
-      e.preventDefault()
-      return false
+    return unless e.originalEvent.dataTransfer?.files.length
+    e.preventDefault()
+    return false
 
-  $form.bind 'fileuploadprogress', (e , data)->
+  $form.bind 'fileuploadprogress', (e , data) ->
     fileUploading = Session.get('fileUploading') or {}
 
     progress = data._progress
@@ -208,17 +208,3 @@ Template.file_upload_progress.helpers
   files: ->
     if fileUploading = Session.get('fileUploading')
       _.values fileUploading
-
-
-
-Template.files.helpers
-  files: ->
-    files = []
-    eventId = EmailViewerHelper.currentEmailEventId()
-    if eventId
-      files = Files.find({email_event_id: eventId}).fetch()
-    return files
-
-
-
-

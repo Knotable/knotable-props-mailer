@@ -1,9 +1,4 @@
 Template.new_email.helpers
-  draft_id : ->
-    return EmailViewerHelper.currentEmailEventId()
-
-
-
   hasUploadedFile: ->
     eventId = EmailViewerHelper.currentEmailEventId()
     unless eventId
@@ -12,6 +7,11 @@ Template.new_email.helpers
     htmlfile = Files.findOne email_event_id: eventId, extension: FileHelper.HTML_TYPE
     return true if plainTextfile and htmlfile
     return false
+
+
+
+  draftEvent: ->
+    EmailEvents.findOne _id : EmailViewerHelper.currentEmailEventId()
 
 
 
@@ -29,14 +29,23 @@ Template.new_email.events
       isOk = confirm "Are you sure you're ready to send?"
       return unless isOk
     $ele.attr('disabled', 'disabled')
+
     Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
       unless err
-        EmailViewerHelper.findAndCreateNotExistingEmailEvent()
+        EmailViewerHelper.afterAddingToQueue(emailData)
         showBootstrapGrowl("Added email in queue")
-        reset_new_email_event_form($form)
       else
         showErrorBootstrapGrowl("Error when adding email in queue")
       $ele.removeAttr('disabled')
+
+
+
+  "click .reset": (e) ->
+    $ele = $(e.currentTarget)
+    $form = $ele.closest('.email-container')
+    EmailViewerHelper.resetDraftEmailEvent()
+    reset_new_email_event_form $form
+
 
 
 

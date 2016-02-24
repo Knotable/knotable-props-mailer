@@ -23,27 +23,44 @@ class @EmailHelperShared
 
 
 
-  createDraftEmailEvent: (user_id, type = EmailHelperShared.DRAFT) ->
-    email_event_id = EmailEvents.insert
+  createDraftEmailEvent: (user_id, type = EmailHelperShared.DRAFT, options = {}) ->
+    doc =
       user_id: user_id
       type: type
+
+    doc.campaigns  = options.campaigns  if options.campaigns
+    doc.recipients = options.recipients if options.recipients
+    doc.from       = options.from       if options.from
+    doc.file_ids   = options.file_ids   if options.file_ids
+    doc.due_date   = options.due_date   if options.due_date
+    doc.subject    = options.subject    if options.subject
+
+    email_event_id = EmailEvents.insert doc
     return email_event_id
+
 
 
   findAllEmailEvent: (user_id) ->
     EmailEvents.find user_id: user_id
 
+
+
   findDraftEmailEvent: (user_id) ->
     EmailEvents.findOne user_id: user_id, type: EmailHelperShared.DRAFT
 
+
+
   removeDraftEmailEvent: (user_id) ->
     EmailEvents.remove {user_id: user_id, type: EmailHelperShared.DRAFT}, {multi: true}
+
+
 
   findAndCreateIfNotExistingDraftEmail : ->
     draftEmail = EmailEvents.findOne type: EmailHelperShared.DRAFT
     return draftEmail._id if draftEmail
     unless draftEmail
       return @createDraftEmailEvent(Meteor.userId(), EmailHelperShared.DRAFT)
+
 
 
   updateEmailEvent: (emailData, type = EmailHelperShared.DRAFT, status = EmailHelperShared.IN_QUEUE) ->
@@ -66,6 +83,7 @@ class @EmailHelperShared
     return email_event_id
 
 
+
   updateDateOfEmailEvent: (email_event_id, new_date) ->
     updateData =
       $set:
@@ -80,7 +98,6 @@ class @EmailHelperShared
 
 
 
-
   hasCampaignInList : (campaigns, campaignName) ->
     isDefault = false
     for e in campaigns
@@ -88,6 +105,7 @@ class @EmailHelperShared
         isDefault = true
         break
     return isDefault
+
 
 
   buildEmailList: (recipients, campaigns) ->
@@ -119,7 +137,6 @@ class @EmailHelperShared
         emailData['o:campaign'] = emailEvent.campaigns[0]
       return emailData
     return null
-
 
 
 

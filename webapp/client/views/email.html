@@ -9,7 +9,7 @@
 <template name="new_email">
     <h4 class="col-sm-12">New Email Campaign</h4>
 
-    <div class="email-container col-sm-12" data-id="{{draft_id}}">
+    <div class="email-container col-sm-12" data-id="{{draftEvent._id}}">
 
       <div class="row">
 
@@ -17,7 +17,7 @@
             <div class="control-group">
                 <label class="control-label" for="from_address">From Address:</label>
                 <div class="controls">
-                    <input type="text" class="from-address input-gray my-width"
+                    <input type="text" class="from-address input-gray my-width" value="{{draftEvent.from}}"
                            name='from_address' id='from_address' placeholder="Real Name<email@domain.com>" />
                 </div>
             </div>
@@ -25,7 +25,7 @@
             <div class="control-group">
                 <label class="control-label" for="subject">Subject:</label>
                 <div class="controls">
-                    <input type="text" class="subject input-gray my-width"
+                    <input type="text" class="subject input-gray my-width" value="{{draftEvent.subject}}"
                            name='subject' id='subject' placeholder="Greeting"/>
                 </div>
             </div>
@@ -33,14 +33,14 @@
             <div class="control-group">
                 <label class="control-label" for="recipients">Recipients:</label>
                 <div class="controls">
-                    <input type="text" class="recipients input-gray my-width"
+                    <input type="text" class="recipients input-gray my-width" value="{{draftEvent.recipients}}"
                            name='recipients' id='recipients' placeholder="abc@knotable.com"/>
                 </div>
             </div>
             <div class="control-group">
                 <label class="control-label" for="campaign">Campaign:</label>
                 <div class="controls">
-                    <input type="text" class="input-gray my-width" name='compaigns' id='compaigns'/>
+                    <input type="text" class="input-gray my-width" name='compaigns' id='compaigns' value="{{draftEvent.campaigns}}"/>
                 </div>
             </div>
 
@@ -59,6 +59,11 @@
                     {{> files }}
                 </div>
             </div>
+            <div class="control-group control-group col-sm-7 col-sm-offset-2">
+                <button class="btn btn-primary btn-block reset">Reset</button>
+            </div>
+
+
         </div>
 
 
