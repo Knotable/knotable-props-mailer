@@ -4,22 +4,29 @@
         <div class="body">
             <div class="popupWrapper">
                 <div class="calendar-body">
-                    <div class="pull-left column control-group">
-                        <label>Date:</label>
-                        <input type="text" class="small due-date" tabindex="11">
-                    </div>
-                    <div class="pull-right column control-group">
-                        <label>Time:</label>
-                        <div class="time-picker input-append bootstrap-timepicker input-tran">
-                            <input type="text" class="small due-time" tabindex="12">
-                            <span class='show-time-picker add-on'><i class="fa fa-clock-o"></i></span>
+
+                    <div class="form-group row">
+
+                        <div class="col-xs-6">
+                            <label>Date:</label>
+                            <input type="text" class="form-control due-date" tabindex="11">
                         </div>
+
+                        <div class="col-xs-6">
+                            <label>Time:</label>
+                            <div class="time-picker input-append bootstrap-timepicker input-tran">
+                                <input type="text" class="form-control due-time" tabindex="12">
+                                <span class='show-time-picker add-on'><i class="fa fa-clock-o"></i></span>
+                            </div>
+                        </div>
+
                     </div>
+
                     <div class="clearfix"></div>
                     <div class="my-date-picker due-date-picker" tabindex="13"></div>
                     <br>
                     <div class="date-from-now">
-                        <label class="text-center">Or set time from now</label>
+                        <p class="text-center">Or set time from now</p>
 
                         <select name="Days" class="pull-left">
                             <option value="0">0 Day</option>
@@ -99,7 +106,7 @@
                             <option value="60">60 Minutes</option>
                         </select>
                     </div>
-                    <hr>
+
 
                     <div class="clearfix"></div>
                 </div>

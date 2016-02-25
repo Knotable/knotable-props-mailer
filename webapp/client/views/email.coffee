@@ -101,7 +101,7 @@ Template.email_box.helpers
 
 
   date: ->
-    return moment(@due_date).format("MMM DD YYYY, hh:mm:ss")
+    return moment(@due_date).format("MMM D YYYY, h:m A")
 
 
 

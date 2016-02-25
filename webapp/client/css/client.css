@@ -117,56 +117,16 @@ h4 {
   background-color: #fff;
 }
 
-.email-container .control-group {
-  display: table;
-}
-
-.email-container .control-group .control-label,.email-container .control-group .controls {
-  display: table-cell;
-  vertical-align: top;
-}
-
-.email-container .control-group .control-label {
-  color: #8C8C8C;
-  font-size: 13px;
-  padding-right: 30px;
-  text-align: right;
-  white-space: nowrap;
-  width: 140px;
-}
-
-.email-container .controls > *, .email-container .controls button {
-  vertical-align: top;
-}
-
-.email-container .controls > span {
-  color: #4D4D4D;
-  font-size: 14px;
-}
-
-.email-container .input-gray:-moz-placeholder,
-.email-container .input-gray:-ms-input-placeholder,
-.email-container .input-gray::-webkit-input-placeholder {
-  color: #CBCBCB;
-}
-
-.email-container .calendar-body {
+.email-container .calendar-body-wrapper,
+.email-container .email-event-action {
   max-width: 292px;
+  margin: 0 auto;
 }
 
-.column {
-  width: 47%;
+.email-event-list .list-group-item{
+  margin:8px 0;
 }
 
-.column label {
-  color: #999;
-  font-size: 11px;
-}
-
-.column input {
-  color: #999;
-  width: 100%;
-}
 
 .input-tran input {
   border-radius: 4px;
@@ -176,15 +136,14 @@ h4 {
 .input-tran .add-on {
   background: none;
   border: none;
-  left: -24px;
-  position: relative;
+  position: absolute;
   height: 100%;
   z-index: 1;
+  right: 2px;
+  top: 7px
 }
 
-input.small {
-  height: 28px;
-}
+
 
 .my-date-picker .ui-datepicker {
   padding: 0;
@@ -502,7 +461,7 @@ input.small {
   display: inline-table;
 }
 
-.btn.btn-select-file-txt, .chk-test-email {
+.chk-test-email {
   margin-left: 5px;
 }
 
@@ -539,5 +498,3 @@ input.my-small-width {
 .date-from-now select{
   width: auto;
 }
-
-

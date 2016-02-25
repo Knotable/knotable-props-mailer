@@ -13,73 +13,72 @@
 
       <div class="row">
 
-        <div class="col-sm-12 col-md-6">
-            <div class="control-group">
-                <label class="control-label" for="from_address">From Address:</label>
-                <div class="controls">
-                    <input type="text" class="from-address input-gray my-width" value="{{draftEvent.from}}"
+        <div class="col-xs-10 col-xs-offset-1 col-md-6 col-md-offset-0 form-horizontal">
+            <br>
+            <br>
+            <div class="form-group">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="from_address">From Address:</label>
+                <div class="col-sm-8">
+                    <input type="text" class="form-control from-address input-gray" value="{{draftEvent.from}}"
                            name='from_address' id='from_address' placeholder="Real Name<email@domain.com>" />
                 </div>
             </div>
 
-            <div class="control-group">
-                <label class="control-label" for="subject">Subject:</label>
-                <div class="controls">
-                    <input type="text" class="subject input-gray my-width" value="{{draftEvent.subject}}"
+            <div class="form-group">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="subject">Subject:</label>
+                <div class="col-sm-8">
+                    <input type="text" class="form-control subject input-gray" value="{{draftEvent.subject}}"
                            name='subject' id='subject' placeholder="Greeting"/>
                 </div>
             </div>
 
-            <div class="control-group">
-                <label class="control-label" for="recipients">Recipients:</label>
-                <div class="controls">
-                    <input type="text" class="recipients input-gray my-width" value="{{draftEvent.recipients}}"
+            <div class="form-group">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="recipients">Recipients:</label>
+                <div class="col-sm-8">
+                    <input type="text" class=" form-control recipients input-gray" value="{{draftEvent.recipients}}"
                            name='recipients' id='recipients' placeholder="abc@knotable.com"/>
                 </div>
             </div>
-            <div class="control-group">
-                <label class="control-label" for="campaign">Campaign:</label>
-                <div class="controls">
-                    <input type="text" class="input-gray my-width" name='compaigns' id='compaigns' value="{{draftEvent.campaigns}}"/>
+            <div class="form-group">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="campaign">Campaign:</label>
+                <div class="col-sm-8">
+                    <input type="text" class="form-control input-gray" name='compaigns' id='compaigns' value="{{draftEvent.campaigns}}"/>
                 </div>
             </div>
 
             {{#unless hasUploadedFile}}
-                <div class="control-group">
-                    <label class="control-label"></label>
-                    <div class="controls">
+                <div class="form-group">
+                    <label class="control-label col-sm-2 col-sm-offset-1"></label>
+                    <div class="col-sm-8">
                         {{> file_upload}}
                     </div>
                 </div>
             {{/unless}}
-            <div class="control-group">
-                <label class="control-label"></label>
-                <div class="controls">
+            <div class="form-group">
+                <label class="control-label col-sm-2 col-sm-offset-1"></label>
+                <div class="col-sm-8">
                     {{> file_upload_progress}}
                     {{> files }}
                 </div>
             </div>
-            <div class="control-group control-group col-sm-7 col-sm-offset-2">
-                <button class="btn btn-primary btn-block reset">Reset</button>
+            <div class="form-group">
+                <div class="col-sm-8 col-sm-offset-3">
+                    <button class="btn btn-primary btn-sm btn-block reset">Reset</button>
+                </div>
             </div>
-
-
         </div>
-
-
-
-        <div class="col-sm-12 col-md-6">
-            <div class="control-group">
+        <div class="col-xs-10 col-xs-offset-1 col-md-6 col-md-offset-0">
+            <div class="control-group calendar-body-wrapper">
                 <label class="control-label"></label>
                 <div class="controls">
                     {{> change_due_date_popup}}
                 </div>
             </div>
 
-            <div class="control-group">
+            <div class="control-group email-event-action">
                 <label class="control-label"></label>
                 <div class="controls">
-                    <button class="btn btn-primary btn-md btn-send"><span>Add To Queue</span></button>
+                    <button class="btn btn-primary btn-sm btn-send"><span>Add To Queue</span></button>
                     <div class="checkbox chk-test-email">
                         <label><input type="checkbox" value="false" class="input-gray test-email">Test?</label>
                     </div>
@@ -132,26 +131,32 @@
 
 
 <template name="email_box">
-    <span class="badge email-box-badge"><img src="/images/_close.png" width="15" height="15" class="delete_file_ico email-box-badge-delete" data-id="{{_id}}" title="Delete"/></span>
-    <h4 class="list-group-item-heading">{{subject}}</h4>
+    <p class="list-group-item-heading">
+        <strong>{{subject}}</strong> <br>
+        <small>{{date}}</small><small class="pull-right">{{timeFromNow}}</small>
+    </p>
 
+    <div class="email-box-actions btn-group btn-group-justified" role="group">
+        <a href="#" class="btn btn-primary  change-date edit-email-event">
+          <span class="glyphicon glyphicon-time" aria-hidden="true"></span> Change Date
 
-    <div class="actions text-center">
-        <button type="button" class="btn btn-info btn-sm pull-left">Change Date</button>
-        <button type="button" class="btn btn-info btn-sm make-new">Make New From This</button>
-        <button type="button" class="btn btn-danger btn-sm pull-right">Delete</button>
+        </a>
+        <a href="#" class="btn btn-warning make-new" title="This will mark event as sent">
+            <span class="glyphicon glyphicon-copy" aria-hidden="true"></span> Make New
+        </a>
+        <a href="#" class="btn btn-danger  email-box-badge-delete" data-id="{{_id}}">
+          <span class="glyphicon glyphicon-trash" aria-hidden="true"></span> Delete
+        </a>
     </div>
 
-    <p lass="list-group-item" title="Change date">({{timeFromNow}}) - {{date}} <i class="fa fa-edit edit-email-event pull-right"><span class="change-date">Change Date</span></i></p>
-
-
-
+    <br>
+    <br>
 
     <div class="email-box-change-date hidden">
         {{> change_due_date_popup due_date}}
         <ul class="list-inline right email-box-date-buttons">
-            <button type="button" class="btn btn-primary btn-xs save-update-date">Save</button>
-            <button type="button" class="btn btn-primary btn-xs cancel-update-date">Cancel</button>
+            <button type="button" class="btn btn-primary btn-sm save-update-date">Save</button>
+            <button type="button" class="btn btn-primary btn-sm cancel-update-date">Cancel</button>
         </ul>
     </div>
 
