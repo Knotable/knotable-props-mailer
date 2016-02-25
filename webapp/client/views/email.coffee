@@ -145,6 +145,10 @@ Template.email_box.events
     EmailViewerHelper.toggleDateTimeBoxInEmailBox($form)
 
 
+  'click .make-new': ->
+    EmailViewerHelper.makeNewFromQueuedOne @
+
+
 
 Template.file_attachment_box.helpers
   file_ext: ->

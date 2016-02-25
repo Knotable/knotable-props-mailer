@@ -134,7 +134,19 @@
 <template name="email_box">
     <span class="badge email-box-badge"><img src="/images/_close.png" width="15" height="15" class="delete_file_ico email-box-badge-delete" data-id="{{_id}}" title="Delete"/></span>
     <h4 class="list-group-item-heading">{{subject}}</h4>
+
+
+    <div class="actions text-center">
+        <button type="button" class="btn btn-info btn-sm pull-left">Change Date</button>
+        <button type="button" class="btn btn-info btn-sm make-new">Make New From This</button>
+        <button type="button" class="btn btn-danger btn-sm pull-right">Delete</button>
+    </div>
+
     <p lass="list-group-item" title="Change date">({{timeFromNow}}) - {{date}} <i class="fa fa-edit edit-email-event pull-right"><span class="change-date">Change Date</span></i></p>
+
+
+
+
     <div class="email-box-change-date hidden">
         {{> change_due_date_popup due_date}}
         <ul class="list-inline right email-box-date-buttons">
@@ -142,6 +154,7 @@
             <button type="button" class="btn btn-primary btn-xs cancel-update-date">Cancel</button>
         </ul>
     </div>
+
     {{#if plainTextFile}}
         {{> file_attachment_box plainTextFile}}
     {{/if}}

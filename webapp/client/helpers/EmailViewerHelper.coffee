@@ -242,3 +242,36 @@
           subject    : ""
       fileIds?.forEach (id) ->
         Files.remove {_id: id}
+
+
+
+  # 1. Set status to EmailHelperShared.SENT
+  # 2. Update Draft EmailEvent with new Data
+  # 3. Update existing files or add new
+  makeNewFromQueuedOne: (emailData) ->
+    EmailEvents.update {_id: emailData._id}, {$set : {status: EmailHelperShared.SENT}}
+
+    Tracker.nonreactive ->
+      draftId = Session.get("CURRENT_DRAFT_EVENT_ID")
+      newFileIds = []
+
+      # Remove old files of draft email event
+      Files.find({email_event_id: draftId}).forEach (file) ->
+        Files.remove {_id: file._id}
+
+      # Add new Files from Queued one
+      Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+        delete file._id
+        file.email_event_id = draftId
+        file.created_time   = new Date()
+        fileId = Files.insert file
+        newFileIds.push fileId
+
+      EmailEvents.update {_id: draftId},
+        $set:
+          campaigns  : emailData.campaigns
+          recipients : emailData.recipients
+          from       : emailData.from
+          subject    : emailData.subject
+          due_date   : emailData.due_date
+          file_ids   : newFileIds
