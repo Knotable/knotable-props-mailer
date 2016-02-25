@@ -8,7 +8,6 @@ accounts-ui
 jquery
 rosh93:aws-sdk
 http
-mizzao:bootstrap-3
 mrt:moment-timezone
 eluck:aws-sdk
 mrt:jquery-ui
@@ -16,6 +15,6 @@ mrt:async
 duongthienduc:meteor-bootstrap-growl
 coffeescript
 email
-bootstrap
+twbs:bootstrap
 meteorhacks:npm
 npm-container
