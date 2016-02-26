@@ -34,6 +34,7 @@ class @EmailHelperShared
     doc.file_ids   = options.file_ids   if options.file_ids
     doc.due_date   = options.due_date   if options.due_date
     doc.subject    = options.subject    if options.subject
+    doc.htmlText   = options.htmlText   if options.htmlText
 
     email_event_id = EmailEvents.insert doc
     return email_event_id
@@ -66,17 +67,18 @@ class @EmailHelperShared
   updateEmailEvent: (emailData, type = EmailHelperShared.DRAFT, status = EmailHelperShared.IN_QUEUE) ->
     updateData =
       $set:
-        from: emailData.from
-        campaigns: emailData.campaigns
-        subject: emailData.subject
-        recipients: emailData.recipients
-        created_time: new Date()
-        file_ids: emailData.file_ids
-        due_date: emailData.due_date
-        user_id: emailData.user_id
-        type: type
-        status: status
-        is_test: emailData.is_test
+        from         : emailData.from
+        campaigns    : emailData.campaigns
+        subject      : emailData.subject
+        recipients   : emailData.recipients
+        created_time : new Date()
+        file_ids     : emailData.file_ids
+        due_date     : emailData.due_date
+        user_id      : emailData.user_id
+        type         : type
+        status       : status
+        is_test      : emailData.is_test
+        htmlText     : emailData.htmlText
     email_event_id = EmailEvents.update {_id: emailData._id}, updateData
 
     console.log "Updated event with _id #{emailData._id}"

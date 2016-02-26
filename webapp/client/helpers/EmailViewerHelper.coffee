@@ -23,12 +23,11 @@
 
     eventId = @currentEmailEventId()
     emailData.file_ids = []
-    plainText = Files.findOne email_event_id: eventId, extension : FileHelper.PLAIN_TEXT_TYPE
-    unless plainText
-      showErrorBootstrapGrowl "Please upload Plaintext file. This is required"
+
+    emailData.htmlText = $form.find('.event-plain-text').val().trim()
+    unless emailData.htmlText
+      showErrorBootstrapGrowl "Plain text required."
       return
-    else
-      emailData.file_ids.push plainText._id
 
     $dueDate =  $form.find(".due-date")
     unless date = @isValidDate($dueDate, "Invalid Date")
@@ -213,6 +212,7 @@
       from       : emailData.from
       due_date   : emailData.due_date
       subject    : emailData.subject
+      htmlText   : emailData.htmlText
 
     newFileIds = []
     Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
@@ -240,6 +240,7 @@
           recipients : ""
           from       : ""
           subject    : ""
+          htmlText   : ""
       fileIds?.forEach (id) ->
         Files.remove {_id: id}
 
@@ -251,27 +252,28 @@
   makeNewFromQueuedOne: (emailData) ->
     EmailEvents.update {_id: emailData._id}, {$set : {status: EmailHelperShared.SENT}}
 
-    Tracker.nonreactive ->
-      draftId = Session.get("CURRENT_DRAFT_EVENT_ID")
-      newFileIds = []
+    draftId = EmailViewerHelper.currentEmailEventId()
+    newFileIds = []
 
-      # Remove old files of draft email event
-      Files.find({email_event_id: draftId}).forEach (file) ->
-        Files.remove {_id: file._id}
+    # Remove old files of draft email event
+    Files.find({email_event_id: draftId}).forEach (file) ->
+      Files.remove {_id: file._id}
 
-      # Add new Files from Queued one
-      Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
-        delete file._id
-        file.email_event_id = draftId
-        file.created_time   = new Date()
-        fileId = Files.insert file
-        newFileIds.push fileId
+    # Add new Files from Queued one
+    Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+      delete file._id
+      file.email_event_id = draftId
+      file.created_time   = new Date()
+      fileId = Files.insert file
+      newFileIds.push fileId
 
-      EmailEvents.update {_id: draftId},
-        $set:
-          campaigns  : emailData.campaigns
-          recipients : emailData.recipients
-          from       : emailData.from
-          subject    : emailData.subject
-          due_date   : emailData.due_date
-          file_ids   : newFileIds
+    console.log "GC - ", emailData
+    EmailEvents.update {_id: draftId},
+      $set:
+        campaigns  : emailData.campaigns
+        recipients : emailData.recipients
+        from       : emailData.from
+        subject    : emailData.subject
+        due_date   : emailData.due_date
+        file_ids   : newFileIds
+        htmlText   : emailData.htmlText

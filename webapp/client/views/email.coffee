@@ -15,6 +15,17 @@ Template.new_email.helpers
 
 
 
+  htmlFile: ->
+    eventId = EmailViewerHelper.currentEmailEventId()
+    unless eventId
+      return false
+    Files.findOne email_event_id: eventId, extension: FileHelper.HTML_TYPE
+
+
+
+
+
+
 Template.new_email.events
   'click .btn-send': (e) ->
     e.stopPropagation()
@@ -47,6 +58,18 @@ Template.new_email.events
     reset_new_email_event_form $form
 
 
+  "click .btn-select-file-html": ->
+    $('.file_upload_s3 input.upload-photo-btn-large.upload-file-input-html').click()
+
+
+  "click .delete-file-html": (e) ->
+    isOk = confirm("Do you want remove this file?")
+    if isOk
+      fileId = $(e.currentTarget).attr('data-id')
+      Files.remove _id : fileId
+      console.info "Remove file with id:", fileId
+
+
 
 
 
@@ -58,6 +81,7 @@ reset_new_email_event_form = ($form) ->
   $dueDate.datepicker 'setDate', next5MinutesTime
   $dueTime.timepicker 'setTime', next5MinutesTime
   $form.find('.test-email').removeAttr('checked')
+  $form.find('.event-plain-text').val('')
 
 
 
@@ -146,7 +170,10 @@ Template.email_box.events
 
 
   'click .make-new': ->
-    EmailViewerHelper.makeNewFromQueuedOne @
+    self =  @
+    EmailViewerHelper.resetDraftEmailEvent()
+    Meteor.defer ->
+      EmailViewerHelper.makeNewFromQueuedOne self
 
 
 
