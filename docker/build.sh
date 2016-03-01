@@ -1,43 +1,56 @@
 #!/usr/bin/env bash
 
-if [ "$(uname)" != "Darwin" ]; then
-  echo "Linux is not supported yet. Aborting..."
-  exit
-fi
 
 
-#smart workdir handling :)
+# Smart workdir handling :)
 root_directory=`git rev-parse --show-toplevel 2>/dev/null`
 if [ -z $root_directory"" ] ; then
-  echo "
-
-      You are not in a knotable-ops project directory.
-      Please cd into it and run this script again.
-      Aborting...
-
-  "
+  echo -e "\nYou are not in a knotable-props-mailer project directory."
+  echo    "Please cd into it and run this script again."
+  echo -e "Aborting...\n"
   exit
 fi
+
 
 if [ ! `pwd` == $root_directory ] ; then
-  echo "changing to root directory: $root_directory/props_meteor_app"
-  cd $root_directory/props_meteor_app
+  echo -e "\nChanging to root directory: $root_directory"
+  cd $root_directory
 fi
 
 
-#check whether the repo is clean
-if [ "`git status -s`" ] ; then
-  echo "
-    The repository is not clean.
-    Please make sure you committed all your changes and run this script again.
-    Aborting...
 
-  "
-  exit
+ #Check whether the repo is clean
+ if [ "`git status -s`" ] ; then
+   echo -e "\nThe repository is not clean."
+   echo "Please make sure you committed all your changes and run this script again."
+   echo -e "Aborting...\n"
+   exit
+ fi
+
+
+
+# Set up sudo for Linux
+sudo='sudo'
+if [ "$(uname)" == "Darwin" ]; then
+  sudo=
 fi
 
 
-boot2docker start && eval `boot2docker shellinit`
-docker pull registry.knotable.com:443/meteord 2>/dev/null
-docker rmi -f registry.knotable.com:443/props_meteor_app
-docker build -t registry.knotable.com:443/props_meteor_app -f docker/Dockerfile ./
+
+# Set up environment for Mac and Linux
+if [ "$(uname)" == "Darwin" ]; then
+  #check docker stuff
+  source docker/docker_machine_setup.sh
+  if [ $result"" == "Failure" ] ; then exit ; fi
+else
+  $sudo docker login -u knotable -p d0ckerP^55 -e knotable@m.eluck.me registry.knotable.com:443
+fi
+
+
+
+
+$sudo docker tag -f registry.knotable.com:443/meteord-webapp registry.knotable.com:443/meteord-old 2>/dev/null
+$sudo docker pull registry.knotable.com:443/meteord-webapp
+$sudo docker rmi -f registry.knotable.com:443/props_meteor_app
+$sudo docker rmi registry.knotable.com:443/meteord-old 2>/dev/null
+$sudo docker build -t registry.knotable.com:443/props_meteor_app -f docker/Dockerfile ./
