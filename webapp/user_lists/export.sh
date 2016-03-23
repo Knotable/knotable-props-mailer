@@ -1,5 +1,8 @@
+echo "[cronjob export.sh] - Start `date`" >> /knotable-var/cron.log 2>&1
+
 # DB params
-ip="54.85.83.45"
+
+ip="db3.betavpc.knotable"
 dbname="alpha2"
 username="knotable-alpha"
 password="769TA9NHWL3M"
@@ -77,3 +80,5 @@ curl -s --user "api:${apikey}" \
   -F cc="${cc1}, ${cc2}, ${cc3}" \
   -F subject="${subject}" \
   -F text="${mongodata}" \
+
+echo "[cronjob export.sh] - Finish `date`" >> /knotable-var/cron.log 2>&1

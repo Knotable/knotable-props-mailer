@@ -8,24 +8,16 @@ Dump the users' lists of below category and mails to `team@knote.com`
 3. People who were active but god deactivated.
 4. People who are active.
 
-Trello: https://trello.com/c/eudvniFf/147-auto-mail-the-4-user-lists
 
-## File Introduction
+## Cron job now runs inside `props_meteor_app` container.
 
-* ***export.sh***: Mail shell script to perform the dump and emailing
-* ***template.txt***: Email body content. Date text is appended from the shell script
+Use `knotable-props-mailer/webapp/user_lists/cronjob` to update cronjob
 
-## Usage Example
+Run following command to execute corrosponding job manually
 
-    ./export.sh
-    
-Should dump the zip file and send email to `team@knote.com`
+```
 
+docker exec props_meteor_app /bin/bash -c "/app/user_lists/export.sh"
+docker exec props_meteor_app /bin/bash -c "/app/user_lists/emailstats.sh"
 
-## Cron example
-
-The below example will run the script on Sunday 8pm EDT. Assuming script is residing in `/opt/user_lists` and system time zone is `UTC`
-
-  0 0 * * 1 cd /opt/user_lists && ./export.sh
-
-*Author: Abhinav <in.abhi9@gmail.com>*
+```
