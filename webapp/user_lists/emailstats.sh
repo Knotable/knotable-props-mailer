@@ -1,5 +1,4 @@
-
-
+echo "[cronjob emailstats.sh] - Start `date`" >> /knotable-var/cron.log 2>&1
 
 # Email params
 from="robot@knotable.com"
@@ -32,3 +31,5 @@ curl -s --user "api:${apikey}" \
   -F cc="${cc1}, ${cc2}" \
   -F subject="${subject}" \
   -F text="${body}" \\
+
+echo "[cronjob emailstats.sh] - Finish `date`" >> /knotable-var/cron.log 2>&1

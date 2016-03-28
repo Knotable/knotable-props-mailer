@@ -1,0 +1,2 @@
+0 14 * * * /app/user_lists/export.sh >> /knotable-var/cron.log 2>&1
+26 23 * * * /app/user_lists/emailstats.sh >> /knotable-var/cron.log 2>&1

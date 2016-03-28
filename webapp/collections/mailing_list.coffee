@@ -8,7 +8,7 @@
 #  list_id
 #  date_created
 
-@MailingList= new Meteor.Collection 'mailling_list'
+@MailingList= new Meteor.Collection 'mailing_list'
 
 
 
