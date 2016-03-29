@@ -104,8 +104,6 @@ Template.sent_email_list.helpers
     query =
       status: EmailHelperShared.SENT
       type: EmailHelperShared.ACTIVE
-      due_date:
-        $lte: currentDate
     email_sent_events = EmailEvents.find(query).fetch()
     return email_sent_events
 
@@ -185,3 +183,16 @@ Template.file_attachment_box.helpers
     else
       file_ext = ""
     file_ext
+
+
+Template.sent_email_box.helpers
+  displayDate: (date) ->
+    moment(date).format("MMM D YYYY, h:m A")
+
+
+  joinArray: (array) ->
+    return array.join(', ')
+
+
+  file: ->
+    Files.findOne(@file_ids[0])

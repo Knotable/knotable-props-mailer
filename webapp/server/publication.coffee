@@ -19,7 +19,25 @@ Meteor.publish "emailEventsAndFiles", ->
     eventIds = _.uniq(eventIds)
     fileCursor = Files.find {email_event_id: {$in: eventIds}}
     return [emailEventCursor, fileCursor]
-    return []
+  return []
+
+
+Meteor.publish "sentEmailEventsAndFiles", ->
+  if @userId
+    findQuery =
+      user_id : @userId
+      status: EmailHelperShared.SENT
+      type : EmailHelperShared.ACTIVE
+    option =
+      limit: 40
+
+    emailEventCursor = EmailEvents.find(findQuery, option)
+    eventIds = emailEventCursor.map (event) -> event._id
+    eventIds = _.uniq(eventIds)
+    fileCursor = Files.find {email_event_id: {$in: eventIds}}
+    return [emailEventCursor, fileCursor]
+  return []
+
 
 Meteor.publish "mailingList", () ->
   if @userId

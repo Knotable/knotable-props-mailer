@@ -132,13 +132,14 @@
 
 
 <template name="sent_email_list">
-    <div class="email-event-list col-sm-4">
-        {{#if email_events}}
-            <h3>Emails that have been sent</h3>
+    <div class="email-event-list col-sm-12">
+        {{#if sent_email_events.length}}
+            <h3>Sent Email Events</h3>
         {{/if}}
+
         <ul class="list-group">
             {{#each sent_email_events}}
-                <li class="list-group-item email-box" data-id="{{_id}}">
+                <li class="list-group-item email-box sent" data-id="{{_id}}">
                     {{> sent_email_box }}
                 </li>
             {{/each}}
@@ -190,18 +191,23 @@
 
 
 <template name="sent_email_box">
-    <span class="badge email-box-badge"><img src="/images/_close.png" width="15" height="15" class="delete_file_ico email-box-badge-delete" data-id="{{_id}}" title="Delete"/></span>
-    <h4 class="list-group-item-heading">{{subject}}</h4>
-    <p lass="list-group-item" title="Change date">{{date}} <i class="fa fa-edit edit-email-event"><span class="change-date">Change Date</span></i></p>
-    <div class="email-box-change-date hidden">
+    <p class="list-group-item-heading">
+        <strong>{{subject}}</strong>
+    </p>
 
-    </div>
-    {{#if plainTextFile}}
-        {{> file_attachment_box plainTextFile}}
-    {{/if}}
-    {{#if htmlFile}}
-    {{> file_attachment_box htmlFile}}
-    {{/if}}
+
+    <dl class="dl-horizontal">
+      <dt>Created at</dt> <dd>{{displayDate created_time}}</dd>
+      <dt>Due Date</dt> <dd>{{displayDate due_date}}</dd>
+      <dt>From</dt> <dd>{{from}}</dd>
+      <dt>Campaign</dt> <dd>{{joinArray campaigns}}</dd>
+      {{#if file}}
+        <dt>Html</dt> <dd><a href="{{file.s3_url}}" target="_blank">{{file.name}}</a> </dd>
+      {{/if}}
+      <dt>Recipients</dt> <dd>{{joinArray recipients}}</dd>
+    </dl>
+
+
 
 </template>
 

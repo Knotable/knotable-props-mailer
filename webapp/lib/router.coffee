@@ -1,5 +1,5 @@
 if Meteor.isClient
-  
+
   loginFilter = ->
     Router.go "login"  unless Meteor.userId()
     @next()
@@ -10,6 +10,8 @@ if Meteor.isClient
   emailSubscribe = ->
     if Meteor.userId()
       Meteor.subscribe "emailEventsAndFiles"
+      Meteor.subscribe "sentEmailEventsAndFiles"
+
       EmailViewerHelper.findAndCreateNotExistingEmailEvent()
 
   mailingListSubscribe = ->
