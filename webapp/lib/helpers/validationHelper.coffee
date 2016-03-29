@@ -10,24 +10,26 @@
         subject = emailEvent.subject
         to = emailEvent.recipients
         fileIds = emailEvent.file_ids
-        fileAttachment = null
-        if fileIds and fileIds.length != 0
-          firstFileId = fileIds[0]
-          fileAttachment = Files.findOne _id: firstFileId
+        htmlText = emailEvent.htmlText
+
+        unless _.isEmpty fileIds
+          htmlFile = Files.findOne _id: fileIds[0]
+          unless FileHelper.isHtmlFile(htmlFile?.name)
+            throw "Invalid file type: {htmlFile}"
 
         unless @isCorrectEmailWithRealName(from)
           throw "Invalid from email #{from}"
         for toEmail in to
           unless @isCorrectEmail(toEmail)
             throw "Invalid to email #{toEmail.toString()}"
+
         unless subject
           throw "Empty subject"
-        unless fileAttachment
-          throw "Invalid file content #{fileAttachment}"
-        fileName = fileAttachment.name
-        unless FileHelper.isHtmlFile(fileName) or FileHelper.isPlainTextFile(fileName)
-          fileExtension = FileHelper.fileExtention fileName
-          throw "Invalid file type: #{fileExtension}"
+
+        unless htmlText
+          throw "Empty Plain Text"
+
+
     catch e
       console.error "Invalid Email Params:", e
       if e.stack

@@ -23,16 +23,15 @@
 
     eventId = @currentEmailEventId()
     emailData.file_ids = []
-    plainText = Files.findOne email_event_id: eventId, extension : FileHelper.PLAIN_TEXT_TYPE
-    unless plainText
-      showErrorBootstrapGrowl "Please upload Plaintext file. This is required"
+
+    emailData.htmlText = $form.find('.event-plain-text').val().trim()
+    unless emailData.htmlText
+      showErrorBootstrapGrowl "Plain text required."
       return
-    else
-      emailData.file_ids.push plainText._id
 
     $dueDate =  $form.find(".due-date")
     unless date = @isValidDate($dueDate, "Invalid Date")
-     return
+      return
 
 
     $dueTime =  $form.find(".due-time")
@@ -119,10 +118,10 @@
     return value
 
 
-  currentEmailEventId: () ->
+  currentEmailEventId: ->
     return Session.get "CURRENT_DRAFT_EVENT_ID"
 
-  currentEmailEvent: () ->
+  currentEmailEvent: ->
     eventId = @currentEmailEventId()
     if eventId
       emailEvent = EmailEvents.findOne _id : eventId
@@ -151,7 +150,7 @@
   toggleDateTimeBoxInEmailBox: ($form) ->
     $form.toggleClass('hidden')
 
-  findAndCreateNotExistingEmailEvent: () ->
+  findAndCreateNotExistingEmailEvent: ->
     Meteor.call "findAndCreateIfNotExistingDraftEmail", (e, eventId) ->
       if e
         console.log "Failed to findAndCreateIfNotExistingDraftEmail:", e
@@ -204,3 +203,77 @@
 
 
 
+  # Add new draft EmailEvent
+  # Copy content from old ones including file
+  afterAddingToQueue: (emailData) ->
+    draftId = emailHelperShared.createDraftEmailEvent Meteor.userId(), EmailHelperShared.DRAFT,
+      campaigns  : emailData.campaigns
+      recipients : emailData.recipients
+      from       : emailData.from
+      due_date   : emailData.due_date
+      subject    : emailData.subject
+      htmlText   : emailData.htmlText
+
+    newFileIds = []
+    Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+      delete file._id
+      file.email_event_id = draftId
+      file.created_time   = new Date()
+      fileId = Files.insert file
+      newFileIds.push fileId
+
+    EmailEvents.update {_id: draftId}, {$set:{file_ids: newFileIds}}
+    Meteor.subscribe "fileByEmailEventId", draftId
+    Session.set "CURRENT_DRAFT_EVENT_ID", draftId
+
+
+
+  resetDraftEmailEvent: ->
+    Tracker.nonreactive ->
+      EmailEventId = Session.get("CURRENT_DRAFT_EVENT_ID")
+      fileIds = EmailEvents.findOne(EmailEventId).file_ids
+      fileIds = _.union fileIds, Files.find({email_event_id: EmailEventId}).map (file) -> file._id
+      EmailEvents.update {_id: EmailEventId},
+        $unset:
+          file_ids   : ""
+          campaigns  : ""
+          recipients : ""
+          from       : ""
+          subject    : ""
+          htmlText   : ""
+      fileIds?.forEach (id) ->
+        Files.remove {_id: id}
+
+
+
+  # 1. Set status to EmailHelperShared.SENT
+  # 2. Update Draft EmailEvent with new Data
+  # 3. Update existing files or add new
+  makeNewFromQueuedOne: (emailData) ->
+    EmailEvents.update {_id: emailData._id}, {$set : {status: EmailHelperShared.SENT}}
+
+    draftId = EmailViewerHelper.currentEmailEventId()
+    newFileIds = []
+
+    # Remove old files of draft email event
+    Files.find({email_event_id: draftId}).forEach (file) ->
+      Files.remove {_id: file._id}
+
+    # Add new Files from Queued one
+    Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+      delete file._id
+      file.email_event_id = draftId
+      file.created_time   = new Date()
+      fileId = Files.insert file
+      newFileIds.push fileId
+
+    console.log "GC - ", emailData
+    EmailEvents.update {_id: draftId},
+      $set:
+        campaigns  : emailData.campaigns
+        recipients : emailData.recipients
+        from       : emailData.from
+        subject    : emailData.subject
+        due_date   : emailData.due_date
+        file_ids   : newFileIds
+        htmlText   : emailData.htmlText

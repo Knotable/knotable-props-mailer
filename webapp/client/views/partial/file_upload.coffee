@@ -22,7 +22,7 @@ getFileUploadOptions = (uploadForm) ->
 
 
 
-afterFinishUploadFile = () ->
+afterFinishUploadFile = ->
   currentRemainUploading = parseInt($("#uploadingItems").val())
   currentRemainUploading = currentRemainUploading - 1
   $("#uploadingItems").val(currentRemainUploading)
@@ -61,22 +61,6 @@ Template.file_upload.helpers
     isS3_credentials : true
     }
 
-  hasUploadedHtml: ->
-    eventId = EmailViewerHelper.currentEmailEventId()
-    unless eventId
-      false
-    file = Files.findOne email_event_id: eventId, extension: FileHelper.HTML_TYPE
-    return true if file
-    return false
-
-  hasUploadedPlainText: ->
-    eventId = EmailViewerHelper.currentEmailEventId()
-    unless eventId
-      false
-    file = Files.findOne email_event_id: eventId, extension: FileHelper.PLAIN_TEXT_TYPE
-    return true if file
-    return false
-
 
 Template.file_upload.rendered = ->
   $form = $(@find '.file_upload_s3')
@@ -89,11 +73,11 @@ Template.file_upload.rendered = ->
   options.onRendered?.call @
 
   $form.on 'drop', (e) ->
-      return unless e.originalEvent.dataTransfer?.files.length
-      e.preventDefault()
-      return false
+    return unless e.originalEvent.dataTransfer?.files.length
+    e.preventDefault()
+    return false
 
-  $form.bind 'fileuploadprogress', (e , data)->
+  $form.bind 'fileuploadprogress', (e , data) ->
     fileUploading = Session.get('fileUploading') or {}
 
     progress = data._progress
@@ -110,18 +94,6 @@ Template.file_upload.rendered = ->
     if S3Credentials.areReady()
       Meteor.defer -> initFileuploader $form, options
 
-
-Template.file_upload.events
-  'click .btn-select-file-html': (e) ->
-    e.preventDefault()
-    $('.file_upload_s3 input.upload-photo-btn-large.upload-file-input-html').click()
-
-  'click .btn-select-file-txt': (e) ->
-    e.preventDefault()
-    $('.file_upload_s3 input.upload-photo-btn-large.upload-file-input-txt').click()
-
-
-
 initFileuploader = ($form, options) ->
   $form.fileupload
     autoUpload: true,
@@ -134,6 +106,7 @@ initFileuploader = ($form, options) ->
       file = data.files[0]
       fileName = FileHelper.cleanFileName file.name
       fileExt = FileHelper.fileExtention fileName
+
       file_id = Files.insert
         name: file.name
         account_id: Meteor.userId()
@@ -143,6 +116,7 @@ initFileuploader = ($form, options) ->
         created_time: new Date()
         email_event_id: eventId
 
+      setTextOfHtml file
 
       file_key = FileHelper.s3_key(file_id, fileName)
       $form.find("input[name=key]").val(file_key)
@@ -174,8 +148,7 @@ initFileuploader = ($form, options) ->
           areS3KeysEqual: errorData.S3Credentials?.s3_key == errorData.formData.s3_key
           areS3SignaturesEqual: errorData.S3Credentials?.s3_signature == errorData.formData.s3_signature
 
-      options.failed(event, data)
-
+      showErrorBootstrapGrowl("Error when uploading")
       Files.remove data.file_id
 
       if fileUploading = Session.get('fileUploading')
@@ -204,21 +177,27 @@ initFileuploader = ($form, options) ->
           Session.set('fileUploading' , fileUploading)
 
 
+
+setTextOfHtml = (file) ->
+  return unless file.type is "text/html"
+  return unless window.File and window.FileReader
+
+  reader = new FileReader()
+
+  reader.onload = (e) ->
+    $ele = $('<div/>').append($(e.target.result))
+    $ele.find('head, title, style, script, meta').remove()
+    htmlText = $ele.text().replace(/\s\s+/g, ' ').trim()
+
+    Tracker.nonreactive ->
+      eventId = EmailViewerHelper.currentEmailEventId()
+      EmailEvents.update {_id: eventId}, $set: htmlText: htmlText
+
+  reader.readAsText file
+
+
+
 Template.file_upload_progress.helpers
   files: ->
     if fileUploading = Session.get('fileUploading')
       _.values fileUploading
-
-
-
-Template.files.helpers
-  files: ->
-    files = []
-    eventId = EmailViewerHelper.currentEmailEventId()
-    if eventId
-      files = Files.find({email_event_id: eventId}).fetch()
-    return files
-
-
-
-

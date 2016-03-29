@@ -1,3 +1,13 @@
+Template.files.helpers
+  files: ->
+    files = []
+    eventId = EmailViewerHelper.currentEmailEventId()
+    if eventId
+      files = Files.find({email_event_id: eventId}).fetch()
+    return files
+
+
+
 Template.file_box.helpers
   short_name: ->
     FileHelper.getShortFileName(@name)
@@ -5,13 +15,13 @@ Template.file_box.helpers
 
 
   transform: ->
-    if this.transform == undefined
+    if @transform == undefined
       return
-    if this.transform == 0
+    if @transform == 0
       return 'one'
-    else if this.transform == 90
+    else if @transform == 90
       return 'two'
-    else if this.transform ==180
+    else if @transform ==180
       return 'three'
     else
       return 'four'

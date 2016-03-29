@@ -12,25 +12,21 @@ class @EmailServerShared
       return unless emailData
 
       htmlFile = null
-      plainTextFile = null
+      emailData.text = emailEvent.htmlText
+
+
       fileIds = emailEvent.file_ids
       files = Files.find({_id: {$in : fileIds}}).fetch()
       _.each files, (file) ->
-        if FileHelper.PLAIN_TEXT_TYPE is file.extension
-          plainTextFile = file
-        else if FileHelper.HTML_TYPE is file.extension
+        if FileHelper.HTML_TYPE is file.extension
           htmlFile = file
       async.waterfall [
         (callback) ->
           if htmlFile
-            fileApi.getFileContentByteFromUrlPath htmlFile.s3_url, (error, bodyContent)->
+            fileApi.getFileContentByteFromUrlPath htmlFile.s3_url, (error, bodyContent) ->
               emailData.html = bodyContent
               callback null
           else
-            callback null
-        (callback) ->
-          fileApi.getFileContentByteFromUrlPath plainTextFile.s3_url, (error, bodyContent)->
-            emailData.text = bodyContent
             callback null
         (callback) ->
           body = emailData.html || emailData.text

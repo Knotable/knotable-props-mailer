@@ -23,21 +23,38 @@ class @EmailHelperShared
 
 
 
-  createDraftEmailEvent: (user_id, type = EmailHelperShared.DRAFT) ->
-    email_event_id = EmailEvents.insert
+  createDraftEmailEvent: (user_id, type = EmailHelperShared.DRAFT, options = {}) ->
+    doc =
       user_id: user_id
       type: type
+
+    doc.campaigns  = options.campaigns  if options.campaigns
+    doc.recipients = options.recipients if options.recipients
+    doc.from       = options.from       if options.from
+    doc.file_ids   = options.file_ids   if options.file_ids
+    doc.due_date   = options.due_date   if options.due_date
+    doc.subject    = options.subject    if options.subject
+    doc.htmlText   = options.htmlText   if options.htmlText
+
+    email_event_id = EmailEvents.insert doc
     return email_event_id
+
 
 
   findAllEmailEvent: (user_id) ->
     EmailEvents.find user_id: user_id
 
+
+
   findDraftEmailEvent: (user_id) ->
     EmailEvents.findOne user_id: user_id, type: EmailHelperShared.DRAFT
 
+
+
   removeDraftEmailEvent: (user_id) ->
     EmailEvents.remove {user_id: user_id, type: EmailHelperShared.DRAFT}, {multi: true}
+
+
 
   findAndCreateIfNotExistingDraftEmail : ->
     draftEmail = EmailEvents.findOne type: EmailHelperShared.DRAFT
@@ -46,24 +63,27 @@ class @EmailHelperShared
       return @createDraftEmailEvent(Meteor.userId(), EmailHelperShared.DRAFT)
 
 
+
   updateEmailEvent: (emailData, type = EmailHelperShared.DRAFT, status = EmailHelperShared.IN_QUEUE) ->
     updateData =
       $set:
-        from: emailData.from
-        campaigns: emailData.campaigns
-        subject: emailData.subject
-        recipients: emailData.recipients
-        created_time: new Date()
-        file_ids: emailData.file_ids
-        due_date: emailData.due_date
-        user_id: emailData.user_id
-        type: type
-        status: status
-        is_test: emailData.is_test
+        from         : emailData.from
+        campaigns    : emailData.campaigns
+        subject      : emailData.subject
+        recipients   : emailData.recipients
+        created_time : new Date()
+        file_ids     : emailData.file_ids
+        due_date     : emailData.due_date
+        user_id      : emailData.user_id
+        type         : type
+        status       : status
+        is_test      : emailData.is_test
+        htmlText     : emailData.htmlText
     email_event_id = EmailEvents.update {_id: emailData._id}, updateData
 
     console.log "Updated event with _id #{emailData._id}"
     return email_event_id
+
 
 
   updateDateOfEmailEvent: (email_event_id, new_date) ->
@@ -80,7 +100,6 @@ class @EmailHelperShared
 
 
 
-
   hasCampaignInList : (campaigns, campaignName) ->
     isDefault = false
     for e in campaigns
@@ -88,6 +107,7 @@ class @EmailHelperShared
         isDefault = true
         break
     return isDefault
+
 
 
   buildEmailList: (recipients, campaigns) ->
@@ -119,7 +139,6 @@ class @EmailHelperShared
         emailData['o:campaign'] = emailEvent.campaigns[0]
       return emailData
     return null
-
 
 
 

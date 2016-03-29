@@ -10,13 +10,7 @@
           <input type="hidden" name="signature"  value="{{s3_signature}}">
           <input type="hidden" name="Content-Type" value="image/jpeg">
           <input name="file" class="upload-file-input upload-photo-btn-large transparent upload-file-input-html" type="file" accept=".html">
-          <input name="file" class="upload-file-input upload-photo-btn-large transparent upload-file-input-txt" type="file" accept=".txt">
-        {{#unless hasUploadedHtml}}
-          <button class="btn btn-info btn-md btn-select-file btn-select-file-html"><span>Upload HTML</span></button>
-        {{/unless}}
-        {{#unless hasUploadedPlainText}}
-          <button class="btn btn-info btn-md btn-select-file btn-select-file-txt"><span>Upload Plaintext</span></button>
-        {{/unless}}
+
         <input type="submit" class="hidden" value="Upload File to S3">
         {{/with}}
      {{/if}}

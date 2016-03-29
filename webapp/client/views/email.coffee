@@ -1,7 +1,4 @@
 Template.new_email.helpers
-  draft_id : ->
-    return EmailViewerHelper.currentEmailEventId()
-
   hasUploadedFile: ->
     eventId = EmailViewerHelper.currentEmailEventId()
     unless eventId
@@ -10,6 +7,23 @@ Template.new_email.helpers
     htmlfile = Files.findOne email_event_id: eventId, extension: FileHelper.HTML_TYPE
     return true if plainTextfile and htmlfile
     return false
+
+
+
+  draftEvent: ->
+    EmailEvents.findOne _id : EmailViewerHelper.currentEmailEventId()
+
+
+
+  htmlFile: ->
+    eventId = EmailViewerHelper.currentEmailEventId()
+    unless eventId
+      return false
+    Files.findOne email_event_id: eventId, extension: FileHelper.HTML_TYPE
+
+
+
+
 
 
 Template.new_email.events
@@ -25,15 +39,36 @@ Template.new_email.events
     unless hasTesting
       isOk = confirm "Are you sure you're ready to send?"
       return unless isOk
-    $ele.attr('disabled','disabled')
+    $ele.attr('disabled', 'disabled')
+
     Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
       unless err
-        EmailViewerHelper.findAndCreateNotExistingEmailEvent()
+        EmailViewerHelper.afterAddingToQueue(emailData)
         showBootstrapGrowl("Added email in queue")
-        reset_new_email_event_form($form)
       else
         showErrorBootstrapGrowl("Error when adding email in queue")
       $ele.removeAttr('disabled')
+
+
+
+  "click .reset": (e) ->
+    $ele = $(e.currentTarget)
+    $form = $ele.closest('.email-container')
+    EmailViewerHelper.resetDraftEmailEvent()
+    reset_new_email_event_form $form
+
+
+  "click .btn-select-file-html": ->
+    $('.file_upload_s3 input.upload-photo-btn-large.upload-file-input-html').click()
+
+
+  "click .delete-file-html": (e) ->
+    isOk = confirm("Do you want remove this file?")
+    if isOk
+      fileId = $(e.currentTarget).attr('data-id')
+      Files.remove _id : fileId
+      console.info "Remove file with id:", fileId
+
 
 
 
@@ -46,6 +81,8 @@ reset_new_email_event_form = ($form) ->
   $dueDate.datepicker 'setDate', next5MinutesTime
   $dueTime.timepicker 'setTime', next5MinutesTime
   $form.find('.test-email').removeAttr('checked')
+  $form.find('.event-plain-text').val('')
+
 
 
 Template.email_list.helpers
@@ -59,16 +96,18 @@ Template.email_list.helpers
     email_events = EmailEvents.find(query).fetch()
     return email_events
 
+
+
 Template.sent_email_list.helpers
   sent_email_events : ->
     currentDate = new Date()
     query =
       status: EmailHelperShared.SENT
       type: EmailHelperShared.ACTIVE
-      due_date:
-        $lte: currentDate
     email_sent_events = EmailEvents.find(query).fetch()
     return email_sent_events
+
+
 
 Template.email_box.helpers
   plainTextFile : ->
@@ -81,8 +120,16 @@ Template.email_box.helpers
     return false unless file
     return file
 
+
+
   date: ->
-    return moment(@due_date).format("MMM DD YYYY, hh:mm:ss")
+    return moment(@due_date).format("MMM D YYYY, h:m A")
+
+
+
+  timeFromNow: ->
+    timeTick.depend()
+    return DateHelperShared.getCountDown @due_date
 
 
 
@@ -96,7 +143,6 @@ Template.email_box.events
           console.log e
         else
           console.log "Removed email_event with id #{eventId} "
-
 
 
 
@@ -120,6 +166,15 @@ Template.email_box.events
     $form = $(e.target).closest('.email-box').find('.email-box-change-date')
     EmailViewerHelper.toggleDateTimeBoxInEmailBox($form)
 
+
+  'click .make-new': ->
+    self =  @
+    EmailViewerHelper.resetDraftEmailEvent()
+    Meteor.defer ->
+      EmailViewerHelper.makeNewFromQueuedOne self
+
+
+
 Template.file_attachment_box.helpers
   file_ext: ->
     dotIndex = @name.lastIndexOf(".")
@@ -128,3 +183,16 @@ Template.file_attachment_box.helpers
     else
       file_ext = ""
     file_ext
+
+
+Template.sent_email_box.helpers
+  displayDate: (date) ->
+    moment(date).format("MMM D YYYY, h:m A")
+
+
+  joinArray: (array) ->
+    return array.join(', ')
+
+
+  file: ->
+    Files.findOne(@file_ids[0])
