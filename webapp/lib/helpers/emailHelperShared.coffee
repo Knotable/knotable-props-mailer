@@ -57,7 +57,7 @@ class @EmailHelperShared
 
 
   findAndCreateIfNotExistingDraftEmail : ->
-    draftEmail = EmailEvents.findOne type: EmailHelperShared.DRAFT
+    draftEmail = EmailEvents.findOne type: EmailHelperShared.DRAFT, user_id: Meteor.userId()
     return draftEmail._id if draftEmail
     unless draftEmail
       return @createDraftEmailEvent(Meteor.userId(), EmailHelperShared.DRAFT)
