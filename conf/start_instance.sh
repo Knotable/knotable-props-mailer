@@ -23,10 +23,10 @@ forever start                     \
 
 
 # Setting up the cron job
-cron
-yes | cp /app/user_lists/cronjob /etc/cron.d/cronjob
-chmod 0644 /etc/cron.d/cronjob
-touch /knotable-var/cron.log
-crontab -u root /etc/cron.d/cronjob
+# cron
+# yes | cp /app/user_lists/cronjob /etc/cron.d/cronjob
+# chmod 0644 /etc/cron.d/cronjob
+# touch /knotable-var/cron.log
+# crontab -u root /etc/cron.d/cronjob
 
 tail -f /knotable-var/props_meteor_app/forever.log
