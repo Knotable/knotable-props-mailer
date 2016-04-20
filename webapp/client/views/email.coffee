@@ -1,3 +1,8 @@
+Template.new_email.onRendered ->
+  $('#email-edit').summernote()
+
+
+
 Template.new_email.helpers
   hasUploadedFile: ->
     eventId = EmailViewerHelper.currentEmailEventId()
@@ -58,8 +63,10 @@ Template.new_email.events
     reset_new_email_event_form $form
 
 
+
   "click .btn-select-file-html": ->
     $('.file_upload_s3 input.upload-photo-btn-large.upload-file-input-html').click()
+
 
 
   "click .delete-file-html": (e) ->
@@ -70,6 +77,14 @@ Template.new_email.events
       console.info "Remove file with id:", fileId
 
 
+
+  "click .btn-save": ->
+    fileId = $('.delete-file-html').attr('data-id')
+    Files.remove _id : fileId
+    date = moment().format('MM/DD-HH:mm')
+    name = "#{date}.html"
+    file = new File([$('#email-edit').summernote('code')], name, {type: "html"})
+    $('.file_upload_s3').fileupload 'add', files: [file]
 
 
 

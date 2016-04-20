@@ -7,48 +7,46 @@
 
 
 <template name="new_email">
-    <h4 class="col-sm-12">New Email Campaign</h4>
-
     <div class="email-container col-sm-12" data-id="{{draftEvent._id}}">
 
       <div class="row">
 
-        <div class="col-xs-10 col-xs-offset-1 col-md-6 col-md-offset-0 form-horizontal">
+        <div class="col-xs-10 col-xs-offset-1 col-md-4 col-md-offset-0 form-horizontal">
             <br>
             <br>
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1" for="from_address">From Address:</label>
-                <div class="col-sm-8">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="from_address">From</label>
+                <div class="col-sm-9">
                     <input type="text" class="form-control from-address input-gray" value="{{draftEvent.from}}"
                            name='from_address' id='from_address' placeholder="Real Name<email@domain.com>" />
                 </div>
             </div>
 
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1" for="subject">Subject:</label>
-                <div class="col-sm-8">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="subject">Subject</label>
+                <div class="col-sm-9">
                     <input type="text" class="form-control subject input-gray" value="{{draftEvent.subject}}"
                            name='subject' id='subject' placeholder="Greeting"/>
                 </div>
             </div>
 
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1" for="recipients">Recipients:</label>
-                <div class="col-sm-8">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="recipients">To</label>
+                <div class="col-sm-9">
                     <input type="text" class=" form-control recipients input-gray" value="{{draftEvent.recipients}}"
                            name='recipients' id='recipients' placeholder="abc@knotable.com"/>
                 </div>
             </div>
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1" for="campaign">Campaign:</label>
-                <div class="col-sm-8">
+                <label class="control-label col-sm-2 col-sm-offset-1" for="campaign">Campaign</label>
+                <div class="col-sm-9">
                     <input type="text" class="form-control input-gray" name='compaigns' id='compaigns' value="{{draftEvent.campaigns}}"/>
                 </div>
             </div>
 
             <div class="form-group">
                 <label class="control-label col-sm-2 col-sm-offset-1">Html File</label>
-                <div class="col-sm-8">
+                <div class="col-sm-9">
                     <div class="input-group">
                       <input type="text" class="form-control" placeholder="{{#if htmlFile}}{{htmlFile.name}}{{else}}Please upload an HTML file{{/if}}" readonly>
                       <span class="input-group-btn">
@@ -72,20 +70,18 @@
 
             <div class="form-group">
                 <label class="control-label col-sm-2 col-sm-offset-1" for="campaign">Plain Text</label>
-                <div class="col-sm-8">
+                <div class="col-sm-9">
                     <textarea class="form-control event-plain-text" style="min-height:200px">{{draftEvent.htmlText}}</textarea>
                 </div>
 
             </div>
 
             <div class="form-group">
-                <div class="col-sm-8 col-sm-offset-3">
+                <div class="col-sm-9 col-sm-offset-3">
                     <button class="btn btn-primary btn-sm btn-block reset">Reset</button>
                 </div>
             </div>
-        </div>
 
-        <div class="col-xs-10 col-xs-offset-1 col-md-6 col-md-offset-0">
             <div class="control-group calendar-body-wrapper">
                 <label class="control-label"></label>
                 <div class="controls">
@@ -102,6 +98,12 @@
                     </div>
                 </div>
             </div>
+
+        </div>
+
+        <div class="col-xs-10 col-xs-offset-1 col-md-8 col-md-offset-0">
+          <div id="email-edit"></div>
+          <button class="btn btn-primary btn-save">Save</button>
         </div>
 
       </div>

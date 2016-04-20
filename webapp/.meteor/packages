@@ -18,3 +18,5 @@ email
 twbs:bootstrap
 meteorhacks:npm
 npm-container
+fortawesome:fontawesome
+summernote:summernote
