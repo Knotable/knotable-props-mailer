@@ -17,5 +17,5 @@ Meteor.methods
     emailServerShared.sendEmailByEmailEventId email_event_id
 
 
-
-
+  getFileFromS3Url: (url) ->
+    emailServerShared.getFileFromS3Url url

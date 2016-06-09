@@ -1,6 +1,18 @@
 class @EmailServerShared
   self = @
   Fiber = Meteor.npmRequire('fibers')
+  Future = Meteor.npmRequire('fibers/future')
+
+
+
+  getFileFromS3Url: (url) ->
+    waitForFile = new Future()
+    file = null
+    fileApi.getFileContentByteFromUrlPath url, (error, result) ->
+      file = result
+      waitForFile.return()
+    waitForFile.wait()
+    return file
 
 
 
@@ -62,6 +74,7 @@ class @EmailServerShared
       else
         console.log "FINISHED sending email"
       return
+
 
 
 @emailServerShared = new EmailServerShared()

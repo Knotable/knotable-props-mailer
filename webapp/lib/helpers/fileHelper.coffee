@@ -38,7 +38,6 @@
 
 
 
-
   isHtmlFile: (fileName) ->
     type = @fileExtention fileName
     type is @HTML_TYPE
@@ -48,6 +47,25 @@
   isPlainTextFile: (fileName) ->
     type = @fileExtention fileName
     type is @PLAIN_TEXT_TYPE
+
+
+  setTextOfHtml: (file) ->
+    return unless file.type is "text/html"
+    return unless window.File and window.FileReader
+
+    reader = new FileReader()
+
+    reader.onload = (e) ->
+      $ele = $('<div/>').append($(e.target.result))
+      $ele.find('head, title, style, script, meta').remove()
+      htmlText = $ele.text().replace(/\s\s+/g, ' ').trim()
+
+      Tracker.nonreactive ->
+        eventId = EmailViewerHelper.currentEmailEventId()
+        EmailEvents.update {_id: eventId}, $set: htmlText: htmlText
+
+    reader.readAsText file
+
 
 
 
@@ -115,5 +133,3 @@
       ++u;
       break if bytes <= thresh || u >= 7
     return bytes.toFixed(1)+' '+units[u];
-
-

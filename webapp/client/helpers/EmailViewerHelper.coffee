@@ -54,14 +54,11 @@
     emailData.user_id = Meteor.userId()
 
     htmlFile = Files.findOne email_event_id: eventId, extension : FileHelper.HTML_TYPE
-    unless htmlFile
-      isOk = confirm "Are you sure you want to send a plaintext email?"
-      unless isOk
-        return
-    else
-      emailData.file_ids.push htmlFile._id
+    if htmlFile then emailData.file_ids.push htmlFile._id
 
     return emailData
+
+
 
   hasEmpty: ($element, msg) ->
     value = $element.val().trim()
@@ -72,6 +69,8 @@
     else
       $element.removeClass("input-error")
     return value
+
+
 
   isCorrectEmailAddress: ($element, msg) ->
     value = $element.val().trim()
@@ -84,6 +83,8 @@
       $element.removeClass("input-error")
     return value
 
+
+
   isCorrectEmailAddressWithRealName: ($element, msg) ->
     value = $element.val().trim()
     unless ValidationsHelper.isCorrectEmailWithRealName(value)
@@ -95,6 +96,8 @@
       $element.removeClass("input-error")
     return value
 
+
+
   isValidDate: ($element, msg) ->
     value = $element.val().trim()
     unless ValidationsHelper.isValidDate(value)
@@ -105,6 +108,8 @@
     else
       $element.removeClass("input-error")
     return value
+
+
 
   isValidTime: ($element, msg) ->
     value = $element.val().trim()
@@ -118,8 +123,10 @@
     return value
 
 
-  currentEmailEventId: ->
-    return Session.get "CURRENT_DRAFT_EVENT_ID"
+
+  currentEmailEventId: -> Session.get "CURRENT_DRAFT_EVENT_ID"
+
+
 
   currentEmailEvent: ->
     eventId = @currentEmailEventId()
@@ -127,6 +134,8 @@
       emailEvent = EmailEvents.findOne _id : eventId
       return emailEvent
     return {}
+
+
 
   validDateTimeInEmailBox: ($form) ->
     $dueDate =  $form.find(".due-date")
@@ -147,8 +156,11 @@
     return eventDate
 
 
+
   toggleDateTimeBoxInEmailBox: ($form) ->
     $form.toggleClass('hidden')
+
+
 
   findAndCreateNotExistingEmailEvent: ->
     Meteor.call "findAndCreateIfNotExistingDraftEmail", (e, eventId) ->
@@ -157,11 +169,15 @@
       else
         Session.set "CURRENT_DRAFT_EVENT_ID", eventId
 
+
+
   getEmailListOrCampaignFromString: (emailString) ->
     unless emailString
       return null
     emails = emailString.replace( /\n/g, " " ).split(/[ ,]+/)
     return _.uniq emails
+
+
 
   validRecipients: ($recipients) ->
     $recipients.removeClass("input-error")
@@ -181,6 +197,8 @@
         break
     return null unless isValid
     return emails
+
+
 
   validCampaign: ($compaigns) ->
     $compaigns.removeClass("input-error")
@@ -203,9 +221,32 @@
 
 
 
+  enqueueEmail: (emailData) ->
+    unless emailData.is_test
+      isOk = confirm "Are you sure you're ready to send? Click 'Cancel' to go back or 'Ok' to send."
+      return unless isOk
+    unless emailData.file_ids.length
+      isOk = confirm "This email is plaintext only. Are you sure you want to send a plaintext only email? Click 'Cancel' to go back or 'Ok' to send."
+      return unless isOk
+    $('.btn-send').attr('disabled', 'disabled')
+    EmailViewerHelper.addToQueue emailData
+
+
+
+  addToQueue: (emailData) ->
+    Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
+      unless err
+        EmailViewerHelper.afterAddToQueue emailData
+        showBootstrapGrowl("Added email in queue")
+      else
+        showErrorBootstrapGrowl("Error when adding email in queue")
+      $('.btn-send').removeAttr('disabled')
+
+
+
   # Add new draft EmailEvent
   # Copy content from old ones including file
-  afterAddingToQueue: (emailData) ->
+  afterAddToQueue: (emailData) ->
     draftId = emailHelperShared.createDraftEmailEvent Meteor.userId(), EmailHelperShared.DRAFT,
       campaigns  : emailData.campaigns
       recipients : emailData.recipients

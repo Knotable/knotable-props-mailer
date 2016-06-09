@@ -116,7 +116,7 @@ initFileuploader = ($form, options) ->
         created_time: new Date()
         email_event_id: eventId
 
-      setTextOfHtml file
+      FileHelper.setTextOfHtml file
 
       file_key = FileHelper.s3_key(file_id, fileName)
       $form.find("input[name=key]").val(file_key)
@@ -159,7 +159,6 @@ initFileuploader = ($form, options) ->
 
     done: (event, data) ->
       url = data.url + FileHelper.s3_key(data.file_id, data.file_name)
-      console.log "url:", url
       url = encodeURI url
       _this = @
 
@@ -176,24 +175,6 @@ initFileuploader = ($form, options) ->
           delete fileUploading[data.file_id]
           Session.set('fileUploading' , fileUploading)
 
-
-
-setTextOfHtml = (file) ->
-  return unless file.type is "text/html"
-  return unless window.File and window.FileReader
-
-  reader = new FileReader()
-
-  reader.onload = (e) ->
-    $ele = $('<div/>').append($(e.target.result))
-    $ele.find('head, title, style, script, meta').remove()
-    htmlText = $ele.text().replace(/\s\s+/g, ' ').trim()
-
-    Tracker.nonreactive ->
-      eventId = EmailViewerHelper.currentEmailEventId()
-      EmailEvents.update {_id: eventId}, $set: htmlText: htmlText
-
-  reader.readAsText file
 
 
 

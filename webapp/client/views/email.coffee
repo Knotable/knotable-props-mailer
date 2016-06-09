@@ -1,5 +1,10 @@
 Template.new_email.onRendered ->
   $('#email-edit').summernote()
+  eventId = EmailViewerHelper.currentEmailEventId()
+  file = Files.findOne email_event_id: eventId
+  if file
+    Meteor.call 'getFileFromS3Url', file.s3_url, (error, result) ->
+      $('#email-edit').summernote('code', result)
 
 
 
@@ -29,30 +34,14 @@ Template.new_email.helpers
 
 
 
-
-
 Template.new_email.events
   'click .btn-send': (e) ->
     e.stopPropagation()
     $ele = $(e.currentTarget)
-
     $form = $ele.closest('.email-container')
-    hasTesting = $form.find('.test-email').prop('checked')
     emailData = EmailViewerHelper.getEmailInfoFromForm($form)
     return unless emailData
-
-    unless hasTesting
-      isOk = confirm "Are you sure you're ready to send?"
-      return unless isOk
-    $ele.attr('disabled', 'disabled')
-
-    Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
-      unless err
-        EmailViewerHelper.afterAddingToQueue(emailData)
-        showBootstrapGrowl("Added email in queue")
-      else
-        showErrorBootstrapGrowl("Error when adding email in queue")
-      $ele.removeAttr('disabled')
+    EmailViewerHelper.enqueueEmail emailData
 
 
 
