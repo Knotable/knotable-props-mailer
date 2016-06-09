@@ -1,7 +1,20 @@
 <template name="email_container">
-  {{> new_email}}
-  {{> email_list}}
-  {{> sent_email_list}}
+  <ul class="nav nav-tabs">
+    <li class="active"><a data-toggle="tab" href="#tab-compose">Compose</a></li>
+    <li><a data-toggle="tab" href="#tab-queued">Queued</a></li>
+    <li><a data-toggle="tab" href="#tab-sent">Sent</a></li>
+  </ul>
+  <div class="tab-content">
+    <div id="tab-compose" class="tab-pane fade in active">
+      {{> new_email}}
+    </div>
+    <div id="tab-queued" class="tab-pane fade">
+      {{> email_list}}
+    </div>
+    <div id="tab-sent" class="tab-pane fade">
+      {{> sent_email_list}}
+    </div>
+  </div>
 </template>
 
 
@@ -115,11 +128,7 @@
 
 
 <template name="email_list">
-  <div class="email-event-list col-sm-5">
-    {{#if email_events}}
-      <h3>Emails In Queue</h3>
-    {{/if}}
-
+  <div class="email-event-list">
     <ul class="list-group">
       {{#each email_events}}
         <li class="list-group-item email-box" data-id="{{_id}}">
@@ -127,26 +136,21 @@
         </li>
       {{/each}}
     </ul>
-
   </div>
 </template>
 
 
 
 <template name="sent_email_list">
-    <div class="email-event-list col-sm-12">
-        {{#if sent_email_events.length}}
-            <h3>Sent Email Events</h3>
-        {{/if}}
-
-        <ul class="list-group">
-            {{#each sent_email_events}}
-                <li class="list-group-item email-box sent" data-id="{{_id}}">
-                    {{> sent_email_box }}
-                </li>
-            {{/each}}
-        </ul>
-    </div>
+  <div class="email-event-list">
+    <ul class="list-group">
+      {{#each sent_email_events}}
+        <li class="list-group-item email-box sent" data-id="{{_id}}">
+          {{> sent_email_box }}
+        </li>
+      {{/each}}
+    </ul>
+  </div>
 </template>
 
 
@@ -216,7 +220,7 @@
 
 
 <template name="file_attachment_box">
-    <div class="list-group-item file-box file-attachment-box" data-id="{{_id}}">
+    <div class="file-box file-attachment-box" data-id="{{_id}}">
         <a href="{{s3_url}}" title="{{name}}" file_id="{{_id}}" class="file-review" target="_blank" >Preview</a>
         <div class="file {{file_ext}}">
             <a href="{{s3_url}}" title="{{name}}" file_id="{{_id}}" class="file-url" target="_blank" >

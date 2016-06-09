@@ -137,7 +137,9 @@ h4 {
 }
 
 .email-event-list .list-group-item{
-  margin:8px 0;
+  margin: 20px 30px 0 0;
+  float: left;
+  width: 500px;
 }
 
 
@@ -527,4 +529,21 @@ input.my-small-width {
 
 .date-from-now select{
   width: auto;
+}
+
+.tab-content>.tab-pane{
+  display: none
+}
+
+.tab-content>.active{
+  display: block
+}
+
+.fade.in {
+  opacity: 1
+}
+
+.fade {
+  opacity: 0;
+  transition: opacity 0.15s linear
 }
