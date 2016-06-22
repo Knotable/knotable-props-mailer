@@ -11,9 +11,13 @@ Template.new_email.onRendered ->
       ['misc', ['fullscreen', 'codeview', 'undo', 'redo', 'help']]
     ]
   })
-  file = EmailViewerHelper.getHtmlFile()
-  Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
-    $('#email-edit').summernote('code', html)
+  eventId = EmailViewerHelper.currentEmailEventId()
+  if eventId
+    EmailViewerHelper.displayHtmlInEditor()
+  else
+    Meteor.call "findAndCreateIfNotExistingDraftEmail", (e, eventId) ->
+      Session.set "CURRENT_DRAFT_EVENT_ID", eventId
+      EmailViewerHelper.displayHtmlInEditor()
 
 
 

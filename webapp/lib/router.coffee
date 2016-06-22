@@ -10,7 +10,6 @@ if Meteor.isClient
   emailSubscribe = ->
     if Meteor.userId()
       Meteor.subscribe "sentEmailEventsAndFiles"
-      EmailViewerHelper.findAndCreateNotExistingEmailEvent()
 
   mailingListSubscribe = ->
     if Meteor.userId()

@@ -87,6 +87,13 @@
 
 
 
+  displayHtmlInEditor: ->
+    file = @getHtmlFile()
+    Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
+      $('#email-edit').summernote('code', html)
+
+
+
   hasEmpty: ($element, msg) ->
     value = $element.val().trim()
     unless value
@@ -186,15 +193,6 @@
 
   toggleDateTimeBoxInEmailBox: ($form) ->
     $form.toggleClass('hidden')
-
-
-
-  findAndCreateNotExistingEmailEvent: ->
-    Meteor.call "findAndCreateIfNotExistingDraftEmail", (e, eventId) ->
-      if e
-        console.log "Failed to findAndCreateIfNotExistingDraftEmail:", e
-      else
-        Session.set "CURRENT_DRAFT_EVENT_ID", eventId
 
 
 
