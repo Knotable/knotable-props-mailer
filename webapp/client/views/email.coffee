@@ -1,5 +1,16 @@
 Template.new_email.onRendered ->
-  $('#email-edit').summernote()
+  $('#email-edit').summernote({
+    toolbar: [
+      ['style', ['bold', 'italic', 'underline', 'clear']],
+      ['insert', ['link', 'table', 'hr']],
+      ['font', ['strikethrough', 'superscript', 'subscript']],
+      ['fontsize', ['fontsize']],
+      ['color', ['color']],
+      ['para', ['ul', 'ol', 'paragraph']],
+      ['height', ['height']],
+      ['misc', ['fullscreen', 'codeview', 'undo', 'redo', 'help']]
+    ]
+  })
   eventId = EmailViewerHelper.currentEmailEventId()
   file = Files.findOne email_event_id: eventId
   if file
@@ -42,6 +53,16 @@ Template.new_email.events
     emailData = EmailViewerHelper.getEmailInfoFromForm($form)
     return unless emailData
     EmailViewerHelper.enqueueEmail emailData
+
+
+
+  'click .btn-test-send': (e) ->
+    e.stopPropagation()
+    $ele = $(e.currentTarget)
+    $form = $ele.closest('.email-container')
+    emailData = EmailViewerHelper.getEmailInfoFromForm($form)
+    return unless emailData
+    EmailViewerHelper.sendTestEmail emailData
 
 
 
@@ -108,7 +129,7 @@ Template.sent_email_list.helpers
     query =
       status: EmailHelperShared.SENT
       type: EmailHelperShared.ACTIVE
-    email_sent_events = EmailEvents.find(query).fetch()
+    email_sent_events = EmailEvents.find(query, {sort: {due_date: -1 }}).fetch()
     return email_sent_events
 
 

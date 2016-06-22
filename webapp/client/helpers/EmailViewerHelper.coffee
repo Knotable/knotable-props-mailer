@@ -24,10 +24,7 @@
     eventId = @currentEmailEventId()
     emailData.file_ids = []
 
-    emailData.htmlText = $form.find('.event-plain-text').val().trim()
-    unless emailData.htmlText
-      showErrorBootstrapGrowl "Plain text required."
-      return
+    emailData.htmlText = ""
 
     $dueDate =  $form.find(".due-date")
     unless date = @isValidDate($dueDate, "Invalid Date")
@@ -179,6 +176,24 @@
 
 
 
+  sendTestEmail: (emailData) ->
+    emailData.due_date = new Date()
+    emailData.to = emailData.recipients
+    eventId = EmailViewerHelper.currentEmailEventId()
+    file = Files.findOne email_event_id: eventId
+    if !file then return showErrorBootstrapGrowl "Please upload a html file, or save one using the editor."
+    for r in emailData.to
+      if r.match( /(props|knotable)/ )
+        return showErrorBootstrapGrowl "Looks like you're trying to send a test email to a mailing list.
+                                        You can only send test emails to personal addresses."
+    Meteor.call 'getFileFromS3Url', file.s3_url, (error, result) ->
+      emailData.html = result
+      Meteor.call 'sendTestEmail', emailData, (e, result) ->
+        message = e || result
+        console.log message
+
+
+
   validRecipients: ($recipients) ->
     $recipients.removeClass("input-error")
     emails = @getEmailListOrCampaignFromString($recipients.val().trim())
@@ -222,12 +237,8 @@
 
 
   enqueueEmail: (emailData) ->
-    unless emailData.is_test
-      isOk = confirm "Are you sure you're ready to send? Click 'Cancel' to go back or 'Ok' to send."
-      return unless isOk
     unless emailData.file_ids.length
-      isOk = confirm "This email is plaintext only. Are you sure you want to send a plaintext only email? Click 'Cancel' to go back or 'Ok' to send."
-      return unless isOk
+      return showErrorBootstrapGrowl "Please upload a html file, or save one using the editor to send an email"
     $('.btn-send').attr('disabled', 'disabled')
     EmailViewerHelper.addToQueue emailData
 

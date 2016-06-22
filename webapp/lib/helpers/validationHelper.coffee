@@ -10,9 +10,10 @@
         subject = emailEvent.subject
         to = emailEvent.recipients
         fileIds = emailEvent.file_ids
-        htmlText = emailEvent.htmlText
 
-        unless _.isEmpty fileIds
+        if _.isEmpty fileIds
+          throw "No html file"
+        else
           htmlFile = Files.findOne _id: fileIds[0]
           unless FileHelper.isHtmlFile(htmlFile?.name)
             throw "Invalid file type: {htmlFile}"
@@ -25,9 +26,6 @@
 
         unless subject
           throw "Empty subject"
-
-        unless htmlText
-          throw "Empty Plain Text"
 
 
     catch e
@@ -84,5 +82,3 @@
         minutes = match[4]
         timeValid = hours + ':' + minutes
     return timeValid
-
-

@@ -10,7 +10,6 @@ class @S3Credentials
         console.error("S3Credentials.requestCredentials - requestCredentials method returned error: ", err)
         Session.set 's3credentials', {}
       else
-        console.log('S3Credentials.requestCredentials - got new S3 credentials:', credentials)
         credentials.obtained = true
         Session.set 's3credentials', credentials
         @scheduleRefresh(credentials.refreshTimeoutMilliseconds)
@@ -30,7 +29,6 @@ class @S3Credentials
 
   scheduleRefresh: (timeout) ->
     if timeout
-      console.log('S3Credentials.scheduleRefresh - scheduling credentials refresh in', timeout, 'ms')
       Meteor.setTimeout =>
         @requestCredentials()
       , timeout

@@ -2,8 +2,10 @@ Meteor.methods
   findAndCreateIfNotExistingDraftEmail: ->
     return emailHelperShared.findAndCreateIfNotExistingDraftEmail()
 
+
   createEmailEvent: (from, subject, recipients, campaigns, file_ids, due_date, user_id, type = @DRAFT) ->
     emailHelperShared.createEmailEvent(from, subject, recipients, campaigns, file_ids, due_date, user_id, type)
+
 
   removeEmailEvent: (email_event_id) ->
     emailHelperShared.removeEmailEvent(email_event_id)
@@ -19,3 +21,7 @@ Meteor.methods
 
   getFileFromS3Url: (url) ->
     emailServerShared.getFileFromS3Url url
+
+
+  sendTestEmail: (emailData) ->
+    emailServerShared.sendEmailWithCampaign emailData

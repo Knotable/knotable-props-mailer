@@ -58,7 +58,7 @@
             </div>
 
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1">Html File</label>
+                <label class="control-label col-sm-2 col-sm-offset-1">Email Html</label>
                 <div class="col-sm-9">
                     <div class="input-group">
                       <input type="text" class="form-control" placeholder="{{#if htmlFile}}{{htmlFile.name}}{{else}}Please upload an HTML file{{/if}}" readonly>
@@ -82,34 +82,39 @@
             </div>
 
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1" for="campaign">Plain Text</label>
-                <div class="col-sm-9">
-                    <textarea class="form-control event-plain-text" style="min-height:200px">{{draftEvent.htmlText}}</textarea>
-                </div>
-
-            </div>
-
-            <div class="form-group">
                 <div class="col-sm-9 col-sm-offset-3">
                     <button class="btn btn-primary btn-sm btn-block reset">Reset</button>
                 </div>
             </div>
 
+            <div class="control-group">
+              <hr>
+            </div>
+
+            <div class="control-group email-event-action">
+                <label class="control-label pull-left">Send a test email</label>
+                <div style="overflow: hidden; padding-left: 20px;">
+                    <button class="btn btn-primary btn-sm btn-block btn-test-send"><span>Send test</span></button>
+                </div>
+            </div>
+
+            <div class="control-group">
+              <hr>
+            </div>
+
             <div class="control-group calendar-body-wrapper">
-                <label class="control-label"></label>
+                <label class="control-label">Queue a real email</label>
+                <br><br>
                 <div class="controls">
                     {{> change_due_date_popup}}
                 </div>
             </div>
 
             <div class="control-group email-event-action">
-                <label class="control-label"></label>
-                <div class="controls">
-                    <button class="btn btn-primary btn-sm btn-send"><span>Add To Queue</span></button>
-                    <div class="checkbox chk-test-email">
-                        <label><input type="checkbox" value="false" class="input-gray test-email">Test?</label>
-                    </div>
-                </div>
+              <label class="control-label"></label>
+              <div class="controls">
+                  <button class="btn btn-red btn-sm btn-block btn-send"><span>Add Real Email To Queue</span></button>
+              </div>
             </div>
 
         </div>

@@ -7,6 +7,15 @@
   margin: 20px 0 0 0;
 }
 
+.btn-red {
+  background-color: #c9302c;
+  color: white
+}
+
+.btn-red:hover {
+  color: white
+}
+
 body{
   background-color: #f4f4f4
 }

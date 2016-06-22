@@ -5,13 +5,11 @@ if Meteor.isClient
     @next()
 
   afterLogin = ->
-    Router.go "admin"  if Meteor.userId()
+    Router.go "email"  if Meteor.userId()
 
   emailSubscribe = ->
     if Meteor.userId()
-      Meteor.subscribe "emailEventsAndFiles"
       Meteor.subscribe "sentEmailEventsAndFiles"
-
       EmailViewerHelper.findAndCreateNotExistingEmailEvent()
 
   mailingListSubscribe = ->
@@ -34,18 +32,13 @@ if Meteor.isClient
       layoutTemplate: "layout"
       onAfterAction: [afterLogin]
 
-    @route "admin",
-      path: "/admin"
-      template: "admin"
-      layoutTemplate: "layout"
-      onBeforeAction: [loginFilter]
-
     @route "email",
       path: "/email"
       template: "email_container"
       layoutTemplate: "layout"
       onBeforeAction: [loginFilter]
       onAfterAction: [emailSubscribe]
+      waitOn: -> Meteor.subscribe "emailEventsAndFiles"
 
     @route "list",
       path: "/list"
@@ -53,4 +46,3 @@ if Meteor.isClient
       layoutTemplate: "layout"
       onBeforeAction: [loginFilter]
       onAfterAction: [mailingListSubscribe]
-

@@ -50,7 +50,7 @@ class @EmailServerShared
             _.each toEmails, (email) ->
               oneEmailData = _.clone(emailData)
               oneEmailData.to = email
-              _sendEmailWithCampaign oneEmailData
+              emailServerShared.sendEmailWithCampaign oneEmailData
           .run()
           callback null
       ], (err, result) ->
@@ -62,18 +62,19 @@ class @EmailServerShared
 
 
 
-  _sendEmailWithCampaign = (emailData) ->
+  sendEmailWithCampaign: (emailData) ->
     mailgunApiUrl = "#{Meteor.settings.mailgun.api_base_url}/messages"
     console.log "Sending email with campaign. MailgunApiUrl: #{mailgunApiUrl}"
+    waitForEmailResult = new Future()
+    emailResult = null
     Meteor.http.post mailgunApiUrl, {
-      auth: 'api:' + Meteor.settings.mailgun.api_key
-      params: emailData
-    }, (error, result) ->
-      if error
-        console.log 'Error: ' + error
-      else
-        console.log "FINISHED sending email"
-      return
+        auth: 'api:' + Meteor.settings.mailgun.api_key
+        params: emailData
+      }, (error, result) ->
+        emailResult = error || result
+        waitForEmailResult.return()
+    waitForEmailResult.wait()
+    return emailResult
 
 
 
