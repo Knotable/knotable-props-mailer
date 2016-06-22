@@ -4,7 +4,7 @@ declare -a servers=(
 )
 
 cd ~/.ssh
-key=beta.pem
+key=beta-omega.pem
 
 DomainLong=props.knotable.com
 
