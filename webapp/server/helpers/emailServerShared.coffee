@@ -17,48 +17,17 @@ class @EmailServerShared
 
 
   sendEmailByEmailEventId: (email_event_id) ->
-    try
-      console.info "[sendEmailByEmailEventId called] email_event_id : '#{email_event_id}' ..."
-      emailEvent = EmailEvents.findOne _id : email_event_id
-      emailData = emailHelperShared.buildEmailDataFromEmailEvent(emailEvent)
-      return unless emailData
+    console.info "[sendEmailByEmailEventId called] email_event_id : '#{email_event_id}' ..."
+    emailData = EmailEvents.findOne _id : email_event_id
+    return unless emailData
 
-      htmlFile = null
-      emailData.text = emailEvent.htmlText
+    emailData['o:campaign'] = emailData.campaigns[0]
+    toEmails = emailData.recipients
 
-
-      fileIds = emailEvent.file_ids
-      files = Files.find({_id: {$in : fileIds}}).fetch()
-      _.each files, (file) ->
-        if FileHelper.HTML_TYPE is file.extension
-          htmlFile = file
-      async.waterfall [
-        (callback) ->
-          if htmlFile
-            fileApi.getFileContentByteFromUrlPath htmlFile.s3_url, (error, bodyContent) ->
-              emailData.html = bodyContent
-              callback null
-          else
-            callback null
-        (callback) ->
-          body = emailData.html || emailData.text
-          unless body
-            return callback "Invalid body content"
-          console.log "emailData:", emailData, "; emailEvent:", emailEvent
-          Fiber ->
-            toEmails = emailData.to
-            _.each toEmails, (email) ->
-              oneEmailData = _.clone(emailData)
-              oneEmailData.to = email
-              emailServerShared.sendEmailWithCampaign oneEmailData
-          .run()
-          callback null
-      ], (err, result) ->
-        console.warn "[ERROR] Failed to send email: " + err if err
-      return true
-    catch error
-      console.error error if error
-    return false
+    _.each toEmails, (email) ->
+      oneEmailData = _.clone(emailData)
+      oneEmailData.to = email
+      emailServerShared.sendEmailWithCampaign oneEmailData
 
 
 

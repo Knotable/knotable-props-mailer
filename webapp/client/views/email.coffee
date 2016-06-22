@@ -11,11 +11,9 @@ Template.new_email.onRendered ->
       ['misc', ['fullscreen', 'codeview', 'undo', 'redo', 'help']]
     ]
   })
-  eventId = EmailViewerHelper.currentEmailEventId()
-  file = Files.findOne email_event_id: eventId
-  if file
-    Meteor.call 'getFileFromS3Url', file.s3_url, (error, result) ->
-      $('#email-edit').summernote('code', result)
+  file = EmailViewerHelper.getHtmlFile()
+  Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
+    $('#email-edit').summernote('code', html)
 
 
 
@@ -50,19 +48,16 @@ Template.new_email.events
     e.stopPropagation()
     $ele = $(e.currentTarget)
     $form = $ele.closest('.email-container')
-    emailData = EmailViewerHelper.getEmailInfoFromForm($form)
-    return unless emailData
-    EmailViewerHelper.enqueueEmail emailData
+    EmailViewerHelper.sendEmail($form)
 
 
 
   'click .btn-test-send': (e) ->
     e.stopPropagation()
     $ele = $(e.currentTarget)
+    $ele.text('Sending')
     $form = $ele.closest('.email-container')
-    emailData = EmailViewerHelper.getEmailInfoFromForm($form, true)
-    return unless emailData
-    EmailViewerHelper.sendTestEmail emailData
+    EmailViewerHelper.sendEmail($form, $ele, true)
 
 
 

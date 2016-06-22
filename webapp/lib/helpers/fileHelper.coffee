@@ -58,11 +58,11 @@
     reader.onload = (e) ->
       $ele = $('<div/>').append($(e.target.result))
       $ele.find('head, title, style, script, meta').remove()
-      htmlText = $ele.text().replace(/\s\s+/g, ' ').trim()
+      html = $ele.text().replace(/\s\s+/g, ' ').trim()
 
       Tracker.nonreactive ->
         eventId = EmailViewerHelper.currentEmailEventId()
-        EmailEvents.update {_id: eventId}, $set: htmlText: htmlText
+        EmailEvents.update {_id: eventId}, $set: html: html
 
     reader.readAsText file
 

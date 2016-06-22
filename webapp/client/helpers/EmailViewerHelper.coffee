@@ -1,63 +1,89 @@
 @EmailViewerHelper =
-  getEmailInfoFromForm: ($form, instant) ->
-    emailData = {}
+  sendEmail: ($form, $button, test) ->
 
-    $fromAddress = $form.find("#from_address")
-    unless @isCorrectEmailAddressWithRealName $fromAddress, "Incorrect From email"
-      return
-    emailData.from =  $fromAddress.val().trim()
+    file = EmailViewerHelper.getHtmlFile()
+    if !file then return showErrorBootstrapGrowl "Please upload a html file, or save one using the editor."
+    self = @
 
-    $subject = $form.find("#subject")
-    unless emailData.subject = @hasEmpty $subject, "Please input Subject"
-      return
+    Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
 
-    $recipients = $form.find("#recipients")
-    emailData.recipients = @validRecipients($recipients)
-    unless emailData.recipients
-      return
+      if error then return showErrorBootstrapGrowl "There was a problem retriving the html file.
+                                                    Please upload a html file, or save one using the editor."
 
-    $compaigns = $form.find("#compaigns")
-    emailData.campaigns = @validCampaign($compaigns)
-    unless emailData.campaigns
-      return
+      emailData = {}
 
-    eventId = @currentEmailEventId()
-    emailData.file_ids = []
+      $fromAddress = $form.find("#from_address")
+      unless self.isCorrectEmailAddressWithRealName $fromAddress, "Incorrect From email"
+        return
+      emailData.from =  $fromAddress.val().trim()
 
-    emailData.htmlText = ""
-
-    $dueDate =  $form.find(".due-date")
-    unless date = @isValidDate($dueDate, "Invalid Date")
-      return
-
-
-    $dueTime =  $form.find(".due-time")
-    unless time = @isValidTime $dueTime, "Invalid Time"
-      return
-
-    if instant
-      eventDate = new Date
-      emailData.to = emailData.recipients
-    else
-      eventDate = new Date(date + " " + time)
-      currentTime = new Date()
-      next2MinutesLate = DateHelperShared.from_minutes(currentTime, 2)
-
-      if eventDate.getTime() < next2MinutesLate.getTime()
-        showErrorBootstrapGrowl "Please select time which is after 2 minutes from now."
+      $subject = $form.find("#subject")
+      unless emailData.subject = self.hasEmpty $subject, "Please input Subject"
         return
 
-    hasTesting = $form.find('.test-email').prop('checked')
-    emailData.is_test = Boolean hasTesting
+      $recipients = $form.find("#recipients")
+      emailData.recipients = self.validRecipients($recipients)
+      return unless emailData.recipients
+      if test
+        for r in emailData.recipients
+          if r.match( /(props|knotable)/ )
+            return showErrorBootstrapGrowl "Looks like you're trying to send a test email to a mailing list.
+                                            You can only send test emails to personal addresses."
+        emailData.to = emailData.recipients
 
-    emailData.due_date = eventDate
-    emailData._id = @currentEmailEventId()
-    emailData.user_id = Meteor.userId()
+      $campaigns = $form.find("#campaigns")
+      if test
+        emailData.campaigns = self.getEmailListOrCampaignFromString($campaigns.val().trim())
+      else
+        emailData.campaigns = self.validCampaign($campaigns)
+        return unless emailData.campaigns
 
-    htmlFile = Files.findOne email_event_id: eventId, extension : FileHelper.HTML_TYPE
-    if htmlFile then emailData.file_ids.push htmlFile._id
+      eventId = self.currentEmailEventId()
+      emailData.file_ids = []
 
-    return emailData
+      emailData.text = jQuery(html).text()
+      emailData.html = html
+
+      $dueDate =  $form.find(".due-date")
+      unless date = self.isValidDate($dueDate, "Invalid Date")
+        return
+
+
+      $dueTime =  $form.find(".due-time")
+      unless time = self.isValidTime $dueTime, "Invalid Time"
+        return
+
+      if test
+        eventDate = new Date
+        emailData.to = emailData.recipients
+      else
+        eventDate = new Date(date + " " + time)
+        currentTime = new Date()
+        next2MinutesLate = DateHelperShared.from_minutes(currentTime, 2)
+
+        if eventDate.getTime() < next2MinutesLate.getTime()
+          showErrorBootstrapGrowl "Please select time which is after 2 minutes from now."
+          return
+
+      emailData.due_date = eventDate
+      emailData._id = self.currentEmailEventId()
+      emailData.user_id = Meteor.userId()
+      emailData.file_ids.push file._id
+
+      if test
+        Meteor.call 'sendTestEmail', emailData, (e, result) ->
+          if e
+            showErrorBootstrapGrowl e
+          else
+            $button.text('Test sent')
+      else
+        self.enqueueEmail emailData
+
+
+
+  getHtmlFile: ->
+    eventId = EmailViewerHelper.currentEmailEventId()
+    Files.findOne email_event_id: eventId
 
 
 
@@ -180,22 +206,6 @@
 
 
 
-  sendTestEmail: (emailData) ->
-    eventId = EmailViewerHelper.currentEmailEventId()
-    file = Files.findOne email_event_id: eventId
-    if !file then return showErrorBootstrapGrowl "Please upload a html file, or save one using the editor."
-    for r in emailData.to
-      if r.match( /(props|knotable)/ )
-        return showErrorBootstrapGrowl "Looks like you're trying to send a test email to a mailing list.
-                                        You can only send test emails to personal addresses."
-    Meteor.call 'getFileFromS3Url', file.s3_url, (error, result) ->
-      emailData.html = result
-      Meteor.call 'sendTestEmail', emailData, (e, result) ->
-        message = e || result
-        console.log message
-
-
-
   validRecipients: ($recipients) ->
     $recipients.removeClass("input-error")
     emails = @getEmailListOrCampaignFromString($recipients.val().trim())
@@ -217,19 +227,19 @@
 
 
 
-  validCampaign: ($compaigns) ->
-    $compaigns.removeClass("input-error")
-    campaigns = @getEmailListOrCampaignFromString($compaigns.val().trim())
+  validCampaign: ($campaigns) ->
+    $campaigns.removeClass("input-error")
+    campaigns = @getEmailListOrCampaignFromString($campaigns.val().trim())
     if !campaigns or campaigns.length is 0
-      $compaigns.addClass("input-error")
-      $compaigns.focus()
+      $campaigns.addClass("input-error")
+      $campaigns.focus()
       showErrorBootstrapGrowl "Please input the campaign Id"
       return null
     isValid = true
     for e in campaigns
       unless e
-        $compaigns.addClass("input-error")
-        $compaigns.focus()
+        $campaigns.addClass("input-error")
+        $campaigns.focus()
         showErrorBootstrapGrowl "Incorrect campaign '#{e}' in Campaign "
         isValid = false
         break
@@ -266,7 +276,8 @@
       from       : emailData.from
       due_date   : emailData.due_date
       subject    : emailData.subject
-      htmlText   : emailData.htmlText
+      html       : emailData.html
+      text       : emailData.text
 
     newFileIds = []
     Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
@@ -294,7 +305,8 @@
           recipients : ""
           from       : ""
           subject    : ""
-          htmlText   : ""
+          html       : ""
+          text       : ""
       fileIds?.forEach (id) ->
         Files.remove {_id: id}
 
@@ -330,4 +342,5 @@
         subject    : emailData.subject
         due_date   : emailData.due_date
         file_ids   : newFileIds
-        htmlText   : emailData.htmlText
+        html       : emailData.html
+        text       : emailData.text

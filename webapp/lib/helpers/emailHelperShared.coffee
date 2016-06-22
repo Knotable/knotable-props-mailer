@@ -34,7 +34,8 @@ class @EmailHelperShared
     doc.file_ids   = options.file_ids   if options.file_ids
     doc.due_date   = options.due_date   if options.due_date
     doc.subject    = options.subject    if options.subject
-    doc.htmlText   = options.htmlText   if options.htmlText
+    doc.html       = options.html       if options.html
+    doc.text       = options.text       if options.text
 
     email_event_id = EmailEvents.insert doc
     return email_event_id
@@ -78,7 +79,8 @@ class @EmailHelperShared
         type         : type
         status       : status
         is_test      : emailData.is_test
-        htmlText     : emailData.htmlText
+        html         : emailData.html
+        text         : emailData.text
     email_event_id = EmailEvents.update {_id: emailData._id}, updateData
 
     console.log "Updated event with _id #{emailData._id}"
@@ -119,26 +121,6 @@ class @EmailHelperShared
 #      emails = _.filter emails, (e) -> e.lastIndexOf('@knotable.com') is -1
 
     return _.uniq emails
-
-
-  buildEmailDataFromEmailEvent : (emailEvent) ->
-    return null unless emailEvent
-    if ValidationsHelper.validateEmailParams(emailEvent)
-      emailData = {}
-      emailData.from = emailEvent.from
-      emailData.subject = emailEvent.subject
-      if emailEvent.is_test
-        return null if _.isEmpty emailEvent.recipients
-        emailData.to = emailEvent.recipients
-        emailData.subject = "[TEST: " +  emailEvent.campaigns.toString() + "] " +  emailEvent.subject
-        emailData['o:campaign'] = DEFAULT_CAMPAIGN.KTEST
-      else
-        emails = @buildEmailList(emailEvent.recipients, emailEvent.campaigns)
-        return null if _.isEmpty emails
-        emailData.to = emails
-        emailData['o:campaign'] = emailEvent.campaigns[0]
-      return emailData
-    return null
 
 
 
