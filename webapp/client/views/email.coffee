@@ -60,7 +60,7 @@ Template.new_email.events
     e.stopPropagation()
     $ele = $(e.currentTarget)
     $form = $ele.closest('.email-container')
-    emailData = EmailViewerHelper.getEmailInfoFromForm($form)
+    emailData = EmailViewerHelper.getEmailInfoFromForm($form, true)
     return unless emailData
     EmailViewerHelper.sendTestEmail emailData
 

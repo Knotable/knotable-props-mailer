@@ -1,5 +1,5 @@
 @EmailViewerHelper =
-  getEmailInfoFromForm: ($form) ->
+  getEmailInfoFromForm: ($form, instant) ->
     emailData = {}
 
     $fromAddress = $form.find("#from_address")
@@ -35,13 +35,17 @@
     unless time = @isValidTime $dueTime, "Invalid Time"
       return
 
-    eventDate = new Date(date + " " + time)
-    currentTime = new Date()
-    next2MinutesLate = DateHelperShared.from_minutes(currentTime, 2)
+    if instant
+      eventDate = new Date
+      emailData.to = emailData.recipients
+    else
+      eventDate = new Date(date + " " + time)
+      currentTime = new Date()
+      next2MinutesLate = DateHelperShared.from_minutes(currentTime, 2)
 
-    if eventDate.getTime() < next2MinutesLate.getTime()
-      showErrorBootstrapGrowl "Please select time which is after 2 minutes from now."
-      return
+      if eventDate.getTime() < next2MinutesLate.getTime()
+        showErrorBootstrapGrowl "Please select time which is after 2 minutes from now."
+        return
 
     hasTesting = $form.find('.test-email').prop('checked')
     emailData.is_test = Boolean hasTesting
@@ -177,8 +181,6 @@
 
 
   sendTestEmail: (emailData) ->
-    emailData.due_date = new Date()
-    emailData.to = emailData.recipients
     eventId = EmailViewerHelper.currentEmailEventId()
     file = Files.findOne email_event_id: eventId
     if !file then return showErrorBootstrapGrowl "Please upload a html file, or save one using the editor."
