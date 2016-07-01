@@ -7,8 +7,9 @@
 
     Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
 
-      if error then return showErrorBootstrapGrowl "There was a problem retriving the html file.
-                                                    Please upload a html file, or save one using the editor."
+      uploadRequest = "Please upload a html file, or save one using the editor."
+      if error then return showErrorBootstrapGrowl("There was a problem retriving the html file. " + uploadRequest)
+      if not jQuery(html).text() then return showErrorBootstrapGrowl("Your email has no content. " + uploadRequest)
 
       emailData = {}
 
@@ -44,26 +45,27 @@
       emailData.text = jQuery(html).text()
       emailData.html = html
 
-      $dueDate =  $form.find(".due-date")
-      unless date = self.isValidDate($dueDate, "Invalid Date")
-        return
-
-
-      $dueTime =  $form.find(".due-time")
-      unless time = self.isValidTime $dueTime, "Invalid Time"
-        return
-
       if test
         eventDate = new Date
         emailData.to = emailData.recipients
       else
-        eventDate = new Date(date + " " + time)
-        currentTime = new Date()
-        next2MinutesLate = DateHelperShared.from_minutes(currentTime, 2)
-
-        if eventDate.getTime() < next2MinutesLate.getTime()
-          showErrorBootstrapGrowl "Please select time which is after 2 minutes from now."
-          return
+        if $('.choose-absolute').prop('checked')
+          $dueDate =  $form.find(".due-date")
+          return unless date = self.isValidDate($dueDate, "Invalid Date")
+          $dueTime =  $form.find(".due-time")
+          return unless time = self.isValidTime $dueTime, "Invalid Time"
+          eventDate = new Date(date + " " + time)
+          return showErrorBootstrapGrowl "Please select a time greater than 2 minutes from now." if moment() > moment(eventDate).subtract(2, 'minutes')
+        else
+          $ele = $('.date-from-now')
+          minutes = $ele.find('select[name=Minutes]').val()
+          hours = $ele.find('select[name=Hours]').val()
+          days = $ele.find('select[name=Days]').val()
+          newDate = moment().add
+            minutes: minutes
+            hours: hours
+            days: days
+          eventDate = newDate.toDate()
 
       emailData.due_date = eventDate
       emailData._id = self.currentEmailEventId()
@@ -77,8 +79,8 @@
           else
             $button.text('Test sent')
       else
-        self.enqueueEmail emailData
-
+        $('.btn-send').attr('disabled', 'disabled')
+        EmailViewerHelper.addToQueue emailData
 
 
   getHtmlFile: ->
@@ -246,19 +248,12 @@
 
 
 
-  enqueueEmail: (emailData) ->
-    unless emailData.file_ids.length
-      return showErrorBootstrapGrowl "Please upload a html file, or save one using the editor to send an email"
-    $('.btn-send').attr('disabled', 'disabled')
-    EmailViewerHelper.addToQueue emailData
-
-
-
   addToQueue: (emailData) ->
     Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
       unless err
         EmailViewerHelper.afterAddToQueue emailData
         showBootstrapGrowl("Added email in queue")
+        $('a[href="#tab-queued"]').click()
       else
         showErrorBootstrapGrowl("Error when adding email in queue")
       $('.btn-send').removeAttr('disabled')

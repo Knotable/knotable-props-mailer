@@ -24,4 +24,4 @@ Meteor.methods
 
 
   sendTestEmail: (emailData) ->
-    emailServerShared.sendEmailWithCampaign emailData
+    emailServerShared.sendEmail emailData

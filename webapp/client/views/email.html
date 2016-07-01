@@ -104,9 +104,9 @@
 
             <div class="control-group calendar-body-wrapper">
                 <label class="control-label">Queue a real email</label>
-                <br><br>
+                <p>Select either option. Must be atleast 2 minutes in the future.</p>
                 <div class="controls">
-                    {{> change_due_date_popup}}
+                  {{> change_due_date_popup}}
                 </div>
             </div>
 
@@ -167,13 +167,13 @@
     </p>
 
     <div class="email-box-actions btn-group btn-group-justified" role="group">
-        <a href="#" class="btn btn-primary  change-date edit-email-event">
+        <!--<a href="#" class="btn btn-primary  change-date edit-email-event">
           <span class="glyphicon glyphicon-time" aria-hidden="true"></span> Change Date
 
         </a>
         <a href="#" class="btn btn-warning make-new" title="This will mark event as sent">
             <span class="glyphicon glyphicon-copy" aria-hidden="true"></span> Make New
-        </a>
+        </a>-->
         <a href="#" class="btn btn-danger  email-box-badge-delete" data-id="{{_id}}">
           <span class="glyphicon glyphicon-trash" aria-hidden="true"></span> Delete
         </a>

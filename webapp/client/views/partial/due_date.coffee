@@ -25,22 +25,25 @@ Template.change_due_date_popup.rendered = ->
 Template.change_due_date_popup.events
   'click .time-picker .show-time-picker': (e) ->
     $(e.currentTarget).closest('.due-time').timepicker('showWidget')
+    $('.choose-absolute').click()
 
 
 
   'focus .due-time': (e) ->
     $(e.currentTarget).closest('.due-time').timepicker('showWidget')
+    $('.choose-absolute').click()
 
 
 
-  'change .date-from-now select': (e, t) ->
-    $ele = t.$('.date-from-now')
-    minutes = $ele.find('select[name=Minutes]').val()
-    hours = $ele.find('select[name=Hours]').val()
-    days = $ele.find('select[name=Days]').val()
-    newDate = moment().add
-      minutes: minutes
-      hours: hours
-      days: days
-    t.$(".due-date-picker").datepicker 'setDate', newDate.toDate()
-    t.$(".due-time").timepicker 'setTime', newDate.toDate()
+  'focus .due-date': (e) -> $('.choose-absolute').click()
+
+
+
+  'click input.time-selector': (e, t) ->
+    t.$('.time-selector').prop('checked', false)
+    $(e.currentTarget).prop('checked', true)
+
+
+
+  'click .date-from-now select': (e, t) ->
+    $('.choose-relative').click()
