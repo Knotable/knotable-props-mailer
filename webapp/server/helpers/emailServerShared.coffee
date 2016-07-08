@@ -19,7 +19,8 @@ class @EmailServerShared
   sendEmailByEmailEventId: (email_event_id) ->
     console.info "[sendEmailByEmailEventId called] email_event_id : '#{email_event_id}' ..."
     emailData = EmailEvents.findOne _id : email_event_id
-    if !emailData or (!emailData.html or !emailData.html.length < 15)
+    if !emailData or !emailData.html
+      console.info "Not sending email because it has no content: _id: '#{emailData._id}'"
       msg = "Your email \"#{emailData.subject}\", scheduled to be sent at #{moment(emailData.due_date).format("h:mm a, DD/MM/YY")}, was not sent because it has no content"
       emailServerShared.sendEmail {
         to: emailData.from
@@ -42,7 +43,7 @@ class @EmailServerShared
 
   sendEmail: (emailData) ->
     mailgunApiUrl = "#{Meteor.settings.mailgun.api_base_url}/messages"
-    console.log "Sending email \"#{emailData.title}\""
+    console.info "Sending email \"#{emailData.title}\""
     waitForEmailResult = new Future()
     emailResult = null
     Meteor.http.post mailgunApiUrl, {
