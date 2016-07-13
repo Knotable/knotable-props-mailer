@@ -91,8 +91,9 @@
 
   displayHtmlInEditor: ->
     file = @getHtmlFile()
-    Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
-      $('#email-edit').summernote('code', html)
+    if file
+      Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
+        $('#email-edit').summernote('code', html)
 
 
 
