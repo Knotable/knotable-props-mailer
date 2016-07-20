@@ -11,12 +11,12 @@ apikey="key-ed04bdc21ac899b587517a9038f0639a"
 day=$(date -d "yesterday 13:00 " '+%d')
 month=$(date -d "yesterday 13:00 " '+%b')
 
-opens=$(curl -s --user 'api:'${apikey} -G -d "groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knoteblogapril/opens | tr '}' '\n' | grep "$day $month")
-clicks=$(curl -s --user 'api:'${apikey} -G -d "groupby=link&groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knoteblogapril/clicks | tr '}' '\n' | grep "$day $month")
-knotableopens=$(curl -s --user 'api:'${apikey} -G -d "groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knotablewapr/opens | tr '}' '\n' | grep "$day $month")
-knotableclicks=$(curl -s --user 'api:'${apikey} -G -d "groupby=link&groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knotablewapr/clicks | tr '}' '\n' | grep "$day $month")
+opens=$(curl -s --user 'api:'${apikey} -G -d "groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knoteblogjul/opens | tr '}' '\n' | grep "$day $month")
+clicks=$(curl -s --user 'api:'${apikey} -G -d "groupby=link&groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knoteblogjul/clicks | tr '}' '\n' | grep "$day $month")
+knotableopens=$(curl -s --user 'api:'${apikey} -G -d "groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knotablewjul/opens | tr '}' '\n' | grep "$day $month")
+knotableclicks=$(curl -s --user 'api:'${apikey} -G -d "groupby=link&groupby=day" https://api.mailgun.net/v3/props.knotable.com/campaigns/knotablewjul/clicks | tr '}' '\n' | grep "$day $month")
 
-body="Reading campaigns knotablewapr & knoteblogapril
+body="Reading campaigns knotablewjul & knoteblogjul
 for $(date -d "yesterday 13:00 " '+%Y-%m-%d')
 Knote Opens = ${opens}
 Knote Clicks = ${clicks}
