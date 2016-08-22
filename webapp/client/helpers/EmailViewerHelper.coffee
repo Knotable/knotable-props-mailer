@@ -34,10 +34,13 @@
 
       $campaigns = $form.find("#campaigns")
       if test
-        emailData.campaigns = self.getEmailListOrCampaignFromString($campaigns.val().trim())
+        emailData.campaigns = self.getArrayFromString($campaigns.val().trim())
       else
         emailData.campaigns = self.validCampaign($campaigns)
         return unless emailData.campaigns
+
+      $tags = $form.find("#tags")
+      emailData.tags = self.getArrayFromString($tags.val().trim())
 
       eventId = self.currentEmailEventId()
       emailData.file_ids = []
@@ -73,7 +76,9 @@
       emailData.file_ids.push file._id
 
       if test
-        Meteor.call 'sendTestEmail', emailData, (e, result) ->
+        includeCampaignsAndTags = $('#include-campaigns-and-tags').val()
+        console.log 'includeCampaignsAndTags: ' + includeCampaignsAndTags
+        Meteor.call 'sendTestEmail', emailData, includeCampaignsAndTags, (e, result) ->
           if e
             showErrorBootstrapGrowl e
           else
@@ -199,7 +204,7 @@
 
 
 
-  getEmailListOrCampaignFromString: (emailString) ->
+  getArrayFromString: (emailString) ->
     unless emailString
       return null
     emails = emailString.replace( /\n/g, " " ).split(/[ ,]+/)
@@ -209,7 +214,7 @@
 
   validRecipients: ($recipients) ->
     $recipients.removeClass("input-error")
-    emails = @getEmailListOrCampaignFromString($recipients.val().trim())
+    emails = @getArrayFromString($recipients.val().trim())
     if !emails or emails.length is 0
       $recipients.addClass("input-error")
       $recipients.focus()
@@ -230,7 +235,7 @@
 
   validCampaign: ($campaigns) ->
     $campaigns.removeClass("input-error")
-    campaigns = @getEmailListOrCampaignFromString($campaigns.val().trim())
+    campaigns = @getArrayFromString($campaigns.val().trim())
     if !campaigns or campaigns.length is 0
       $campaigns.addClass("input-error")
       $campaigns.focus()
@@ -266,6 +271,7 @@
   afterAddToQueue: (emailData) ->
     draftId = emailHelperShared.createDraftEmailEvent Meteor.userId(), EmailHelperShared.DRAFT,
       campaigns  : emailData.campaigns
+      tags       : emailData.tags
       recipients : emailData.recipients
       from       : emailData.from
       due_date   : emailData.due_date

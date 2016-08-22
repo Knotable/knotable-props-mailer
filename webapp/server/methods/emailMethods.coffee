@@ -23,5 +23,5 @@ Meteor.methods
     emailServerShared.getFileFromS3Url url
 
 
-  sendTestEmail: (emailData) ->
-    emailServerShared.sendEmail emailData
+  sendTestEmail: (emailData, includeCampaignsAndTags) ->
+    emailServerShared.sendTestEmail emailData, includeCampaignsAndTags

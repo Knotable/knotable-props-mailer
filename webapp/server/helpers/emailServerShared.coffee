@@ -16,7 +16,7 @@ class @EmailServerShared
 
 
 
-  sendEmailByEmailEventId: (email_event_id) ->
+  sendEmailByEmailEventId: (email_event_id, isTest) ->
     console.info "[sendEmailByEmailEventId called] email_event_id : '#{email_event_id}' ..."
     emailData = EmailEvents.findOne _id : email_event_id
     if !emailData or !emailData.html
@@ -31,7 +31,8 @@ class @EmailServerShared
       }
       return
 
-    emailData['o:campaign'] = emailData.campaigns[0]
+    emailData = @addCampaignsAndTags emailData
+
     toEmails = emailData.recipients
 
     _.each toEmails, (email) ->
@@ -55,6 +56,19 @@ class @EmailServerShared
         waitForEmailResult.return()
     waitForEmailResult.wait()
     return emailResult
+
+
+  sendTestEmail: (emailData, includeCampaignsAndTags) ->
+    if includeCampaignsAndTags
+      emailData = @addCampaignsAndTags emailData
+    @sendEmail emailData
+
+
+  addCampaignsAndTags: (emailData) ->
+    console.log emailData
+    emailData['o:campaign'] = emailData.campaigns[0]
+    emailData['o:tag'] = emailData.tags[0]
+    emailData
 
 
 

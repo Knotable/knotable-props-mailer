@@ -70,6 +70,7 @@ class @EmailHelperShared
       $set:
         from         : emailData.from
         campaigns    : emailData.campaigns
+        tags         : emailData.tags
         subject      : emailData.subject
         recipients   : emailData.recipients
         created_time : new Date()
