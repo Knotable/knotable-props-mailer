@@ -34,6 +34,7 @@ function launchServiceOnServer {
         -e MONGO_URL='mongodb://props_meteor_app-mongo'                 \
         -e HOSTNAME=$1                                                  \
         -p 80:80                                                        \
+        --restart always                                                \
         --link props_meteor_app-mongo:props_meteor_app-mongo            \
         -v /knotable-var:/logs                                          \
         registry.knotable.com:443/props_meteor_app                  ;   \
