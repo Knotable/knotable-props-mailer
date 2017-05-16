@@ -25,7 +25,7 @@
     "port": "587",
     "domain_suffix": "@props.knotable.com",
     "api_base_url": "https://api.mailgun.net/v3/props.knotable.com",
-    "api_key": "key-ed04bdc21ac899b587517a9038f0639a"
+    "api_key": "key-bdd2fe17d8bcfe57c1e76a62988eaaf5"
   },
   "apikey": "voyiUAkXCYLBsWUiee7bwvH9ypdya",
   "mailChimp": {
