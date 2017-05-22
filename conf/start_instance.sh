@@ -7,7 +7,7 @@ fi
 
 #settings consumed by node.js and meteor
 export METEOR_SETTINGS=`cat $knotable_config`
-export ROOT_URL='https://'$DOMAIN_LONG
+export ROOT_URL='http://'$DOMAIN_LONG
 export PORT=80
 
 cd /built_app
