@@ -1,4 +1,4 @@
-Fiber = Meteor.npmRequire('fibers')
+Fiber = require 'fibers'
 
 
 

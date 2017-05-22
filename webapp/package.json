@@ -1,0 +1,16 @@
+{
+  "name": "knotable-props",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "fibers": "^1.0.15",
+    "node-rsa": "^0.4.2",
+    "request": "^2.81.0"
+  }
+}

@@ -1,10 +1,10 @@
 class @FileApi
   self = @
-  request = Meteor.npmRequire("request")
+  request = require "request"
 
 
   constructor: ()->
-    request = Meteor.npmRequire("request")
+    request = require "request"
 
 
 

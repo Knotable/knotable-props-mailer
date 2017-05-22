@@ -1,7 +1,7 @@
 class @EmailServerShared
   self = @
-  Fiber = Meteor.npmRequire('fibers')
-  Future = Meteor.npmRequire('fibers/future')
+  Fiber = require 'fibers'
+  Future = require 'fibers/future'
 
 
 
