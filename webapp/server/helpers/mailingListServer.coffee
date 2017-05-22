@@ -1,7 +1,7 @@
 class @MailingListServer
   self = @
-  Fiber = Meteor.npmRequire('fibers')
-  Future = Meteor.npmRequire('fibers/future')
+  Fiber = require 'fibers'
+  Future = require 'fibers/future'
 
   MAILGUN_MAILING_LIST_URL_API = "https://api.mailgun.net/v3/lists"
 

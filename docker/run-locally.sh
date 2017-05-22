@@ -23,7 +23,7 @@ $sudo docker run --name props_meteor_app-mongo -d mongo:2.6 mongod --smallfiles
 
 $sudo docker rm -f props_meteor_app &> /dev/null
 
-$sudo docker run -it                                                      \
+$sudo docker run -d                                                 \
     --name props_meteor_app                                         \
     -e DOMAIN_LONG=localhost.com                                    \
     -e MONGO_URL='mongodb://props_meteor_app-mongo'                 \
