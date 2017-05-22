@@ -15,7 +15,6 @@ duongthienduc:meteor-bootstrap-growl
 coffeescript@1.2.3
 email@1.1.16
 twbs:bootstrap
-meteorhacks:npm
 fortawesome:fontawesome
 summernote:summernote
 meteor-base
