@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 declare -a servers=(
-  "props.knotable.com"
+  "props.knote.com"
 )
 
 cd ~/.ssh
 key=beta-omega.pem
 
-DomainLong=props.knotable.com
+DomainLong=props.knote.com
 
 
 function launchServiceOnServer {

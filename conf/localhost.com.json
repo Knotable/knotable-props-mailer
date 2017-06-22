@@ -21,8 +21,8 @@
   		"organization_name": "Knotable",
 	    "repo_url": "https://api.github.com/orgs/Knotable/repos",
 	    "repo_access": "knotable-ops",
-        "client_id": "7df4522b04f518e619e2",
-        "client_secret": "58695408fdc0b9222ade50938a06dcb6ff59e6ce"
+        "client_id": "03bad7134a1b5f2a1e19",
+        "client_secret": "b8fa51ff06960b3db6a7469b6a2405321b0d2dba"
   },
   "mailgun": {
     "username": "postmaster@props.knotable.com",
