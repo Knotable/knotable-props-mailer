@@ -19,12 +19,12 @@
       "client_secret": "b8fa51ff06960b3db6a7469b6a2405321b0d2dba"
   },
   "mailgun": {
-    "username": "postmaster@props.knotable.com",
-    "password": "e8ab3a2f53439215e12a92891e870415",
+    "username": "postmaster@props.knote.com",
+    "password": "f441283737320afa2bf6356acb1e38bc",
     "host": "smtp.mailgun.org",
     "port": "587",
-    "domain_suffix": "@props.knotable.com",
-    "api_base_url": "https://api.mailgun.net/v3/props.knotable.com",
+    "domain_suffix": "@props.knote.com",
+    "api_base_url": "https://api.mailgun.net/v3/props.knote.com",
     "api_key": "key-bdd2fe17d8bcfe57c1e76a62988eaaf5"
   },
   "apikey": "voyiUAkXCYLBsWUiee7bwvH9ypdya",
