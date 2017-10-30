@@ -18,23 +18,11 @@ Template.user_loggedout.events "click #login": loginFn
 
 Template.user_loggedin.events "click #logout": ->
   Meteor.logout (err) ->
-    console.log err
-
-
-
-Template.layout.helpers
-  selected_domain: ->
-    Session.get 'selected_domain'
+    console.log err if err
 
 
 
 Template.layout.events
-  'click a.admin-domain' : (e) ->
-    UiHelper.showLoading()
-    Session.set 'selected_domain',$(e.target).attr('data-domain')
-
-
-
   'click a.email-tab' : (e) ->
     Router.go("/email")
 
