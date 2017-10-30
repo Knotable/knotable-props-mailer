@@ -1,8 +1,4 @@
 Template.admin.helpers
-  domains: -> Meteor.settings.public.domains
-
-
-
   domain: ->
     "http://" + Session.get('selected_domain') + "/admin/master"
 

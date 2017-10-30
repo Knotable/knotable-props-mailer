@@ -1,10 +1,4 @@
 {
-  "public": {
-	  "domains": [
-     "staging.knotable.com",
-     "beta.knotable.com",
-     "dev.knotable.com"]
-  },
   "AWS": {
       "accessKeyId": "AKIAIQTU5YNIW7W5IN7A",
       "secretAccessKey": "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",
@@ -15,8 +9,8 @@
       "organization_name": "Knotable",
       "repo_url": "https://api.github.com/orgs/Knotable/repos",
       "repo_access": "knotable-ops",
-      "client_id": "03bad7134a1b5f2a1e19",
-      "client_secret": "b8fa51ff06960b3db6a7469b6a2405321b0d2dba"
+      "client_id": "99b557b551692a8fcea4",
+      "client_secret": "436b7440986a61999c79914925eed07c0cdd5ac4"
   },
   "mailgun": {
     "username": "postmaster@props.knote.com",

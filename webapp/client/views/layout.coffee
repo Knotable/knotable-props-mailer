@@ -23,11 +23,6 @@ Template.user_loggedin.events "click #logout": ->
 
 
 Template.layout.helpers
-  domains: ->
-    Meteor.settings.public.domains
-
-
-
   selected_domain: ->
     Session.get 'selected_domain'
 
