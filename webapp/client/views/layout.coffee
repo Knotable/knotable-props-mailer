@@ -6,7 +6,9 @@ loginFn = ->
       "read:org"
     ]
   , (err) ->
+    return unless err
     console.log err
+    showErrorBootstrapGrowl err.reason
 
 
 
