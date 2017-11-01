@@ -59,6 +59,7 @@ class @EmailServerShared
 
 
   sendTestEmail: (emailData, includeCampaignsAndTags) ->
+    emailData.to = emailData.recipients
     if includeCampaignsAndTags
       emailData = @addCampaignsAndTags emailData
     @sendEmail emailData

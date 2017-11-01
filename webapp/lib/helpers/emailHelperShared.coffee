@@ -79,7 +79,6 @@ class @EmailHelperShared
         user_id      : emailData.user_id
         type         : type
         status       : status
-        is_test      : emailData.is_test
         html         : emailData.html
         text         : emailData.text
     email_event_id = EmailEvents.update {_id: emailData._id}, updateData
