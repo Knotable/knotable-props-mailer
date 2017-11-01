@@ -28,9 +28,7 @@ class EmailEventScheduler
         AsyncHelper.each emailEvents, (e) ->
           eventId = e._id
           try
-            result = emailServerShared.sendEmailByEmailEventId eventId
-            console.log result
-            if result
+            if emailServerShared.sendEmailByEmailEventId eventId
               EmailEvents.update {_id: eventId}, {$set : {status: EmailHelperShared.SENT}}
           catch err
             console.log error
