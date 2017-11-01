@@ -34,28 +34,26 @@ class @EmailServerShared
     emailData = @addCampaignsAndTags emailData
 
     toEmails = emailData.recipients
-
-    _.each toEmails, (email) ->
+    results = {}
+    AsyncHelper.each _.uniq(toEmails), (email) ->
       oneEmailData = _.clone(emailData)
       oneEmailData.to = email
-      emailServerShared.sendEmail oneEmailData
+      try
+        results[email] = emailServerShared.sendEmail oneEmailData
+      catch err
+        console.error '[sendEmailByEmailEventId] Failed to send message to', email, err
+        results[email] = false
+    console.log "[sendEmailByEmailEventId] result", results
+    _.any _.values(results), (value) -> value
 
 
 
   sendEmail: (emailData) ->
-    mailgunApiUrl = "#{Meteor.settings.mailgun.api_base_url}/messages"
-    console.info "Sending email \"#{emailData.title}\""
-    waitForEmailResult = new Future()
-    emailResult = null
-    Meteor.http.post mailgunApiUrl, {
-        auth: 'api:' + Meteor.settings.mailgun.api_key
-        params: emailData
-      }, (error, result) ->
-        emailResult = error || result
-        console.log emailResult
-        waitForEmailResult.return()
-    waitForEmailResult.wait()
-    return emailResult
+    console.info "Sending to #{emailData.to} \"#{emailData.subject}\""
+    result = HTTP.post "#{Meteor.settings.mailgun.api_base_url}/messages",
+      auth: 'api:' + Meteor.settings.mailgun.api_key
+      params: emailData
+    result.data
 
 
   sendTestEmail: (emailData, includeCampaignsAndTags) ->
@@ -67,8 +65,9 @@ class @EmailServerShared
 
   addCampaignsAndTags: (emailData) ->
     console.log emailData
-    emailData['o:campaign'] = emailData.campaigns[0]
-    emailData['o:tag'] = emailData.tags[0]
+    { campaigns, tags } = emailData
+    emailData['o:campaign'] = campaigns[0] unless _.isEmpty campaigns
+    emailData['o:tag'] = tags[0] unless _.isEmpty tags
     emailData
 
 
