@@ -1,46 +1,50 @@
+accountHelper =
+  validateGithubAccess: (userGithubService) ->
+    { username, accessToken } = userGithubService
+    { organization_name, repo_access, team } = Meteor.settings.github
+    githubApi = new GithubApi accessToken, "User-Agent": "Meteor/1.0"
+    try
+    # For non developers we expect to see them in configured team
+      console.log "[#{username}] Try to access via team membership", team
+      requiredMembership = githubApi.getTeamMembership team.id, username
+      if requiredMembership.state isnt 'active'
+        throw new Meteor.Error 'Access denied: membership state is not active'
+    catch err
+      console.error "[#{username}] No access via team membership", team, err.message or err
+      console.log "[#{username}] Try to access as developer", { repo_access }
+      repos = githubApi.getOrganizationRepos organization_name
+      names = _.pluck repos, "name"
+      # Let developers have access to the app if they have access to configured repo
+      unless _.contains names, repo_access
+        console.error "[#{username}] No developers access allowed", { repo_access }
+        throw new Meteor.Error 403, "To login you should have access to github team or repository"
+    true
+
+
+
 Accounts.onCreateUser (options, user) ->
-  
-  # Request an access token from the Github OAuth.
-  accessToken = user.services.github.accessToken
-  result = undefined
-  profile = undefined
-  
-  # Using the accessToken fetched above, get the user information.
-  result = Meteor.http.get("https://api.github.com/user",
-    params:
-      access_token: accessToken
+  { accessToken } = user.services.github
+  githubApi = new GithubApi accessToken, "User-Agent": "Meteor/1.0"
+  user.profile = _.pick githubApi.user(),
+    "login", "name", "avatar_url", "url", "company", "blog", "location", "email", "bio", "html_url"
+  user
 
-    headers:
-      "User-Agent": "Meteor/1.0"
-  )
-  
-  # In case of an error, just throw and exception and exit.
-  throw result.error  if result.error
-  
-  # Build the profile object with the data we want to store about the 
-  # user in the Mongo Database.
-  profile = _.pick(result.data, "login", "name", "avatar_url", "url", "company", "blog", "location", "email", "bio", "html_url")
-  
-  # Fetch the all the repos using the accessToken
-  repos = Meteor.http.get(Meteor.settings.github.repo_url,
-    params:
-      access_token: accessToken
 
-    headers:
-      "User-Agent": "Meteor/1.0"
-  )
-  
-  # Extract only the names in an array for easy minupluation.
-  names = _.pluck(repos.data, "name")
-  
-  # If the user doesn't have the requested repo in his list of repos, then
-  # just quit.
-  # Otherwise, set the user and return it.
-  if names.indexOf(Meteor.settings.github.repo_access) is -1
-    throw new Error("You don't have access")
-  else
-    user.profile = profile
-    user
+
+Accounts.validateNewUser (user) ->
+  accountHelper.validateGithubAccess user.services.github
+
+
+
+Accounts.validateLoginAttempt (attempt) ->
+  return false unless attempt.allowed
+  return true if attempt.type is 'resume'
+  # Define some time frame to skip login validation for new
+  # users as far as we perform this check on account creation
+  return true if moment().subtract(1, 'minute').isBefore(attempt.user.createdAt)
+  accountHelper.validateGithubAccess attempt.user.services.github
+
+
 
 Accounts.registerLoginHandler (loginRequest) ->
   console.log "loginRequest:", loginRequest

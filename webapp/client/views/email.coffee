@@ -52,16 +52,35 @@ Template.new_email.events
     e.stopPropagation()
     $ele = $(e.currentTarget)
     $form = $ele.closest('.email-container')
-    EmailViewerHelper.sendEmail($form)
+    $(".input-error").removeClass 'input-error'
+    $('.btn-send', $form).attr('disabled', 'disabled')
+    EmailViewerHelper.sendEmail $form, (err, result) ->
+      $('.btn-send', $form).removeAttr('disabled')
+      if err
+        { selector } = err.details or {}
+        showErrorBootstrapGrowl err.reason
+        $(selector, $form).addClass('input-error').focus() if selector
+      else
+        $('a[href="#tab-queued"]').click()
+        showBootstrapGrowl("Added email in queue")
 
 
 
   'click .btn-test-send': (e) ->
     e.stopPropagation()
     $ele = $(e.currentTarget)
+    originalText = $ele.text()
     $ele.text('Sending')
     $form = $ele.closest('.email-container')
-    EmailViewerHelper.sendEmail($form, $ele, true)
+    $(".input-error").removeClass 'input-error'
+    EmailViewerHelper.sendTestEmail $form, (err, result) ->
+      $ele.text(originalText)
+      if err
+        { selector } = err.details or {}
+        showErrorBootstrapGrowl err.reason
+        $(selector, $form).addClass('input-error').focus() if selector
+      else
+        showBootstrapGrowl result
 
 
 

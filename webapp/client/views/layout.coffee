@@ -6,7 +6,9 @@ loginFn = ->
       "read:org"
     ]
   , (err) ->
+    return unless err
     console.log err
+    showErrorBootstrapGrowl err.reason
 
 
 
@@ -16,28 +18,11 @@ Template.user_loggedout.events "click #login": loginFn
 
 Template.user_loggedin.events "click #logout": ->
   Meteor.logout (err) ->
-    console.log err
-
-
-
-Template.layout.helpers
-  domains: ->
-    Meteor.settings.public.domains
-
-
-
-  selected_domain: ->
-    Session.get 'selected_domain'
+    console.log err if err
 
 
 
 Template.layout.events
-  'click a.admin-domain' : (e) ->
-    UiHelper.showLoading()
-    Session.set 'selected_domain',$(e.target).attr('data-domain')
-
-
-
   'click a.email-tab' : (e) ->
     Router.go("/email")
 

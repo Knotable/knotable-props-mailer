@@ -1,27 +1,58 @@
 Meteor.methods
   findAndCreateIfNotExistingDraftEmail: ->
+    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
     return emailHelperShared.findAndCreateIfNotExistingDraftEmail()
 
 
   createEmailEvent: (from, subject, recipients, campaigns, file_ids, due_date, user_id, type = @DRAFT) ->
+    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
     emailHelperShared.createEmailEvent(from, subject, recipients, campaigns, file_ids, due_date, user_id, type)
 
 
   removeEmailEvent: (email_event_id) ->
+    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
     emailHelperShared.removeEmailEvent(email_event_id)
 
 
   updateEmailEvent: (emailData, type = EmailHelperShared.DRAFT, status = EmailHelperShared.IN_QUEUE) ->
+    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
+    emailData = _.compactObject emailData
+    check emailData, Match.ObjectIncluding
+      _id: String
+      from: String
+      subject: MatchHelpers.nonEmptyString
+      recipients: [ String ]
+      html: MatchHelpers.nonEmptyString
+      text: MatchHelpers.nonEmptyString
+      file_ids: [ String ]
+      due_date: Date
+      campaigns: Match.Optional [ String ]
+      tags: Match.Optional [ String ]
+    emailData.user_id = Meteor.userId()
     emailHelperShared.updateEmailEvent(emailData, type, status)
 
 
-  sendEmailByEmailEventId: (email_event_id) ->
-    emailServerShared.sendEmailByEmailEventId email_event_id
-
 
   getFileFromS3Url: (url) ->
+    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
     emailServerShared.getFileFromS3Url url
 
 
   sendTestEmail: (emailData, includeCampaignsAndTags) ->
+    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
+    emailData = _.compactObject emailData
+    check emailData, Match.ObjectIncluding
+      _id: String
+      from: String
+      subject: MatchHelpers.nonEmptyString
+      recipients: [ String ]
+      html: MatchHelpers.nonEmptyString
+      text: MatchHelpers.nonEmptyString
+      file_ids: [ String ]
+      due_date: Date
+    if includeCampaignsAndTags
+      check emailData, Match.ObjectIncluding
+        campaigns: Match.Optional [ String ]
+        tags: Match.Optional [ String ]
+    emailData.user_id = Meteor.userId()
     emailServerShared.sendTestEmail emailData, includeCampaignsAndTags
