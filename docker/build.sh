@@ -37,18 +37,7 @@ fi
 
 
 
-# Set up environment for Mac and Linux
-if [ "$(uname)" == "Darwin" ]; then
-  #check docker stuff
-  source docker/docker_machine_setup.sh
-  if [ $result"" == "Failure" ] ; then exit ; fi
-else
-  $sudo docker login -u knotable -p d0ckerP^55 -e knotable@m.eluck.me registry.knotable.com:443
-fi
-
-
-
-
+$sudo docker login -u knotable -p d0ckerP^55 registry.knotable.com:443
 $sudo docker tag -f registry.knotable.com:443/meteord-webapp registry.knotable.com:443/meteord-old 2>/dev/null
 $sudo docker pull registry.knotable.com:443/meteord-webapp
 $sudo docker rmi -f registry.knotable.com:443/props_meteor_app

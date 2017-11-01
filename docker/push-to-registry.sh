@@ -17,5 +17,5 @@ fi
 
 
 
-$sudo docker login -u knotable -p d0ckerP^55 -e knotable@m.eluck.me registry.knotable.com:443
+$sudo docker login -u knotable -p d0ckerP^55 registry.knotable.com:443
 $sudo docker push registry.knotable.com:443/props_meteor_app

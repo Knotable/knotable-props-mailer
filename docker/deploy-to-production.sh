@@ -15,8 +15,8 @@ function launchServiceOnServer {
   "
   ssh -i $key ubuntu@$1 bash -c "                                       \
     echo 'Logging in...'                                            ;   \
-    sudo docker login -u knotable -p d0ckerP^55 -e knotable@m.eluck.me registry.knotable.com:443                        &&  \
-    sudo docker tag registry.knotable.com:443/props_meteor_app registry.knotable.com:443/props_meteor_app:old           ;   \
+    sudo docker login -u knotable -p d0ckerP^55 registry.knotable.com:443                                         &&  \
+    sudo docker tag registry.knotable.com:443/props_meteor_app registry.knotable.com:443/props_meteor_app:old     ;   \
     sudo docker pull registry.knotable.com:443/props_meteor_app     &&  \
                                                                         \
     sudo docker rm -f props_meteor_app-mongo &> /dev/null           ;   \
@@ -30,6 +30,7 @@ function launchServiceOnServer {
     sleep 2                                                         ;   \
     sudo docker run -d                                                  \
         --name props_meteor_app                                         \
+        --hostname $1                                                   \
         -e DOMAIN_LONG=$DomainLong                                      \
         -e MONGO_URL='mongodb://props_meteor_app-mongo'                 \
         -e HOSTNAME=$1                                                  \
