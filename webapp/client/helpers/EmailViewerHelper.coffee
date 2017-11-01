@@ -62,7 +62,6 @@
 
     runDependencies: (response, callback) ->
       async.each @dependsOn or [], (validator, next) ->
-        console.log validator.selector
         validator.validate next
       , (err) -> err and response(err) or callback()
 
