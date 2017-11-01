@@ -9,10 +9,10 @@ Fiber = require 'fibers'
   ###
   execWaterfall: (fnArray, cb) ->
     wrapFnArray = _.map fnArray, (fn) ->
-      Meteor.bindEnvironment () ->
+      Meteor.bindEnvironment ->
         fnCallback = _.find arguments, (_argument) ->
           _.isFunction _argument
-        fn.call this, fnCallback
+        fn.call @, fnCallback
     async.waterfall wrapFnArray, cb
 
 
@@ -23,3 +23,25 @@ Fiber = require 'fibers'
       fiber.run()
     ), momentDuration.asMilliseconds()
     Fiber.yield()
+
+
+
+  map: (items, iterator) ->
+    return [] if _.isEmpty items
+    internalIterator = (item, callback) ->
+      Meteor.defer Meteor.bindEnvironment ->
+        try
+          callback null, iterator item
+        catch err
+          callback err
+    fiber = Fiber.current
+    async.map items, internalIterator, (err, mappedItems) ->
+      fiber.throwInto err if err
+      fiber.run mappedItems
+    Fiber.yield()
+
+
+
+  each: (items, iterator) ->
+    AsyncHelper.map items, iterator
+    items
