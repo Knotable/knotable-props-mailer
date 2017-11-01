@@ -1,16 +1,19 @@
 {
   "AWS": {
-      "accessKeyId": "AKIAIQTU5YNIW7W5IN7A",
-      "secretAccessKey": "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",
-      "username": "knotable-app",
-      "bucket": "knotable-assets-app"
+    "accessKeyId": "AKIAIQTU5YNIW7W5IN7A",
+    "secretAccessKey": "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",
+    "username": "knotable-app",
+    "bucket": "knotable-assets-app"
   },
   "github": {
-      "organization_name": "Knotable",
-      "repo_url": "https://api.github.com/orgs/Knotable/repos",
-      "repo_access": "knotable-ops",
-      "client_id": "99b557b551692a8fcea4",
-      "client_secret": "436b7440986a61999c79914925eed07c0cdd5ac4"
+    "organization_name": "Knotable",
+    "repo_access": "knotable-ops",
+    "client_id": "99b557b551692a8fcea4",
+    "client_secret": "436b7440986a61999c79914925eed07c0cdd5ac4",
+    "team": {
+      "id": "1855277",
+      "name": "Email-Props"
+    }
   },
   "mailgun": {
     "username": "postmaster@props.knote.com",
