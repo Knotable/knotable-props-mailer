@@ -1,91 +1,171 @@
 @EmailViewerHelper =
-  sendEmail: ($form, $button, test) ->
+  validateEmail: ($form, test, callback) ->
+    validators = @getValidators $form, test
+    async.each validators, (validator, next) ->
+      validator.validate next
+    , (err) ->
+      return callback new Meteor.Error 400, err.error, { selector: err.selector } if err
 
-    file = EmailViewerHelper.getHtmlFile()
-    if !file then return showErrorBootstrapGrowl "Please upload a html file, or save one using the editor."
-    self = @
+      [ emailBody, from, subject, recipients, campaigns, tags, date ] = validators
+      file = emailBody.getValue()
+      callback null,
+        _id: EmailViewerHelper.currentEmailEventId()
+        from: from.getValue()
+        subject: subject.getValue()
+        recipients: recipients.getValue()
+        campaigns: campaigns.getValue()
+        tags: tags.getValue()
+        html: file.html
+        text: file.text
+        file_ids: [ file.id ]
+        due_date: date.getValue()
 
-    Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
 
-      uploadRequest = "Please upload a html file, or save one using the editor."
-      if error then return showErrorBootstrapGrowl("There was a problem retriving the html file. " + uploadRequest)
-      if not jQuery(html).text() then return showErrorBootstrapGrowl("Your email has no content. " + uploadRequest)
 
-      emailData = {}
+  sendTestEmail: ($form, callback) ->
+    @validateEmail $form, true, (err, emailData) ->
+      return callback err if err
+      includeCampaignsAndTags = $('#include-campaigns-and-tags').prop('checked')
+      Meteor.call 'sendTestEmail', emailData, includeCampaignsAndTags, (err, result) ->
+        return callback null, 'Queued on Mailgun. Thank you!' if result?.statusCode is 200
+        callback err, result
 
-      $fromAddress = $form.find("#from_address")
-      unless self.isCorrectEmailAddressWithRealName $fromAddress, "Incorrect From email"
-        return
-      emailData.from =  $fromAddress.val().trim()
 
-      $subject = $form.find("#subject")
-      unless emailData.subject = self.hasEmpty $subject, "Please input Subject"
-        return
 
-      $recipients = $form.find("#recipients")
-      emailData.recipients = self.validRecipients($recipients)
-      return unless emailData.recipients
-      if test
-        for r in emailData.recipients
-          if r.match( /(props|knotable)/ )
-            return showErrorBootstrapGrowl "Looks like you're trying to send a test email to a mailing list.
-                                            You can only send test emails to personal addresses."
-        emailData.to = emailData.recipients
+  sendEmail: ($form, callback) ->
+    @validateEmail $form, false, (err, emailData) ->
+      return callback err if err
+      Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
+        EmailViewerHelper.afterAddToQueue emailData unless err
+        callback err, result
 
-      $campaigns = $form.find("#campaigns")
-      if test
-        emailData.campaigns = self.getArrayFromString($campaigns.val().trim())
-      else
-        emailData.campaigns = self.validCampaign($campaigns)
-        return unless emailData.campaigns
 
-      $tags = $form.find("#tags")
-      emailData.tags = self.getArrayFromString($tags.val().trim())
 
-      eventId = self.currentEmailEventId()
-      emailData.file_ids = []
+  getBaseValidator: ->
+    withValidator: (response, validator) ->
+      @runDependencies response, =>
+        @getValue (err, value) =>
+          result =
+            error: err or validator value
+            selector: @selector
+          response result.error and result or null
 
-      emailData.text = jQuery(html).text()
-      emailData.html = html
+    getValue: (callback) ->
+      unless callback
+        return @_value if @_value
+        return @_value = @value() unless @value.length
+      return callback null, @_value if @_value
+      return callback null, @_value = @value() unless @value.length
+      @value (err, value) => callback err, @_value = value
 
-      if test
-        eventDate = new Date
-        emailData.to = emailData.recipients
-      else
-        if $('.choose-absolute').prop('checked')
-          $dueDate =  $form.find(".due-date")
-          return unless date = self.isValidDate($dueDate, "Invalid Date")
-          $dueTime =  $form.find(".due-time")
-          return unless time = self.isValidTime $dueTime, "Invalid Time"
-          eventDate = new Date(date + " " + time)
-          return showErrorBootstrapGrowl "Please select a time greater than 2 minutes from now." if moment() > moment(eventDate).subtract(2, 'minutes')
-        else
-          $ele = $('.date-from-now')
+    validate: (response) -> response?()
+
+    runDependencies: (response, callback) ->
+      async.each @dependsOn or [], (validator, next) ->
+        console.log validator.selector
+        validator.validate next
+      , (err) -> err and response(err) or callback()
+
+
+
+  getValidators: ($context, test) ->
+    msg = "Please upload a html file, or save one using the editor."
+    jqueryMixin = value: -> $(@selector, $context).val().trim()
+    stringToArrayMixin = value: -> EmailViewerHelper.getArrayFromString $(@selector).val().trim()
+
+
+    htmlFile = _.extend @getBaseValidator(),
+      value: (callback) ->
+        file = EmailViewerHelper.getHtmlFile()
+        return callback msg unless file
+        Meteor.call 'getFileFromS3Url', file.s3_url, (err, html) ->
+          callback err and msg, html and { html, id: file._id, text: jQuery(html).text() }
+      validate: (response) -> @withValidator response, (value) ->
+        msg if _.isEmpty(value.text)
+
+
+    from = _.extend @getBaseValidator(), jqueryMixin,
+      selector: '#from_address'
+      validate: (response) -> @withValidator response, (value) ->
+        "Incorrect From email" unless ValidationsHelper.isCorrectEmailWithRealName value
+
+
+    subject = _.extend @getBaseValidator(), jqueryMixin,
+      selector: '#subject'
+      validate: (response) -> @withValidator response, (value) ->
+        "Please input Subject" if _.isEmpty value
+
+
+    recipients = _.extend @getBaseValidator(), stringToArrayMixin,
+      selector: '#recipients'
+      validate: (response) -> @withValidator response, (emails) ->
+        return "Input emails which separated by commas or spaces in Recipients" if _.isEmpty emails
+        for email in emails
+          unless ValidationsHelper.isCorrectEmail email
+            return "Incorrect email '#{email}' in Recipients"
+          if test and /(props|knotable)/i.test email
+            return "Looks like you're trying to send a test email to a mailing list #{email}.
+                    You can only send test emails to personal addresses."
+
+
+    campaigns = _.extend @getBaseValidator(), stringToArrayMixin,
+      selector: '#campaigns'
+      validate: (response) -> @withValidator response, (campaigns) ->
+        return 'Please input the campaign Id' if not test and _.isEmpty campaigns
+
+
+    tags = _.extend @getBaseValidator(), stringToArrayMixin,
+      selector: '#tags'
+
+
+    unless test
+      dateTypeSwitcher = _.extend @getBaseValidator(),
+        selector: '.choose-absolute'
+        value: -> $(@selector, $context).prop('checked')
+
+
+      dueDate = _.extend @getBaseValidator(), jqueryMixin,
+        selector: '.due-date'
+        dependsOn: [ dateTypeSwitcher ]
+        validate: (response) -> @withValidator response, (date) ->
+          return unless dateTypeSwitcher.getValue()
+          'Invalid Date' unless ValidationsHelper.isValidDate date
+
+
+      dueTime = _.extend @getBaseValidator(), jqueryMixin,
+        selector: '.due-time'
+        dependsOn: [ dateTypeSwitcher ]
+        validate: (response) -> @withValidator response, (time) ->
+          return unless dateTypeSwitcher.getValue()
+          'Invalid Time' unless ValidationsHelper.checkAndGetValidTimeFromInput time
+
+
+      dateFromNow = _.extend @getBaseValidator(),
+        selector: '.date-from-now'
+        value: ->
+          $ele = $(@selector, $context)
           minutes = $ele.find('select[name=Minutes]').val()
           hours = $ele.find('select[name=Hours]').val()
           days = $ele.find('select[name=Days]').val()
-          newDate = moment().add
-            minutes: minutes
-            hours: hours
-            days: days
-          eventDate = newDate.toDate()
+          moment().add({ minutes, hours, days }).toDate()
 
-      emailData.due_date = eventDate
-      emailData._id = self.currentEmailEventId()
-      emailData.user_id = Meteor.userId()
-      emailData.file_ids.push file._id
 
-      if test
-        includeCampaignsAndTags = $('#include-campaigns-and-tags').val()
-        console.log 'includeCampaignsAndTags: ' + includeCampaignsAndTags
-        Meteor.call 'sendTestEmail', emailData, includeCampaignsAndTags, (e, result) ->
-          if e
-            showErrorBootstrapGrowl e
+      date = _.extend @getBaseValidator(),
+        dependsOn: [ dueDate, dueTime, dateFromNow, dateTypeSwitcher ]
+        value: ->
+          if dateTypeSwitcher.getValue()
+            new Date "#{dueDate.getValue()} #{dueTime.getValue()}"
           else
-            $button.text('Test sent')
-      else
-        $('.btn-send').attr('disabled', 'disabled')
-        EmailViewerHelper.addToQueue emailData
+            dateFromNow.getValue()
+        validate: (response) -> @withValidator response, (dateValue) ->
+          if dateTypeSwitcher.getValue() and moment() > moment(dateValue).subtract(2, 'minutes')
+            "Please select a time greater than 2 minutes from now."
+    else
+      date = _.extend @getBaseValidator(),
+        value: -> new Date
+
+    [ htmlFile, from, subject, recipients, campaigns, tags, date ]
+
 
 
   getHtmlFile: ->
@@ -99,44 +179,6 @@
     if file
       Meteor.call 'getFileFromS3Url', file.s3_url, (error, html) ->
         $('#email-edit').summernote('code', html)
-
-
-
-  hasEmpty: ($element, msg) ->
-    value = $element.val().trim()
-    unless value
-      $element.addClass("input-error")
-      $element.focus()
-      showErrorBootstrapGrowl msg
-    else
-      $element.removeClass("input-error")
-    return value
-
-
-
-  isCorrectEmailAddress: ($element, msg) ->
-    value = $element.val().trim()
-    unless ValidationsHelper.isCorrectEmail(value)
-      $element.addClass("input-error")
-      $element.focus()
-      showErrorBootstrapGrowl msg
-      value = null
-    else
-      $element.removeClass("input-error")
-    return value
-
-
-
-  isCorrectEmailAddressWithRealName: ($element, msg) ->
-    value = $element.val().trim()
-    unless ValidationsHelper.isCorrectEmailWithRealName(value)
-      $element.addClass("input-error")
-      $element.focus()
-      showErrorBootstrapGrowl msg
-      value = null
-    else
-      $element.removeClass("input-error")
-    return value
 
 
 
@@ -208,61 +250,8 @@
     unless emailString
       return null
     emails = emailString.replace( /\n/g, " " ).split(/[ ,]+/)
-    return _.uniq emails
-
-
-
-  validRecipients: ($recipients) ->
-    $recipients.removeClass("input-error")
-    emails = @getArrayFromString($recipients.val().trim())
-    if !emails or emails.length is 0
-      $recipients.addClass("input-error")
-      $recipients.focus()
-      showErrorBootstrapGrowl "Input emails which separated by commas or spaces in Recipients"
-      return null
-    isValid = true
-    for e in emails
-      unless ValidationsHelper.isCorrectEmail(e)
-        $recipients.addClass("input-error")
-        $recipients.focus()
-        showErrorBootstrapGrowl "Incorrect email '#{e}' in Recipients "
-        isValid = false
-        break
-    return null unless isValid
-    return emails
-
-
-
-  validCampaign: ($campaigns) ->
-    $campaigns.removeClass("input-error")
-    campaigns = @getArrayFromString($campaigns.val().trim())
-    if !campaigns or campaigns.length is 0
-      $campaigns.addClass("input-error")
-      $campaigns.focus()
-      showErrorBootstrapGrowl "Please input the campaign Id"
-      return null
-    isValid = true
-    for e in campaigns
-      unless e
-        $campaigns.addClass("input-error")
-        $campaigns.focus()
-        showErrorBootstrapGrowl "Incorrect campaign '#{e}' in Campaign "
-        isValid = false
-        break
-    return null unless isValid
-    return campaigns
-
-
-
-  addToQueue: (emailData) ->
-    Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
-      unless err
-        EmailViewerHelper.afterAddToQueue emailData
-        showBootstrapGrowl("Added email in queue")
-        $('a[href="#tab-queued"]').click()
-      else
-        showErrorBootstrapGrowl("Error when adding email in queue")
-      $('.btn-send').removeAttr('disabled')
+    console.log emails
+    return _.uniq _.compact emails
 
 
 
