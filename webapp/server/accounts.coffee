@@ -32,14 +32,13 @@ Accounts.onCreateUser (options, user) ->
 
 
 Accounts.validateNewUser (user) ->
-  console.log 'Accounts.validateNewUser'
   accountHelper.validateGithubAccess user.services.github
 
 
 
 Accounts.validateLoginAttempt (attempt) ->
-  console.log 'Accounts.validateLoginAttempt'
   return false unless attempt.allowed
+  return true if attempt.type is 'resume'
   # Define some time frame to skip login validation for new
   # users as far as we perform this check on account creation
   return true if moment().subtract(1, 'minute').isBefore(attempt.user.createdAt)
