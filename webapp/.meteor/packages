@@ -32,3 +32,5 @@ check
 standard-minifier-css
 standard-minifier-js
 ecmascript
+meteorhacks:kadira
+meteorhacks:zones
