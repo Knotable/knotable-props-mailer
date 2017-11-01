@@ -57,6 +57,10 @@ localstorage@1.0.11
 logging@1.1.14
 meteor@1.2.16
 meteor-base@1.0.4
+meteorhacks:inject-initial@1.0.4
+meteorhacks:kadira@2.30.3
+meteorhacks:meteorx@1.4.1
+meteorhacks:zones@1.6.0
 minifier-css@1.2.13
 minifier-js@1.1.13
 minimongo@1.0.17
@@ -66,6 +70,7 @@ modules@0.7.5
 modules-runtime@0.7.8
 mongo@1.1.10
 mongo-id@1.0.5
+mongo-livedata@1.0.12
 mrt:async@0.2.0
 mrt:jquery-ui@1.9.2
 mrt:moment@2.8.1
