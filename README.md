@@ -1,7 +1,11 @@
-# knotable-props-mailer
+# knotable-props-mailer aka props.knote.com app
+
 This repository is for the "knotable-props" application
 
-Instructions go here folks!
-@evgeny how to deploy?#
+This app was built by Evgeny and maintained recently by Yaroslav
 
-hello i am felix and i need some info
+The app is hosted at http://props.knote.com and routes through mailgun.com
+
+Issues and how-tos for the Knotable, Knote, and Knotel staff users are at https://knote.com/p/P8c0nW/How-to-write-emails-using-props-10th-installment#
+
+
