@@ -157,7 +157,7 @@ Template.email_box.helpers
     return file
 
   htmlFile : ->
-    file = Files.findOne email_event_id : @_id, extension: FileHelper.HTML_TYPE
+    file = Files.findOne @file_ids?[0]
     return false unless file
     return file
 

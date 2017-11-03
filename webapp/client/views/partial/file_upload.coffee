@@ -126,9 +126,7 @@ initFileuploader = ($form, options) ->
       data.file_id = file_id
       data.file_name = fileName
       data.file_ext = fileExt
-
-      if options.beforeSubmit?.call(@, event, data) != false
-        data.submit()
+      data.submit()
 
 
     submit: options.onSubmit
