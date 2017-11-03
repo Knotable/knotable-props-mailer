@@ -264,7 +264,6 @@
     unless emailString
       return null
     emails = emailString.replace( /\n/g, " " ).split(/[ ,]+/)
-    console.log emails
     return _.uniq _.compact emails
 
 
