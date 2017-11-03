@@ -81,10 +81,11 @@ class @EmailHelperShared
         status       : status
         html         : emailData.html
         text         : emailData.text
-    email_event_id = EmailEvents.update {_id: emailData._id}, updateData
-
+        is_test      : Boolean emailData.is_test
+    updateData.$set.status = status unless emailData.is_test
+    EmailEvents.update {_id: emailData._id}, updateData
     console.log "Updated event with _id #{emailData._id}"
-    return email_event_id
+    return emailData._id
 
 
 

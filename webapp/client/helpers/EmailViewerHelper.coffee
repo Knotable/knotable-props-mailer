@@ -7,7 +7,7 @@
       return callback new Meteor.Error 400, err.error, { selector: err.selector } if err
 
       [ emailBody, from, subject, recipients, campaigns, tags, date ] = validators
-      file = emailBody.getValue()
+      event = EmailEvents.findOne EmailViewerHelper.currentEmailEventId()
       callback null,
         _id: EmailViewerHelper.currentEmailEventId()
         from: from.getValue()
@@ -15,19 +15,18 @@
         recipients: recipients.getValue()
         campaigns: campaigns.getValue()
         tags: tags.getValue()
-        html: file.html
-        text: file.text
-        file_ids: [ file.id ]
+        html: emailBody.getValue().html
         due_date: date.getValue()
+        file_ids: event.file_ids
 
 
 
   sendTestEmail: ($form, callback) ->
     @validateEmail $form, true, (err, emailData) ->
       return callback err if err
-      includeCampaignsAndTags = $('#include-campaigns-and-tags').prop('checked')
-      Meteor.call 'sendTestEmail', emailData, includeCampaignsAndTags, (err, result) ->
-        return callback null, 'Queued on Mailgun. Thank you!' if result?.statusCode is 200
+      EmailViewerHelper.writeContentIntoFile emailData.html if _.isEmpty emailData.file_ids
+      Meteor.call 'sendTestEmail', emailData, false, (err, result) ->
+        return callback null, 'Queued on Mailgun. Thank you!' if result
         callback err, result
 
 
@@ -35,6 +34,7 @@
   sendEmail: ($form, callback) ->
     @validateEmail $form, false, (err, emailData) ->
       return callback err if err
+      EmailViewerHelper.writeContentIntoFile emailData.html if _.isEmpty emailData.file_ids
       Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
         EmailViewerHelper.afterAddToQueue emailData unless err
         callback err, result
@@ -68,19 +68,17 @@
 
 
   getValidators: ($context, test) ->
-    msg = "Please upload a html file, or save one using the editor."
     jqueryMixin = value: -> $(@selector, $context).val().trim()
     stringToArrayMixin = value: -> EmailViewerHelper.getArrayFromString $(@selector).val().trim()
 
 
     htmlFile = _.extend @getBaseValidator(),
-      value: (callback) ->
-        file = EmailViewerHelper.getHtmlFile()
-        return callback msg unless file
-        Meteor.call 'getFileFromS3Url', file.s3_url, (err, html) ->
-          callback err and msg, html and { html, id: file._id, text: jQuery(html).text() }
+      selector: '.note-editor'
+      value: ->
+        html: $('#email-edit').summernote 'code'
+        isEmpty: $('#email-edit').summernote 'isEmpty'
       validate: (response) -> @withValidator response, (value) ->
-        msg if _.isEmpty(value.text)
+        "Message content can't be empty. \nPlease enter some content into composer"  if value.isEmpty
 
 
     from = _.extend @getBaseValidator(), jqueryMixin,
@@ -164,6 +162,23 @@
         value: -> new Date
 
     [ htmlFile, from, subject, recipients, campaigns, tags, date ]
+
+
+
+  writeContentIntoFile: (content) ->
+    email = EmailEvents.findOne EmailViewerHelper.currentEmailEventId(), fields: file_ids: 1
+    Files.remove email.file_ids?[0] if email
+    date = moment().format('MM/DD-HH:mm')
+    name = "#{date}.html"
+    file = new File([content], name, {type: "text/html"})
+    $('.file_upload_s3').fileupload 'add', files: [file]
+
+
+
+  getCurrentEventContent: ->
+    eventId = EmailViewerHelper.currentEmailEventId()
+    EmailEvents.findOne(eventId, fields: html: 1)?.html or ''
+
 
 
 
@@ -275,7 +290,7 @@
       fileId = Files.insert file
       newFileIds.push fileId
 
-    EmailEvents.update {_id: draftId}, {$set:{file_ids: newFileIds}}
+    EmailEvents.update {_id: draftId}, {$set: {file_ids: newFileIds}}
     Meteor.subscribe "fileByEmailEventId", draftId
     Session.set "CURRENT_DRAFT_EVENT_ID", draftId
 

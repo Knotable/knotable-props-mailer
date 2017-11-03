@@ -22,15 +22,14 @@ Meteor.methods
       from: String
       subject: MatchHelpers.nonEmptyString
       recipients: [ String ]
-      html: MatchHelpers.nonEmptyString
-      text: MatchHelpers.nonEmptyString
-      file_ids: [ String ]
+      html: MatchHelpers.nonEmptyHtmlString
       due_date: Date
       campaigns: Match.Optional [ String ]
       tags: Match.Optional [ String ]
+    emailData.text = HtmlHelperShared.htmlToText emailData.html
     emailData.user_id = Meteor.userId()
+    emailData.is_test = false
     emailHelperShared.updateEmailEvent(emailData, type, status)
-
 
 
   getFileFromS3Url: (url) ->
@@ -46,13 +45,14 @@ Meteor.methods
       from: String
       subject: MatchHelpers.nonEmptyString
       recipients: [ String ]
-      html: MatchHelpers.nonEmptyString
-      text: MatchHelpers.nonEmptyString
-      file_ids: [ String ]
+      html: MatchHelpers.nonEmptyHtmlString
       due_date: Date
     if includeCampaignsAndTags
       check emailData, Match.ObjectIncluding
         campaigns: Match.Optional [ String ]
         tags: Match.Optional [ String ]
+    emailData.text = HtmlHelperShared.htmlToText emailData.html
     emailData.user_id = Meteor.userId()
+    emailData.is_test = true
+    emailHelperShared.updateEmailEvent emailData
     emailServerShared.sendTestEmail emailData, includeCampaignsAndTags

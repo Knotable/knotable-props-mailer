@@ -1,6 +1,4 @@
 @FileHelper =
-  REGEXP_ALLOWED_GRAPHIC_EXTENTIONS: /\.(png|gif|jpg|jpeg|bmp)$/i
-
   HTML_TYPE : 'html'
   PLAIN_TEXT_TYPE : 'txt'
 
@@ -15,29 +13,6 @@
 
 
 
-  fileNameWithoutExtension: (fileName) ->
-    index = fileName.lastIndexOf('.')
-    if index > 0
-      return fileName.substring(0, index)
-    return fileName
-
-
-
-# Check if file type is graphic file that Knotable support
-# It only checks extension of file name, not content of file.
-  isGraphic: (fileName) ->
-    @REGEXP_ALLOWED_GRAPHIC_EXTENTIONS.test fileName if fileName
-
-
-  isGraphicMime: (type) ->
-    type in ['image/jpeg', 'image/png', 'image/jpg', 'image/gif']
-
-
-  isImage: (name, type) ->
-    @isGraphic(name) && @isGraphicMime(type)
-
-
-
   isHtmlFile: (fileName) ->
     type = @fileExtention fileName
     type is @HTML_TYPE
@@ -49,23 +24,21 @@
     type is @PLAIN_TEXT_TYPE
 
 
+
   setTextOfHtml: (file) ->
     return unless file.type is "text/html"
     return unless window.File and window.FileReader
-
+    eventId = Tracker.nonreactive -> EmailViewerHelper.currentEmailEventId()
     reader = new FileReader()
-
     reader.onload = (e) ->
-      $ele = $('<div/>').append($(e.target.result))
+      html = e.target.result
+      $ele = $('<div/>').append($(html))
       $ele.find('head, title, style, script, meta').remove()
-      html = $ele.text().replace(/\s\s+/g, ' ').trim()
-
-      Tracker.nonreactive ->
-        eventId = EmailViewerHelper.currentEmailEventId()
-        EmailEvents.update {_id: eventId}, $set: html: html
+      $ele = $ele.find('body') if $ele.find('body').length
+      text = $ele.text().replace(/\s\s+/g, ' ').trim()
+      EmailEvents.update eventId, $set: { html, text }
 
     reader.readAsText file
-
 
 
 
@@ -75,21 +48,10 @@
 
 
 
-  s3_thumb_key: (file_id, filename)->
-    datePart = moment().format("YYYY-MM")
-    "uploads/" + datePart + "/thumb/" + file_id + '_' + filename
-
-
 
   s3_url: (file_id, filename) ->
     bucket = Meteor.settings.AWS.bucket
     "//#{bucket}.s3.amazonaws.com/" + @s3_key(file_id, filename)
-
-
-
-  s3_thumb_url: (file_id, filename) ->
-    bucket = Meteor.settings.AWS.bucket
-    "//#{bucket}.s3.amazonaws.com/" + @s3_thumb_key(file_id, filename)
 
 
 

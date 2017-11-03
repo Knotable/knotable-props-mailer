@@ -116,6 +116,7 @@ initFileuploader = ($form, options) ->
         created_time: new Date()
         email_event_id: eventId
 
+      EmailEvents.update eventId, $set: { file_ids: [ file_id ] }
       FileHelper.setTextOfHtml file
 
       file_key = FileHelper.s3_key(file_id, fileName)
