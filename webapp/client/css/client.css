@@ -556,3 +556,7 @@ input.my-small-width {
   opacity: 0;
   transition: opacity 0.15s linear
 }
+
+.note-editable {
+  min-height: 192px;
+}

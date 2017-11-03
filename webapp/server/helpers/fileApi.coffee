@@ -23,7 +23,3 @@ class @FileApi
 
 
 @fileApi = new @FileApi()
-
-Meteor.methods
-  getFileContent : () ->
-    fileApi.getFileContentByteFromFile(null)

@@ -1,5 +1,7 @@
 Template.new_email.onRendered ->
-  $('#email-edit').summernote({
+  lastContent = null
+  $('#email-edit').summernote
+    placeholder: 'Write your message here...'
     toolbar: [
       ['style', ['bold', 'italic', 'underline', 'clear']],
       ['insert', ['link', 'table', 'hr']],
@@ -10,14 +12,20 @@ Template.new_email.onRendered ->
       ['height', ['height']],
       ['misc', ['fullscreen', 'codeview', 'undo', 'redo', 'help']]
     ]
-  })
-  eventId = EmailViewerHelper.currentEmailEventId()
-  if eventId
-    EmailViewerHelper.displayHtmlInEditor()
-  else
+    callbacks:
+      onBlur: ->
+        content = $('#email-edit').summernote 'code'
+        return if content is lastContent
+        lastContent = content
+        EmailViewerHelper.writeContentIntoFile content
+
+  @autorun ->
+    $('#email-edit').summernote 'reset'
+    $('#email-edit').summernote 'code', EmailViewerHelper.getCurrentEventContent()
+    lastContent = $('#email-edit').summernote 'code'
+  unless EmailViewerHelper.currentEmailEventId()
     Meteor.call "findAndCreateIfNotExistingDraftEmail", (e, eventId) ->
       Session.set "CURRENT_DRAFT_EVENT_ID", eventId
-      EmailViewerHelper.displayHtmlInEditor()
 
 
 
@@ -106,16 +114,6 @@ Template.new_email.events
 
 
 
-  "click .btn-save": ->
-    fileId = $('.delete-file-html').attr('data-id')
-    Files.remove _id : fileId
-    date = moment().format('MM/DD-HH:mm')
-    name = "#{date}.html"
-    file = new File([$('#email-edit').summernote('code')], name, {type: "html"})
-    $('.file_upload_s3').fileupload 'add', files: [file]
-
-
-
 reset_new_email_event_form = ($form) ->
   $form.find("input[type=text]").val("")
   $dueTime = $form.find(".due-time")
@@ -159,7 +157,7 @@ Template.email_box.helpers
     return file
 
   htmlFile : ->
-    file = Files.findOne email_event_id : @_id, extension: FileHelper.HTML_TYPE
+    file = Files.findOne @file_ids?[0]
     return false unless file
     return file
 
@@ -238,4 +236,4 @@ Template.sent_email_box.helpers
 
 
   file: ->
-    Files.findOne(@file_ids[0])
+    Files.findOne(@file_ids?[0])
