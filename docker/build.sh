@@ -24,7 +24,7 @@ fi
    echo -e "\nThe repository is not clean."
    echo "Please make sure you committed all your changes and run this script again."
    echo -e "Aborting...\n"
-   exit
+#   exit
  fi
 
 

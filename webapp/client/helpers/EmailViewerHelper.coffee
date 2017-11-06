@@ -25,7 +25,7 @@
     @validateEmail $form, true, (err, emailData) ->
       return callback err if err
       EmailViewerHelper.writeContentIntoFile emailData.html if _.isEmpty emailData.file_ids
-      Meteor.call 'sendTestEmail', emailData, false, (err, result) ->
+      Meteor.call 'sendTestEmail', emailData, (err, result) ->
         return callback null, 'Queued on Mailgun. Thank you!' if result
         callback err, result
 
