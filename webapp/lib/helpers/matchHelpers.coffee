@@ -7,4 +7,4 @@
 
   nonEmptyHtmlString: Match.Where (x) ->
     check x, String
-    x.length and HtmlHelperShared.hasHtmlText x
+    x.length and HtmlHelperShared.hasHtmlTextOrImages x

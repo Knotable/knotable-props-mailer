@@ -32,7 +32,6 @@ class @EmailServerShared
       return
 
     emailData = @addCampaignsAndTags emailData
-
     toEmails = emailData.recipients
     results = {}
     AsyncHelper.each _.uniq(toEmails), (email) ->
@@ -56,10 +55,9 @@ class @EmailServerShared
     result.data
 
 
-  sendTestEmail: (emailData, includeCampaignsAndTags) ->
-    emailData.to = emailData.recipients
-    if includeCampaignsAndTags
-      emailData = @addCampaignsAndTags emailData
+  sendTestEmail: (emailData) ->
+    emailData.to = [ emailData.from ]
+    emailData = @addCampaignsAndTags emailData
     @sendEmail emailData
 
 

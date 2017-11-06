@@ -55,6 +55,12 @@
 
 
 
+  contentImageKey: (fileName) ->
+    datePart = moment().format "YYYY-MM"
+    "uploads/#{datePart}/images/#{@cleanFileName fileName}"
+
+
+
   cleanFileName: (filename) ->
     filename = filename.replace(/[^a-z0-9_\.\-]/gi, '_').toLowerCase()
     filename = filename.replace(/_{2,}/g, '_')

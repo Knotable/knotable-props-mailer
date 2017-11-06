@@ -25,7 +25,7 @@
     @validateEmail $form, true, (err, emailData) ->
       return callback err if err
       EmailViewerHelper.writeContentIntoFile emailData.html if _.isEmpty emailData.file_ids
-      Meteor.call 'sendTestEmail', emailData, false, (err, result) ->
+      Meteor.call 'sendTestEmail', emailData, (err, result) ->
         return callback null, 'Queued on Mailgun. Thank you!' if result
         callback err, result
 
@@ -96,6 +96,7 @@
     recipients = _.extend @getBaseValidator(), stringToArrayMixin,
       selector: '#recipients'
       validate: (response) -> @withValidator response, (emails) ->
+        return if test and _.isEmpty emails
         return "Input emails which separated by commas or spaces in Recipients" if _.isEmpty emails
         for email in emails
           unless ValidationsHelper.isCorrectEmail email
@@ -346,3 +347,9 @@
         file_ids   : newFileIds
         html       : emailData.html
         text       : emailData.text
+
+
+
+  uploadContentImage: (file, callback) ->
+    uploader = new (Slingshot.Upload)('contentImageUploads')
+    uploader.send file, callback

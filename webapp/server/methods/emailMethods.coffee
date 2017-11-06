@@ -37,22 +37,20 @@ Meteor.methods
     emailServerShared.getFileFromS3Url url
 
 
-  sendTestEmail: (emailData, includeCampaignsAndTags) ->
+  sendTestEmail: (emailData) ->
     throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
     emailData = _.compactObject emailData
     check emailData, Match.ObjectIncluding
       _id: String
       from: String
       subject: MatchHelpers.nonEmptyString
-      recipients: [ String ]
       html: MatchHelpers.nonEmptyHtmlString
       due_date: Date
-    if includeCampaignsAndTags
-      check emailData, Match.ObjectIncluding
-        campaigns: Match.Optional [ String ]
-        tags: Match.Optional [ String ]
+      recipients: Match.Optional [ String ]
+      campaigns: Match.Optional [ String ]
+      tags: Match.Optional [ String ]
     emailData.text = HtmlHelperShared.htmlToText emailData.html
     emailData.user_id = Meteor.userId()
     emailData.is_test = true
     emailHelperShared.updateEmailEvent emailData
-    emailServerShared.sendTestEmail emailData, includeCampaignsAndTags
+    emailServerShared.sendTestEmail emailData
