@@ -35,3 +35,22 @@
       secretAccessKey: Meteor.settings.AWS.secretAccessKey
   else
     console.warn "AWS settings missing"
+
+
+
+@initSlingshot = ->
+  Slingshot.fileRestrictions 'contentImageUploads',
+    allowedFileTypes: null
+    maxSize: 50 * 1024 * 1024
+
+
+  Slingshot.createDirective 'contentImageUploads', Slingshot.S3Storage,
+    bucket: Meteor.settings.AWS.bucket
+    AWSAccessKeyId: Meteor.settings.AWS.accessKeyId
+    AWSSecretAccessKey: Meteor.settings.AWS.secretAccessKey
+    acl: 'public-read'
+    authorize: ->
+      return true if @userId
+      throw new Meteor.Error 'Login Required', 'Please login before posting files'
+    key: (file, metaContext) ->
+      FileHelper.contentImageKey file.name

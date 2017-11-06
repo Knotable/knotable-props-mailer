@@ -29,6 +29,7 @@ diff-sequence@1.0.6
 duongthienduc:meteor-bootstrap-growl@1.0.2
 ecmascript@0.5.7
 ecmascript-runtime@0.3.13
+edgee:slingshot@0.7.1
 ejson@1.0.12
 eluck:aws-sdk@2.0.23_1
 email@1.1.16

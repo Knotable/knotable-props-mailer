@@ -96,6 +96,7 @@
     recipients = _.extend @getBaseValidator(), stringToArrayMixin,
       selector: '#recipients'
       validate: (response) -> @withValidator response, (emails) ->
+        return if test and _.isEmpty emails
         return "Input emails which separated by commas or spaces in Recipients" if _.isEmpty emails
         for email in emails
           unless ValidationsHelper.isCorrectEmail email
@@ -346,3 +347,9 @@
         file_ids   : newFileIds
         html       : emailData.html
         text       : emailData.text
+
+
+
+  uploadContentImage: (file, callback) ->
+    uploader = new (Slingshot.Upload)('contentImageUploads')
+    uploader.send file, callback

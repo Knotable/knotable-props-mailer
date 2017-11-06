@@ -19,6 +19,13 @@ Template.new_email.onRendered ->
         lastContent = content
         EmailViewerHelper.writeContentIntoFile content
 
+      onImageUpload: (files) ->
+        $editor = $('#email-edit')
+        async.each files, (file, next) ->
+          EmailViewerHelper.uploadContentImage file, (err, url) ->
+            $editor.summernote 'insertImage', url, file.name unless err
+            next()
+
   @autorun ->
     $('#email-edit').summernote 'reset'
     $('#email-edit').summernote 'code', EmailViewerHelper.getCurrentEventContent()
