@@ -114,6 +114,9 @@
 
     tags = _.extend @getBaseValidator(), stringToArrayMixin,
       selector: '#tags'
+      validate: (response) -> @withValidator response, (tags) ->
+        if not test and _.size(tags) > 3
+          'Up to three unique tags are allowed per one message'
 
 
     unless test
@@ -310,6 +313,7 @@
           subject    : ""
           html       : ""
           text       : ""
+          tags       : ""
       fileIds?.forEach (id) ->
         Files.remove {_id: id}
 
@@ -347,6 +351,7 @@
         file_ids   : newFileIds
         html       : emailData.html
         text       : emailData.text
+        tags       : emailData.tags
 
 
 

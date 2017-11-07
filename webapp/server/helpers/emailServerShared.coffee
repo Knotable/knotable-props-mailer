@@ -2,6 +2,35 @@ class @EmailServerShared
   self = @
   Fiber = require 'fibers'
   Future = require 'fibers/future'
+  formurlencoded = require 'form-urlencoded'
+
+
+
+  allowedMessageFields: ->
+    # Docs: https://documentation.mailgun.com/en/latest/api-sending.html#sending
+    [
+      'from'
+      'to'
+      'cc'
+      'bcc'
+      'subject'
+      'text'
+      'html'
+      'attachment'
+      'inline'
+      'o:tag'
+      'o:dkim'
+      'o:deliverytime'
+      'o:testmode'
+      'o:tracking'
+      'o:tracking-clicks'
+      'o:tracking-opens'
+      'o:require-tls'
+      'o:skip-verification'
+      'h:X-My-Header'
+      'v:my-var'
+      'o:campaign' #Deprecated
+    ]
 
 
 
@@ -48,10 +77,12 @@ class @EmailServerShared
 
 
   sendEmail: (emailData) ->
+    emailData = _.pick emailData, @allowedMessageFields()
     console.info "Sending to #{emailData.to} \"#{emailData.subject}\""
     result = HTTP.post "#{Meteor.settings.mailgun.api_base_url}/messages",
       auth: 'api:' + Meteor.settings.mailgun.api_key
-      params: emailData
+      headers: 'Content-Type': 'application/x-www-form-urlencoded'
+      content: formurlencoded emailData
     result.data
 
 
@@ -64,8 +95,8 @@ class @EmailServerShared
   addCampaignsAndTags: (emailData) ->
     console.log emailData
     { campaigns, tags } = emailData
-    emailData['o:campaign'] = campaigns[0] unless _.isEmpty campaigns
-    emailData['o:tag'] = tags[0] unless _.isEmpty tags
+    emailData['o:campaign'] = campaigns unless _.isEmpty campaigns
+    emailData['o:tag'] = _.first tags, 3 unless _.isEmpty tags
     emailData
 
 
