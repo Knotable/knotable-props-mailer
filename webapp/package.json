@@ -11,6 +11,7 @@
   "dependencies": {
     "cheerio": "^1.0.0-rc.2",
     "fibers": "^1.0.15",
+    "form-urlencoded": "^2.0.4",
     "node-rsa": "^0.4.2",
     "request": "^2.81.0"
   }
