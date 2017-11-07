@@ -23,7 +23,12 @@ Template.new_email.onRendered ->
         $editor = $('#email-edit')
         async.each files, (file, next) ->
           EmailViewerHelper.uploadContentImage file, (err, url) ->
-            $editor.summernote 'insertImage', url, file.name unless err
+            unless err
+              img = document.createElement 'img'
+              img.alt = img.title = file.name
+              img.style.display = 'block'
+              img.src = url
+              $editor.summernote 'insertNode', img
             next()
 
   @autorun ->
