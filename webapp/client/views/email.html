@@ -20,7 +20,8 @@
 
 
 <template name="new_email">
-    <div class="email-container col-sm-12" data-id="{{draftEvent._id}}">
+    <div class="email-container col-sm-12">
+        {{> file_upload}}
 
       <div class="row">
 
@@ -30,7 +31,7 @@
             <div class="form-group">
                 <label class="control-label col-sm-2 col-sm-offset-1" for="from_address">From</label>
                 <div class="col-sm-9">
-                    <input type="text" class="form-control from-address input-gray" value="{{draftEvent.from}}"
+                    <input type="text" class="form-control from-address input-gray" value="{{from}}"
                            name='from_address' id='from_address' placeholder="Real Name<email@knote.com> must be @knote.com" />
                 </div>
             </div>
@@ -38,7 +39,7 @@
             <div class="form-group">
                 <label class="control-label col-sm-2 col-sm-offset-1" for="subject">Subject</label>
                 <div class="col-sm-9">
-                    <input type="text" class="form-control subject input-gray" value="{{draftEvent.subject}}"
+                    <input type="text" class="form-control subject input-gray" value="{{subject}}"
                            name='subject' id='subject' placeholder="Subject Text"/>
                 </div>
             </div>
@@ -46,55 +47,24 @@
             <div class="form-group">
                 <label class="control-label col-sm-2 col-sm-offset-1" for="recipients">To</label>
                 <div class="col-sm-9">
-                    <input type="text" class=" form-control recipients input-gray" value="{{draftEvent.recipients}}"
+                    <input type="text" class=" form-control recipients input-gray" value="{{recipients}}"
                            name='recipients' id='recipients' placeholder="listname@domain-on-mailgun.com list or addresses, comma separated"/>
                 </div>
             </div>
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1" for="campaign">Campaign</label>
+                <label class="control-label col-sm-2 col-sm-offset-1" for="campaign">Campaigns</label>
                 <div class="col-sm-9">
-                    <input type="text" class="form-control input-gray" name='campaigns' id='campaigns' value="{{draftEvent.campaigns}}"/>
+                    <input type="text" class="form-control input-gray" name='campaigns' id='campaigns' value="{{campaigns}}"/>
                 </div>
             </div>
 
             <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1" for="tags">Tag</label>
+                <label class="control-label col-sm-2 col-sm-offset-1" for="tags">Tags</label>
                 <div class="col-sm-9">
-                    <input type="text" class="form-control input-gray" name='tags' id='tags' value="knote"/> <!--{{draftEvent.tags}}-->
+                    <input type="text" class="form-control input-gray" name='tags' id='tags' value="{{tags}}"/>
                 </div>
             </div>
 
-            <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1">Email HTML</label>
-                <div class="col-sm-9">
-                    <div class="input-group">
-                      <input type="text" class="form-control" placeholder="{{#if htmlFile}}{{htmlFile.name}}{{else}}Edit in the composer and click save{{/if}}" readonly>
-                      <span class="input-group-btn">
-                       <!-- {{#if htmlFile.s3_url}} -->
-                            <!--button class="btn btn-danger delete-file-html" type="button" data-id={{htmlFile._id}}>Delete</button-->
-                       <!-- {{else}} -->
-                            <button class="btn btn-default btn-select-file-html" type="button">or upload</button>
-                       <!-- {{/if}} -->
-                      </span>
-                    </div>
-                    {{> file_upload}}
-                </div>
-            </div>
-
-            <div class="form-group">
-                <label class="control-label col-sm-2 col-sm-offset-1"></label>
-                <div class="col-sm-8">
-                    {{> file_upload_progress}}
-                </div>
-            </div>
-
-            <!--
-            <div class="form-group">
-                <div class="col-sm-9 col-sm-offset-3">
-                    <button class="btn btn-primary btn-sm btn-block reset">Reset</button>
-                </div>
-            </div>
-            -->
 
             <div class="control-group">
               <hr>
@@ -105,7 +75,6 @@
                 <div style="overflow: hidden; padding-left: 20px;">
                     <button class="btn btn-primary btn-sm btn-block btn-test-send"><span>Send test</span></button>
                 </div>
-                <!--input type="checkbox" id="include-campaigns-and-tags"> Include Campaigns and Tags -->
             </div>
 
             <div class="control-group">
@@ -132,7 +101,6 @@
 
         <div class="col-xs-10 col-xs-offset-1 col-md-8 col-md-offset-0">
           <div id="email-edit"></div>
-          <!--<button class="btn btn-primary btn-save">Save to HTML</button>-->
         </div>
 
       </div>

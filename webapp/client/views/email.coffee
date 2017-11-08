@@ -1,6 +1,21 @@
+Template.new_email.onCreated ->
+  @autorun =>
+    return unless Meteor.userId()
+    @store = new LocalDataStore "drafts.user_#{Meteor.userId()}.draftEmails"
+    @store.currentDraft = (options) -> @findOne EmailViewerHelper.currentEmailEventId(), options
+
+
+
+Template.new_email.onDestroyed ->
+  @store?.unmount()
+  delete @store
+
+
+
 Template.new_email.onRendered ->
-  lastContent = null
-  $('#email-edit').summernote
+  $el = $('#email-edit')
+  $el.summernote('destroy')
+  $el.summernote
     placeholder: 'Write your message here...'
     toolbar: [
       ['style', ['bold', 'italic', 'underline', 'clear']],
@@ -11,16 +26,16 @@ Template.new_email.onRendered ->
       ['para', ['ul', 'ol', 'paragraph']],
       ['height', ['height']],
       ['misc', ['fullscreen', 'codeview', 'undo', 'redo', 'help']]
+      ['mybutton', ['uploadFile']]
     ]
+    buttons:
+      uploadFile: UploadButton
     callbacks:
-      onBlur: ->
-        content = $('#email-edit').summernote 'code'
-        return if content is lastContent
-        lastContent = content
-        EmailViewerHelper.writeContentIntoFile content
+      onChange: =>
+        content = $el.summernote 'code'
+        @store.update EmailViewerHelper.currentEmailEventId(), $set: html: content
 
       onImageUpload: (files) ->
-        $editor = $('#email-edit')
         async.each files, (file, next) ->
           EmailViewerHelper.uploadContentImage file, (err, url) ->
             unless err
@@ -28,16 +43,43 @@ Template.new_email.onRendered ->
               img.alt = img.title = file.name
               img.style.display = 'block'
               img.src = url
-              $editor.summernote 'insertNode', img
+              $el.summernote 'insertNode', img
             next()
 
-  @autorun ->
-    $('#email-edit').summernote 'reset'
-    $('#email-edit').summernote 'code', EmailViewerHelper.getCurrentEventContent()
-    lastContent = $('#email-edit').summernote 'code'
-  unless EmailViewerHelper.currentEmailEventId()
-    Meteor.call "findAndCreateIfNotExistingDraftEmail", (e, eventId) ->
-      Session.set "CURRENT_DRAFT_EVENT_ID", eventId
+  @autorun =>
+    if event = EmailEvents.findOne(EmailViewerHelper.currentEmailEventId(), reactive: false)
+      @store.insert event unless @store.findOne event._id, fields: _id: 1
+      $el.summernote 'code', @store.currentDraft(reactive: false).html
+      saveChangesToServerEvery moment.duration(5, 'seconds'), @store
+
+
+
+saveChangesToServerEvery = (duration, store) ->
+  currentDraftId = EmailViewerHelper.currentEmailEventId()
+  fields = from: 1, subject: 1, html: 1, recipients: 1, campaigns: 1, tags: 1
+  delayedSaveId = null
+  lastSavedDocument = EmailEvents.findOne currentDraftId, { fields, reactive: false }
+
+  delaySave = (id) ->
+    Meteor.clearTimeout delayedSaveId if delayedSaveId
+    delayedSaveId = Meteor.setTimeout ->
+      document = store.findOne id, { fields }
+      if document and not EJSON.equals(document, lastSavedDocument)
+        lastSavedDocument = document
+        Session.set 'autoSaving', 'pending'
+        console.log 'Saving...'
+        Meteor.call 'updateDraftEmail', document, (err) ->
+          Session.set 'autoSaving', err and 'failed' or 'success'
+          console.log 'Saved', err and 'failed' or 'success'
+    , duration.asMilliseconds()
+
+  cursor = Tracker.nonreactive -> store.find currentDraftId, { fields }
+  observer = cursor.observeChanges
+    changed: delaySave
+    removed: -> Meteor.clearTimeout delayedSaveId if delayedSaveId
+  if Tracker.currentComputation
+    Tracker.currentComputation.onInvalidate -> observer.stop()
+  delaySave currentDraftId
 
 
 
@@ -53,9 +95,29 @@ Template.new_email.helpers
 
 
 
-  draftEvent: ->
-    EmailEvents.findOne _id : EmailViewerHelper.currentEmailEventId()
+  from: ->
+    fields = from: 1
+    Template.instance().store.currentDraft({ fields })?.from
 
+
+  subject: ->
+    fields = subject: 1
+    Template.instance().store.currentDraft({ fields })?.subject
+
+
+  recipients: ->
+    fields = recipients: 1
+    Template.instance().store.currentDraft({ fields })?.recipients
+
+
+  campaigns: ->
+    fields = campaigns: 1
+    Template.instance().store.currentDraft({ fields })?.campaigns
+
+
+  tags: ->
+    fields = tags: 1
+    Template.instance().store.currentDraft({ fields })?.tags
 
 
   htmlFile: ->
@@ -66,14 +128,50 @@ Template.new_email.helpers
 
 
 
+updateFieldContent = (name, validator, store) ->
+  validator.validate (err) ->
+    store.update EmailViewerHelper.currentEmailEventId(), $set: "#{name}": validator.getValue() unless err
+
+
 
 Template.new_email.events
-  'click .btn-send': (e) ->
+  'change #from_address': (e, t) ->
+    { from } = EmailViewerHelper.getValidators()
+    updateFieldContent 'form', from, t.store
+
+
+
+  'change #subject': (e, t) ->
+    { subject } = EmailViewerHelper.getValidators()
+    updateFieldContent 'subject', subject, t.store
+
+
+
+  'change #recipients': (e, t) ->
+    { recipients } = EmailViewerHelper.getValidators()
+    updateFieldContent 'recipients', recipients, t.store
+
+
+
+  'change #campaigns': (e, t) ->
+    { campaigns } = EmailViewerHelper.getValidators()
+    updateFieldContent 'campaigns', campaigns, t.store
+
+
+
+  'change #tags': (e, t) ->
+    { tags } = EmailViewerHelper.getValidators()
+    updateFieldContent 'tags', tags, t.store
+
+
+
+  'click .btn-send': (e, t) ->
     e.stopPropagation()
     $ele = $(e.currentTarget)
     $form = $ele.closest('.email-container')
     $(".input-error").removeClass 'input-error'
     $('.btn-send', $form).attr('disabled', 'disabled')
+    emailId = EmailViewerHelper.currentEmailEventId()
     EmailViewerHelper.sendEmail $form, (err, result) ->
       $('.btn-send', $form).removeAttr('disabled')
       if err
@@ -81,6 +179,7 @@ Template.new_email.events
         showErrorBootstrapGrowl err.reason
         $(selector, $form).addClass('input-error').focus() if selector
       else
+        t.store.remove emailId
         $('a[href="#tab-queued"]').click()
         showBootstrapGrowl("Added email in queue")
 
@@ -112,20 +211,6 @@ Template.new_email.events
 
 
 
-  "click .btn-select-file-html": ->
-    $('.file_upload_s3 input.upload-photo-btn-large.upload-file-input-html').click()
-
-
-
-  "click .delete-file-html": (e) ->
-    isOk = confirm("Do you want remove this file?")
-    if isOk
-      fileId = $(e.currentTarget).attr('data-id')
-      Files.remove _id : fileId
-      console.info "Remove file with id:", fileId
-
-
-
 reset_new_email_event_form = ($form) ->
   $form.find("input[type=text]").val("")
   $dueTime = $form.find(".due-time")
@@ -153,7 +238,6 @@ Template.email_list.helpers
 
 Template.sent_email_list.helpers
   sent_email_events : ->
-    currentDate = new Date()
     query =
       status: EmailHelperShared.SENT
       type: EmailHelperShared.ACTIVE

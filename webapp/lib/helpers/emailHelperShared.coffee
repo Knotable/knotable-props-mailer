@@ -36,6 +36,7 @@ class @EmailHelperShared
     doc.subject    = options.subject    if options.subject
     doc.html       = options.html       if options.html
     doc.text       = options.text       if options.text
+    doc.tags       = options.tags       if options.tags
 
     email_event_id = EmailEvents.insert doc
     return email_event_id
@@ -57,11 +58,18 @@ class @EmailHelperShared
 
 
 
-  findAndCreateIfNotExistingDraftEmail : ->
-    draftEmail = EmailEvents.findOne type: EmailHelperShared.DRAFT, user_id: Meteor.userId()
+  findAndCreateIfNotExistingDraftEmail: (userId) ->
+    check userId, String
+    query = type: EmailHelperShared.DRAFT, user_id: userId
+    draftEmail = EmailEvents.findOne query, fields: _id: 1
     return draftEmail._id if draftEmail
     unless draftEmail
       return @createDraftEmailEvent(Meteor.userId(), EmailHelperShared.DRAFT)
+
+
+
+  maybeCreateDraftEmailForUser: (userId) ->
+    Boolean @findAndCreateIfNotExistingDraftEmail(userId)
 
 
 
@@ -79,7 +87,7 @@ class @EmailHelperShared
         user_id      : emailData.user_id
         type         : type
         status       : status
-        html         : emailData.html
+        html         : emailServerShared.inlineCssStyle emailData.html
         text         : emailData.text
         is_test      : Boolean emailData.is_test
     updateData.$set.status = status unless emailData.is_test
