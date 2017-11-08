@@ -137,7 +137,7 @@ h4 {
 
 .email-container .control-label {
   text-align: left;
-  padding: 0;
+  padding: 6px 0 0 0;
 }
 
 .email-container .calendar-body-wrapper,
@@ -300,27 +300,6 @@ h4 {
 #saving_file_box img {
   width: 94px;
   height: 94px;
-}
-
-.file_upload_progress{
-  width: 100%;
-  border-top: 1px solid #fff;
-  padding: 5px;
-  background: #e8e8e8;
-}
-.file_upload_progress:first-child{
-  border: none;
-}
-
-.file_upload_progress .pro-bar{
-  width: 100%;
-  height: 7px;
-  border: 1px solid #3b8ebd;
-}
-.file_upload_progress .pro-bar .pro-bar-process{
-  height: 100%;
-  width: 0;
-  background: #43a5de;
 }
 
 .file-box {
@@ -492,10 +471,6 @@ h4 {
 
 .delete_file_ico {
   cursor: pointer;
-}
-
-.btn.btn-select-file-html + .btn.btn-select-file-txt {
-  display: inline-table;
 }
 
 .btn.btn-send + .chk-test-email {
