@@ -25,19 +25,16 @@
 
 
 
-  setTextOfHtml: (file) ->
+  readHtmlContentFromFile: (file, callback) ->
     return unless file.type is "text/html"
-    return unless window.File and window.FileReader
-    eventId = Tracker.nonreactive -> EmailViewerHelper.currentEmailEventId()
+    unless window.File and window.FileReader
+      return callback new Meteor.Error 400, 'No browser support to read file'
     reader = new FileReader()
     reader.onload = (e) ->
       html = e.target.result
       $ele = $('<div/>').append($(html))
-      $ele.find('head, title, style, script, meta').remove()
-      $ele = $ele.find('body') if $ele.find('body').length
-      text = $ele.text().replace(/\s\s+/g, ' ').trim()
-      EmailEvents.update eventId, $set: { html, text }
-
+      $ele.find('link, title, script, meta').remove()
+      callback null, $ele.html()
     reader.readAsText file
 
 

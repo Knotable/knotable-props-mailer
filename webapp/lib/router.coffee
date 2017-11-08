@@ -10,6 +10,10 @@ if Meteor.isClient
   emailSubscribe = ->
     if Meteor.userId()
       Meteor.subscribe "sentEmailEventsAndFiles"
+    Tracker.autorun =>
+      if @ready()
+        event = EmailEvents.findOne user_id: Meteor.userId(), type: EmailHelperShared.DRAFT, {fields: _id: 1}
+        Session.set "CURRENT_DRAFT_EVENT_ID", event._id if event
 
   mailingListSubscribe = ->
     if Meteor.userId()

@@ -6,6 +6,7 @@ Meteor.publish "fileByEmailEventId", (email_event_id) ->
 
 Meteor.publish "emailEventsAndFiles", ->
   if @userId
+    emailHelperShared.maybeCreateDraftEmailForUser @userId
     findQuery =
       user_id : @userId
       status:
