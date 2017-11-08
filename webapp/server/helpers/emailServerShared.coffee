@@ -3,6 +3,7 @@ class @EmailServerShared
   Fiber = require 'fibers'
   Future = require 'fibers/future'
   formurlencoded = require 'form-urlencoded'
+  inlineCss = require 'inline-css'
 
 
 
@@ -98,6 +99,15 @@ class @EmailServerShared
     emailData['o:campaign'] = campaigns unless _.isEmpty campaigns
     emailData['o:tag'] = _.first tags, 3 unless _.isEmpty tags
     emailData
+
+
+
+  inlineCssStyle: (html) ->
+    fiber = Fiber.current
+    inlineCss html, { url: ' ' }
+      .then (html) -> fiber.run html
+      .catch (err) -> fiber.throwInto err
+    Fiber.yield()
 
 
 
