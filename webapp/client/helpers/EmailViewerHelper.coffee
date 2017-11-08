@@ -1,12 +1,12 @@
 @EmailViewerHelper =
   validateEmail: ($form, test, callback) ->
-    validators = @getValidators $form, test
+    { emailBody, from, subject, recipients, campaigns, tags, date } = @getValidators $form, test
+    validators = [ emailBody, from, subject, recipients, campaigns, tags, date ]
     async.each validators, (validator, next) ->
       validator.validate next
     , (err) ->
       return callback new Meteor.Error 400, err.error, { selector: err.selector } if err
 
-      [ emailBody, from, subject, recipients, campaigns, tags, date ] = validators
       event = EmailEvents.findOne EmailViewerHelper.currentEmailEventId()
       callback null,
         _id: EmailViewerHelper.currentEmailEventId()
@@ -24,7 +24,6 @@
   sendTestEmail: ($form, callback) ->
     @validateEmail $form, true, (err, emailData) ->
       return callback err if err
-      EmailViewerHelper.writeContentIntoFile emailData.html if _.isEmpty emailData.file_ids
       Meteor.call 'sendTestEmail', emailData, (err, result) ->
         return callback null, 'Queued on Mailgun. Thank you!' if result
         callback err, result
@@ -34,7 +33,6 @@
   sendEmail: ($form, callback) ->
     @validateEmail $form, false, (err, emailData) ->
       return callback err if err
-      EmailViewerHelper.writeContentIntoFile emailData.html if _.isEmpty emailData.file_ids
       Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
         EmailViewerHelper.afterAddToQueue emailData unless err
         callback err, result
@@ -72,7 +70,7 @@
     stringToArrayMixin = value: -> EmailViewerHelper.getArrayFromString $(@selector).val().trim()
 
 
-    htmlFile = _.extend @getBaseValidator(),
+    emailBody = _.extend @getBaseValidator(),
       selector: '.note-editor'
       value: ->
         html: $('#email-edit').summernote 'code'
@@ -165,17 +163,7 @@
       date = _.extend @getBaseValidator(),
         value: -> new Date
 
-    [ htmlFile, from, subject, recipients, campaigns, tags, date ]
-
-
-
-  writeContentIntoFile: (content) ->
-    email = EmailEvents.findOne EmailViewerHelper.currentEmailEventId(), fields: file_ids: 1
-    Files.remove email.file_ids?[0] if email
-    date = moment().format('MM/DD-HH:mm')
-    name = "#{date}.html"
-    file = new File([content], name, {type: "text/html"})
-    $('.file_upload_s3').fileupload 'add', files: [file]
+    { emailBody, from, subject, recipients, campaigns, tags, date }
 
 
 
