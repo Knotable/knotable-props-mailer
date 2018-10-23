@@ -64,7 +64,7 @@ class @EmailHelperShared
     draftEmail = EmailEvents.findOne query, fields: _id: 1
     return draftEmail._id if draftEmail
     unless draftEmail
-      return @createDraftEmailEvent(Meteor.userId(), EmailHelperShared.DRAFT)
+      return @createDraftEmailEvent(userId, EmailHelperShared.DRAFT)
 
 
 
