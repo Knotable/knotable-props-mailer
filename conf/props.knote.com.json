@@ -34,10 +34,10 @@
     "user_export_url" : "http://mail.lb.beta.knotable.com/userExportInfo"
   },
   "kadira" : {
-    "appId": "Sz9isrCnhRuBeA4E5",
-    "appSecret": "d3c6d58d-f558-4773-9d52-c4e67ae67bac",
+    "appId": "vjQH4ccoLvxudxPHM",
+    "appSecret": "XhvrthJwCjm5MkAwD",
     "options": {
-      "endpoint": "https://kadira.knotable.com:51115"
+      "endpoint": "https://apm-engine.knotable.com"
     }
   }
 }
