@@ -3,16 +3,17 @@ class @GithubApi
     check @accessToken, String
     check headers, Match.Optional Object
     @baseUrl = 'https://api.github.com'
-    @_headers = headers
+    @_headers = Object.assign({
+      "Authorization": "token #{@accessToken}"
+    }, headers)
 
 
 
   call: (request) ->
     { method, url, headers } = request
     headers ?= {}
-    _.extend headers, @_headers if @_headers
-    params = access_token: @accessToken
-    result = HTTP.call method, "#{@baseUrl}#{url}", { headers, params }
+    _.extend headers, @_headers
+    result = HTTP.call method, "#{@baseUrl}#{url}", { headers }
     result.data
 
 
