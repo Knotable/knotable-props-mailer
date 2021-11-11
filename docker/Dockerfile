@@ -1,22 +1,28 @@
-FROM registry.knotable.com:443/meteord-webapp-1.4.0.1
-MAINTAINER Knotable
+FROM registry.knotable.com:443/meteor-alpine:2.5 as builder
 
-ENV COMMIT_HASH=KNOTEL_COMMIT_HASH
-VOLUME /logs
+ENV METEOR_DISABLE_OPTIMISTIC_CACHING=1
 
-ADD ./conf  /conf
-ADD ./webapp /app
+USER meteor
+
+RUN mkdir -p app
+
+COPY --chown=meteor ./webapp  app
+
+WORKDIR app
+
+RUN meteor npm install --production --quiet
+
+RUN meteor build --directory ../built-app
+
+RUN cd ../built-app/bundle/programs/server \
+    && npm install --production --quiet
 
 
-RUN   cd /app                                   && \
-      meteor npm install --production           && \
-      meteor build --directory /tmp/the-app     && \
-      rm -rf /app/.meteor/local                 && \
-      cd /tmp/the-app/bundle/programs/server/   && \
-      npm install --save                        && \
-      cd /                                      && \
-      mv /tmp/the-app/bundle /built_app         && \
-      rm -rf /tmp/the-app                       && \
-      rm -rf /app/node_modules
+FROM registry.knotable.com:443/knote-runtime:2.5
+LABEL maintainer="Knote <team@knote.com>"
 
-CMD /conf/start_instance.sh
+COPY --from=builder /home/meteor/built-app/bundle /app
+
+WORKDIR /app
+
+CMD node main.js
