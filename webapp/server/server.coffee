@@ -4,7 +4,6 @@ Meteor.startup ->
   init_github_settings()
   init_aws()
   initSlingshot()
-  console.log Meteor.settings
   console.log "============================================"
 
 process.on 'uncaughtException', (err) ->

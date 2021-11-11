@@ -1,24 +1,16 @@
+import request from "request"
+
 class @FileApi
-  self = @
-  request = require "request"
-
-
-  constructor: ()->
-    request = require "request"
-
-
-
-  getFileContentByteFromUrlPath : (urlPath, callback) ->
-    request.get urlPath, (error, response, body) ->
-      if !error and response.statusCode is 200
-        bodyContent = body
-        console.log "Got file content!"
-      else
-        bodyContent = null
-        console.log "Could not get file conten from path #{urlPath}"
-      callback null, bodyContent
-
-
+  getFileContentByteFromUrlPath : (urlPath) ->
+    new Promise((resolve, reject) ->
+      request.get urlPath, (error, response, body) ->
+        if !error and response.statusCode is 200
+          console.log "Got file content!"
+          resolve(body)
+        else
+          console.log "Could not get file content from path #{urlPath}"
+          reject(error)
+    )
 
 
 

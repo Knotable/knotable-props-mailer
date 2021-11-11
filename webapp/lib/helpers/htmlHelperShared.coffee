@@ -6,7 +6,6 @@
     if Meteor.isClient
       jQuery(wrappedHtml).find('img')
     else
-      cheerio = require 'cheerio'
       cheerio.load(wrappedHtml).root().find('img')
 
 
@@ -18,7 +17,6 @@
     if Meteor.isClient
       jQuery(wrappedHtml).text()
     else
-      cheerio = require 'cheerio'
       cheerio.load(wrappedHtml).root().text()
 
 
