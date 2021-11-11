@@ -1,19 +1,3 @@
-Fiber = require 'fibers'
-
-initMailSendingHandler = ->
-  console.log "[MAILSERVICE] Init mail sending handler"
-  self = @
-  @originalEmailSend = Email.send
-  Email.send = (emailData) ->
-    console.log "Sending email..."
-    Fiber ->
-      result = self.originalEmailSend.call self, emailData
-      console.log "Finished sending email"
-      return result
-    .run()
-
-
-
 init_mailservice = ->
   # Mailgun SMTP settings
   process.env.MAIL_URL = mail_url Meteor.settings.mailgun.username,
@@ -41,6 +25,5 @@ retrieveDefaultMailingLists = ->
 
 Meteor.startup ->
   init_mailservice()
-  initMailSendingHandler()
   retrieveDefaultMailingLists()
   console.log "Started email service"

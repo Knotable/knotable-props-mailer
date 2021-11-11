@@ -1,8 +1,5 @@
 class @EmailServerShared
-  self = @
-  Fiber = require 'fibers'
-  Future = require 'fibers/future'
-  formurlencoded = require 'form-urlencoded'
+  formUrlEncoded = require 'form-urlencoded'
   inlineCss = require 'inline-css'
 
 
@@ -36,13 +33,9 @@ class @EmailServerShared
 
 
   getFileFromS3Url: (url) ->
-    waitForFile = new Future()
-    file = null
-    fileApi.getFileContentByteFromUrlPath url, (error, result) ->
-      file = result
-      waitForFile.return()
-    waitForFile.wait()
-    return file
+    Promise.await(
+      fileApi.getFileContentByteFromUrlPath(url)
+    )
 
 
 
@@ -83,7 +76,7 @@ class @EmailServerShared
     result = HTTP.post "#{Meteor.settings.mailgun.api_base_url}/messages",
       auth: 'api:' + Meteor.settings.mailgun.api_key
       headers: 'Content-Type': 'application/x-www-form-urlencoded'
-      content: formurlencoded emailData
+      content: formUrlEncoded emailData
     result.data
 
 
@@ -103,11 +96,7 @@ class @EmailServerShared
 
 
   inlineCssStyle: (html) ->
-    fiber = Fiber.current
-    inlineCss html, { url: ' ' }
-      .then (html) -> fiber.run html
-      .catch (err) -> fiber.throwInto err
-    Fiber.yield()
+    Promise.await(inlineCss(html, { url: ' ' }))
 
 
 

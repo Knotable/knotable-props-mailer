@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
+
+root_directory=`git rev-parse --show-toplevel 2>/dev/null`
+if [ ! `pwd` == $root_directory ] ; then
+  echo -e "\nChanging to root directory: $root_directory"
+  cd $root_directory
+fi
+
 declare -a servers=(
   "props.knote.com"
 )
 
-cd ~/.ssh
-key=beta-omega.pem
+key=~/.ssh/beta-omega.pem
 
 DomainLong=props.knote.com
 
@@ -31,14 +37,15 @@ function launchServiceOnServer {
     sudo docker run -d                                                  \
         --name props_meteor_app                                         \
         --hostname $1                                                   \
-        -e DOMAIN_LONG=$DomainLong                                      \
+        -e PORT=3000                                                    \
+        -e ROOT_URL='http://$DomainLong'                                \
+        -e METEOR_SETTINGS='$(cat conf/"$DomainLong.json")'             \
         -e MONGO_URL='mongodb://props_meteor_app-mongo'                 \
-        -e HOSTNAME=$1                                                  \
-        -p 80:80                                                        \
+        -p 80:3000                                                      \
         --restart always                                                \
         --link props_meteor_app-mongo:props_meteor_app-mongo            \
         -v /knotable-var:/logs                                          \
-        registry.knotable.com:443/props_meteor_app                  ;   \
+        registry.knotable.com:443/props_meteor_app /bin/sh -c 'node main.js 1>>/logs/forever.log 2>&1' ; \
     sudo docker rmi registry.knotable.com:443/props_meteor_app:old
   "
 }

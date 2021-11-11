@@ -28,9 +28,14 @@
   "mailChimp": {
     "api_key": "c08682e712205ce4db39d215597be90d",
     "base_url": "http://us9.api.mailchimp.com/1.3",
-    "default_list_id" : "98bfb4d809"
+    "default_list_id": "98bfb4d809"
   },
   "beta_knotable": {
-    "user_export_url" : "http://localhost:4000/userExportInfo"
+    "user_export_url": "http://localhost:4000/userExportInfo"
+  },
+  "packages": {
+    "mdg:meteor-apm-agent": {
+      "isDisabled": true
+    }
   }
 }

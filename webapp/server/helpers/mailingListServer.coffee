@@ -1,6 +1,4 @@
 class @MailingListServer
-  self = @
-  Fiber = require 'fibers'
   Future = require 'fibers/future'
 
   MAILGUN_MAILING_LIST_URL_API = "https://api.mailgun.net/v3/lists"
@@ -236,7 +234,7 @@ class @MailingListServer
     #Mailgun API KEY
     params.auth = 'api:' + Meteor.settings.mailgun.api_key
 
-    Meteor.http.post putURL, params, (error, result) ->
+    HTTP.post putURL, params, (error, result) ->
       if error
         returnData =
           status : STATUS_ERROR
@@ -258,7 +256,7 @@ class @MailingListServer
     #Mailgun API KEY
     params.auth = 'api:' + Meteor.settings.mailgun.api_key
 
-    Meteor.http.get getURL, params, (error, result) ->
+    HTTP.get getURL, params, (error, result) ->
       if error
         returnData =
           status : STATUS_ERROR
@@ -276,7 +274,7 @@ class @MailingListServer
     waitingGetResult = new Future()
     returnData = null
 
-    Meteor.http.get getURL, params, (error, result) ->
+    HTTP.get getURL, params, (error, result) ->
       if error
         returnData =
           status : STATUS_ERROR
@@ -295,7 +293,7 @@ class @MailingListServer
     waitingGetResult = new Future()
     returnData = null
 
-    Meteor.http.get getURL, params, (error, result) ->
+    HTTP.get getURL, params, (error, result) ->
       if error
         returnData =
           status : STATUS_ERROR
@@ -317,7 +315,7 @@ class @MailingListServer
     #Mailgun API KEY
     params.auth = 'api:' + Meteor.settings.mailgun.api_key
 
-    Meteor.http.put putURL, params, (error, result) ->
+    HTTP.put putURL, params, (error, result) ->
       if error
         returnData =
           status : STATUS_ERROR
