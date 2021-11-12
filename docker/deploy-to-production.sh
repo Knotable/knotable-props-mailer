@@ -41,6 +41,8 @@ function launchServiceOnServer {
         -e ROOT_URL='http://$DomainLong'                                \
         -e METEOR_SETTINGS='$(cat conf/"$DomainLong.json")'             \
         -e MONGO_URL='mongodb://props_meteor_app-mongo'                 \
+        -e MAILGUN_API_KEY='$MAILGUN_API_KEY'                           \
+        -e MAILGUN_DOMAINS='$MAILGUN_DOMAINS'                           \
         -p 80:3000                                                      \
         --restart always                                                \
         --link props_meteor_app-mongo:props_meteor_app-mongo            \

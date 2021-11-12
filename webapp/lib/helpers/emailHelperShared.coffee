@@ -133,4 +133,27 @@ class @EmailHelperShared
 
 
 
+  unwrapText: (text) ->
+    pattern = /^\"(.+)\"$/
+    data = pattern.exec text
+    data and data[1] or text
+
+
+
+  parseMailAddress: (value) ->
+    pattern = /^([^<]*)<(.+)>$/i
+    data = pattern.exec(value) or [value, '', value]
+    email = data[2]?.trim() or ''
+    email = @unwrapText email
+    name = data[1]?.trim()
+    fragments = email.split("@")
+    return {
+      name: @unwrapText name
+      email: email.toLowerCase()
+      localPart: fragments[0]
+      domain: fragments[1]
+    }
+
+
+
 @emailHelperShared = new EmailHelperShared()
