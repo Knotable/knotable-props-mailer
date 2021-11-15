@@ -138,6 +138,7 @@ h4 {
 .email-container .control-label {
   text-align: left;
   padding: 6px 0 0 0;
+  white-space: nowrap;
 }
 
 .email-container .calendar-body-wrapper,

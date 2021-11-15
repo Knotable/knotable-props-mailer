@@ -14,6 +14,9 @@ key=~/.ssh/beta-omega.pem
 
 DomainLong=props.knote.com
 
+MAILGUN_API_KEY="key-bdd2fe17d8bcfe57c1e76a62988eaaf5"
+MAILGUN_DOMAINS='[{"domain":"props.knote.com","sendingApiKey":"52f1b06442a6f2f227166c24f3a81b05-30b9cd6d-4e9d5334","isDefault":true},{"domain":"knote.com","sendingApiKey":"2e5db41010431fc26030a3b723fff824-30b9cd6d-ff878110"},{"domain":"aikito.co","sendingApiKey":"7720c8a152c10f46b9826f8982bf5740-30b9cd6d-a4266759"}]'
+
 
 function launchServiceOnServer {
   echo "
@@ -41,6 +44,8 @@ function launchServiceOnServer {
         -e ROOT_URL='http://$DomainLong'                                \
         -e METEOR_SETTINGS='$(cat conf/"$DomainLong.json")'             \
         -e MONGO_URL='mongodb://props_meteor_app-mongo'                 \
+        -e MAILGUN_API_KEY='$MAILGUN_API_KEY'                           \
+        -e MAILGUN_DOMAINS='$MAILGUN_DOMAINS'                           \
         -p 80:3000                                                      \
         --restart always                                                \
         --link props_meteor_app-mongo:props_meteor_app-mongo            \

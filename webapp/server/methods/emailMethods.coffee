@@ -1,3 +1,5 @@
+import { getDomains } from "../mailgunDomains"
+
 Meteor.methods
   createEmailEvent: (from, subject, recipients, campaigns, file_ids, due_date, user_id, type = @DRAFT) ->
     throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
@@ -71,3 +73,9 @@ Meteor.methods
       throw new Meteor.Error 403, 'Only draft email is allowed'
     emailData = { from, subject, html, recipients, campaigns, tags }
     Boolean EmailEvents.update _id, $set: emailData
+
+
+
+  getDomains: ->
+    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
+    return getDomains()

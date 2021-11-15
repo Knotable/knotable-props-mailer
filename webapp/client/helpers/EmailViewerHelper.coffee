@@ -81,6 +81,13 @@
 
     from = _.extend @getBaseValidator(), jqueryMixin,
       selector: '#from_address'
+      value: ->
+        senderName = $("#sender_name", $context).val().trim()
+        emailLocalPart = $(@selector, $context).val().trim()
+        domain = $("#from_address_domain", $context)[0].dataset.currentDomain
+        if senderName
+          return "#{senderName}<#{emailLocalPart}@#{domain}>"
+        "#{emailLocalPart}@#{domain}"
       validate: (response) -> @withValidator response, (value) ->
         "Incorrect From email" unless ValidationsHelper.isCorrectEmailWithRealName value
 
@@ -95,10 +102,10 @@
       selector: '#recipients'
       validate: (response) -> @withValidator response, (emails) ->
         return if test and _.isEmpty emails
-        return "Input emails which separated by commas or spaces in Recipients" if _.isEmpty emails
+        return "Input comma or space separated emails in the Recipients field" if _.isEmpty emails
         for email in emails
           unless ValidationsHelper.isCorrectEmail email
-            return "Incorrect email '#{email}' in Recipients"
+            return "Incorrect email '#{email}' in the Recipients field"
           if test and /(props|knotable)/i.test email
             return "Looks like you're trying to send a test email to a mailing list #{email}.
                     You can only send test emails to personal addresses."
@@ -273,15 +280,16 @@
       html       : emailData.html
       text       : emailData.text
 
-    newFileIds = []
-    Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
-      delete file._id
-      file.email_event_id = draftId
-      file.created_time   = new Date()
-      fileId = Files.insert file
-      newFileIds.push fileId
+    if emailData.file_ids
+      newFileIds = []
+      Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+        delete file._id
+        file.email_event_id = draftId
+        file.created_time   = new Date()
+        fileId = Files.insert file
+        newFileIds.push fileId
+      EmailEvents.update {_id: draftId}, {$set: {file_ids: newFileIds}}
 
-    EmailEvents.update {_id: draftId}, {$set: {file_ids: newFileIds}}
     Meteor.subscribe "fileByEmailEventId", draftId
     Session.set "CURRENT_DRAFT_EVENT_ID", draftId
 

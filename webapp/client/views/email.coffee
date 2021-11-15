@@ -1,8 +1,40 @@
+import { ReactiveVar } from "meteor/reactive-var"
+
+
+
+getParsedEmail = (store) ->
+  from = store.currentDraft({ from: 1 })?.from
+  if from
+    return emailHelperShared.parseMailAddress(from)
+  return null
+
+
+
+getCurrentDomain = (domains, storedDomain) ->
+  getDefaultDomain = -> domains.find((d) -> d.isDefault)?.domain
+  if storedDomain
+    domains.find((d) -> d.domain is storedDomain)?.domain or getDefaultDomain()
+  else
+    getDefaultDomain()
+
+
+
 Template.new_email.onCreated ->
+  @domains = new ReactiveVar([])
+  @senderName = new ReactiveVar("")
+  @emailLocalPart = new ReactiveVar("")
+  @currentDomain = new ReactiveVar("")
   @autorun =>
     return unless Meteor.userId()
     @store = new LocalDataStore "drafts.user_#{Meteor.userId()}.draftEmails"
     @store.currentDraft = (options) -> @findOne EmailViewerHelper.currentEmailEventId(), options
+    Meteor.call("getDomains",(err, domains) =>
+      data = getParsedEmail(@store)
+      @domains.set(domains)
+      @senderName.set(data.name) if data.name
+      @emailLocalPart.set(data.localPart) if data.localPart
+      @currentDomain.set(getCurrentDomain(domains, data.domain))
+    )
 
 
 
@@ -94,6 +126,22 @@ Template.new_email.helpers
     return false
 
 
+  domains: ->
+    Template.instance().domains.get().map((d) -> d.domain)
+
+
+  senderName: ->
+    Template.instance().senderName.get()
+
+
+  emailLocalPart: ->
+    Template.instance().emailLocalPart.get()
+
+
+  currentDomain: ->
+    Template.instance().currentDomain.get()
+
+
 
   from: ->
     fields = from: 1
@@ -135,9 +183,25 @@ updateFieldContent = (name, validator, store) ->
 
 
 Template.new_email.events
+  'change #sender_name': (e, t) ->
+    { from } = EmailViewerHelper.getValidators()
+    updateFieldContent 'from', from, t.store
+
+
+
   'change #from_address': (e, t) ->
     { from } = EmailViewerHelper.getValidators()
-    updateFieldContent 'form', from, t.store
+    updateFieldContent 'from', from, t.store
+
+
+
+  'click .from-address-group .dropdown-menu a': (e, t) ->
+    e.preventDefault()
+    t.currentDomain.set(e.target.dataset.id)
+    store = t.store
+    Tracker.afterFlush ->
+      { from } = EmailViewerHelper.getValidators()
+      updateFieldContent 'from', from, store
 
 
 
