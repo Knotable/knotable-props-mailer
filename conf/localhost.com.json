@@ -7,7 +7,7 @@
   },
   "github": {
     "organization_name": "Knotable",
-    "repo_access": "knotable-ops",
+    "repo_access": ["knotable-ops", "props-mailer-access"],
     "client_id": "bf51af4412abdb5a454e",
     "client_secret": "19be0be33d6157aa387922e802df0e93529ab9cd",
     "team": {

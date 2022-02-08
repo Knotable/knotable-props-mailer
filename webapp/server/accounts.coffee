@@ -4,19 +4,20 @@ accountHelper =
     { organization_name, repo_access, team } = Meteor.settings.github
     githubApi = new GithubApi accessToken, "User-Agent": "Meteor/1.0"
     try
-    # For non developers we expect to see them in configured team
       console.log "[#{username}] Try to access via team membership", team
       requiredMembership = githubApi.getTeamMembership team.id, username
       if requiredMembership.state isnt 'active'
         throw new Meteor.Error 'Access denied: membership state is not active'
     catch err
+      repo_access = if Array.isArray(repo_access) then repo_access else [repo_access]
       console.error "[#{username}] No access via team membership", team, err.message or err
-      console.log "[#{username}] Try to access as developer", { repo_access }
-      repos = githubApi.getOrganizationRepos organization_name
+      console.log "[#{username}] Try to access via repo membership", repo_access
+      params = new URLSearchParams()
+      params.append("per_page", 100)
+      repos = githubApi.getOrganizationRepos organization_name, params
       names = _.pluck repos, "name"
-      # Let developers have access to the app if they have access to configured repo
-      unless _.contains names, repo_access
-        console.error "[#{username}] No developers access allowed", { repo_access }
+      unless repo_access.some((repo) -> names.includes(repo))
+        console.error "[#{username}] No developers access allowed", repo_access
         throw new Meteor.Error 403, "To login you should have access to github team or repository"
     true
 

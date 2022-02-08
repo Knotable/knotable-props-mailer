@@ -34,8 +34,8 @@ class @GithubApi
 
 
 
-  getOrganizationRepos: (organization) ->
+  getOrganizationRepos: (organization, params = new URLSearchParams()) ->
     check organization, String
     @call
       method: 'GET'
-      url: "/orgs/#{organization}/repos"
+      url: "/orgs/#{organization}/repos?#{params}"
