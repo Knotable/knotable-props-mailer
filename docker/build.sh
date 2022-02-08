@@ -38,8 +38,5 @@ fi
 
 
 $sudo docker login -u knotable -p d0ckerP^55 registry.knotable.com:443
-$sudo docker tag -f registry.knotable.com:443/meteord-webapp registry.knotable.com:443/meteord-old 2>/dev/null
-$sudo docker pull registry.knotable.com:443/meteord-webapp
 $sudo docker rmi -f registry.knotable.com:443/props_meteor_app
-$sudo docker rmi registry.knotable.com:443/meteord-old 2>/dev/null
 $sudo docker build -t registry.knotable.com:443/props_meteor_app -f docker/Dockerfile ./
