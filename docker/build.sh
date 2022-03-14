@@ -37,6 +37,7 @@ fi
 
 
 
-$sudo docker login -u knotable -p d0ckerP^55 registry.knotable.com:443
-$sudo docker rmi -f registry.knotable.com:443/props_meteor_app
-$sudo docker build -t registry.knotable.com:443/props_meteor_app -f docker/Dockerfile ./
+aws ecr get-login-password --region us-east-1 \
+| $sudo docker login --username AWS --password-stdin 149172093612.dkr.ecr.us-east-1.amazonaws.com
+
+$sudo docker build -t 149172093612.dkr.ecr.us-east-1.amazonaws.com/props-app -f docker/Dockerfile ./

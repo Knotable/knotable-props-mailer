@@ -17,6 +17,7 @@ DomainLong=props.knote.com
 MAILGUN_API_KEY="key-bdd2fe17d8bcfe57c1e76a62988eaaf5"
 MAILGUN_DOMAINS='[{"domain":"props.knote.com","sendingApiKey":"52f1b06442a6f2f227166c24f3a81b05-30b9cd6d-4e9d5334","isDefault":true},{"domain":"knote.com","sendingApiKey":"2e5db41010431fc26030a3b723fff824-30b9cd6d-ff878110"},{"domain":"aikito.co","sendingApiKey":"7720c8a152c10f46b9826f8982bf5740-30b9cd6d-a4266759"}]'
 
+registryPass=$(aws ecr get-login-password --region us-east-1)
 
 function launchServiceOnServer {
   echo "
@@ -24,9 +25,9 @@ function launchServiceOnServer {
   "
   ssh -i $key ubuntu@$1 bash -c "                                       \
     echo 'Logging in...'                                            ;   \
-    sudo docker login -u knotable -p d0ckerP^55 registry.knotable.com:443                                         &&  \
-    sudo docker tag registry.knotable.com:443/props_meteor_app registry.knotable.com:443/props_meteor_app:old     ;   \
-    sudo docker pull registry.knotable.com:443/props_meteor_app     &&  \
+    sudo docker login -u AWS -p $registryPass 149172093612.dkr.ecr.us-east-1.amazonaws.com &&  \
+    sudo docker tag 149172093612.dkr.ecr.us-east-1.amazonaws.com/props-app 149172093612.dkr.ecr.us-east-1.amazonaws.com/props-app:old       ;   \
+    sudo docker pull 149172093612.dkr.ecr.us-east-1.amazonaws.com/props-app     &&  \
                                                                         \
     sudo docker rm -f props_meteor_app-mongo &> /dev/null           ;   \
     sleep 2                                                         ;   \
@@ -50,8 +51,8 @@ function launchServiceOnServer {
         --restart always                                                \
         --link props_meteor_app-mongo:props_meteor_app-mongo            \
         -v /knotable-var:/logs                                          \
-        registry.knotable.com:443/props_meteor_app /bin/sh -c 'node main.js 1>>/logs/forever.log 2>&1' ; \
-    sudo docker rmi registry.knotable.com:443/props_meteor_app:old
+        149172093612.dkr.ecr.us-east-1.amazonaws.com/props-app:latest /bin/sh -c 'node main.js 1>>/logs/forever.log 2>&1' ; \
+    sudo docker rmi 149172093612.dkr.ecr.us-east-1.amazonaws.com/props-app:old
   "
 }
 

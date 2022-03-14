@@ -6,5 +6,8 @@ if [ "$(uname)" == "Darwin" ]; then
   sudo=
 fi
 
-$sudo docker login -u knotable -p d0ckerP^55 registry.knotable.com:443
-$sudo docker push registry.knotable.com:443/props_meteor_app
+
+aws ecr get-login-password --region us-east-1 \
+| $sudo docker login --username AWS --password-stdin 149172093612.dkr.ecr.us-east-1.amazonaws.com
+
+$sudo docker push 149172093612.dkr.ecr.us-east-1.amazonaws.com/props-app:latest
