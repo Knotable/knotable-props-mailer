@@ -31,9 +31,9 @@ Template.new_email.onCreated ->
     Meteor.call("getDomains",(err, domains) =>
       data = getParsedEmail(@store)
       @domains.set(domains)
-      @senderName.set(data.name) if data.name
-      @emailLocalPart.set(data.localPart) if data.localPart
-      @currentDomain.set(getCurrentDomain(domains, data.domain))
+      @senderName.set(data.name) if data?.name
+      @emailLocalPart.set(data.localPart) if data?.localPart
+      @currentDomain.set(getCurrentDomain(domains, data?.domain))
     )
 
 
