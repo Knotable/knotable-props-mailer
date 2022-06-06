@@ -15,7 +15,7 @@ key=~/.ssh/beta-omega.pem
 DomainLong=props.knote.com
 
 MAILGUN_API_KEY="key-bdd2fe17d8bcfe57c1e76a62988eaaf5"
-MAILGUN_DOMAINS='[{"domain":"props.knote.com","sendingApiKey":"52f1b06442a6f2f227166c24f3a81b05-30b9cd6d-4e9d5334","isDefault":true},{"domain":"knote.com","sendingApiKey":"2e5db41010431fc26030a3b723fff824-30b9cd6d-ff878110"},{"domain":"aikito.co","sendingApiKey":"7720c8a152c10f46b9826f8982bf5740-30b9cd6d-a4266759"},{"domain":"sarva.co","sendingApiKey":"3e9ba9d21020a94f214f78d9928ddb12-62916a6c-ead01856"}]'
+MAILGUN_DOMAINS='[{"domain":"props.knote.com","sendingApiKey":"52f1b06442a6f2f227166c24f3a81b05-30b9cd6d-4e9d5334","isDefault":true},{"domain":"knote.com","sendingApiKey":"2e5db41010431fc26030a3b723fff824-30b9cd6d-ff878110"},{"domain":"aikito.co","sendingApiKey":"7720c8a152c10f46b9826f8982bf5740-30b9cd6d-a4266759"},{"domain":"sarva.co","sendingApiKey":"3e9ba9d21020a94f214f78d9928ddb12-62916a6c-ead01856"},{"domain":"aiki.to","sendingApiKey":"4f52b4677b7f2ea822dad7bcaa46e309-523596d9-8af81c6c"}]'
 
 registryPass=$(aws ecr get-login-password --region us-east-1)
 
