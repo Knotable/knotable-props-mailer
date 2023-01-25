@@ -12,3 +12,9 @@
 
   remove: (userId, doc) ->
     true
+
+
+if Meteor.isServer 
+  EmailEvents.createIndex({
+    user_id: 1,
+  })

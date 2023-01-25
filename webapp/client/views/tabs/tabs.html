@@ -1,0 +1,17 @@
+<template name="nav_tabs">
+  <ul class="nav nav-tabs">
+    {{#each tabs }}
+      <li class="{{#if isActive name }} active {{/if}}"><a class="nav-tab-item"  data-tab-index="{{@index}}">{{ name }}</a></li>
+    {{/each}} 
+   
+  </ul>
+<div class="tab-content">
+      <div id="tab-compose" class="tab-pane fade in active">
+        {{> Template.dynamic template }}
+      </div>
+    <!-- <div id="tab-compose" class="tab-pane fade in active">{{> new_email}}</div>
+    <div id="tab-queued" class="tab-pane fade">{{> email_list}}</div>
+    <div id="tab-sent" class="tab-pane fade">{{> sent_email_list}}</div>
+    <div id="tab-files" class="tab-pane fade">{{> files_list }}</div> -->
+  </div>
+</template>

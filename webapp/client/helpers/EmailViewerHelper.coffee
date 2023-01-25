@@ -34,7 +34,7 @@
     @validateEmail $form, false, (err, emailData) ->
       return callback err if err
       Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
-        EmailViewerHelper.afterAddToQueue emailData unless err
+        # EmailViewerHelper.afterAddToQueue emailData unless err
         callback err, result
 
 
@@ -280,15 +280,15 @@
       html       : emailData.html
       text       : emailData.text
 
-    if emailData.file_ids
-      newFileIds = []
-      Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
-        delete file._id
-        file.email_event_id = draftId
-        file.created_time   = new Date()
-        fileId = Files.insert file
-        newFileIds.push fileId
-      EmailEvents.update {_id: draftId}, {$set: {file_ids: newFileIds}}
+    # if emailData.file_ids
+    #   newFileIds = []
+    #   Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+    #     delete file._id
+    #     file.email_event_id = draftId
+    #     file.created_time   = new Date()
+    #     fileId = Files.insert file
+    #     newFileIds.push fileId
+    #   EmailEvents.update {_id: draftId}, {$set: {file_ids: newFileIds}}
 
     Meteor.subscribe "fileByEmailEventId", draftId
     Session.set "CURRENT_DRAFT_EVENT_ID", draftId
@@ -325,16 +325,16 @@
     newFileIds = []
 
     # Remove old files of draft email event
-    Files.find({email_event_id: draftId}).forEach (file) ->
-      Files.remove {_id: file._id}
+    # Files.find({email_event_id: draftId}).forEach (file) ->
+    #   Files.remove {_id: file._id}
 
     # Add new Files from Queued one
-    Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
-      delete file._id
-      file.email_event_id = draftId
-      file.created_time   = new Date()
-      fileId = Files.insert file
-      newFileIds.push fileId
+    # Files.find({_id: $in: emailData.file_ids}).forEach (file) ->
+    #   delete file._id
+    #   file.email_event_id = draftId
+    #   file.created_time   = new Date()
+    #   fileId = Files.insert file
+    #   newFileIds.push fileId
 
     console.log "GC - ", emailData
     EmailEvents.update {_id: draftId},

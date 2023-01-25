@@ -244,7 +244,7 @@ Template.new_email.events
         $(selector, $form).addClass('input-error').focus() if selector
       else
         t.store.remove emailId
-        $('a[href="#tab-queued"]').click()
+        $('a[data-tab-index="1"]').click()
         showBootstrapGrowl("Added email in queue")
 
 
@@ -397,3 +397,5 @@ Template.sent_email_box.helpers
 
   file: ->
     Files.findOne(@file_ids?[0])
+
+
