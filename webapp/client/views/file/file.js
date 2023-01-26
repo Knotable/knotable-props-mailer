@@ -19,11 +19,10 @@ Template.file_item_1.helpers({
 });
 
 Template.file_item_1.events({
-  "click .file-item": (e, t) => {
+  "click .file-item_1": (e, t) => {
     e.stopPropagation();
-    console.log(">>>>>>", t);
     const { onClick } = t.data;
-    if (typeof onCLick === "function") {
+    if (typeof onClick === "function") {
       onClick(t.data);
     }
   },

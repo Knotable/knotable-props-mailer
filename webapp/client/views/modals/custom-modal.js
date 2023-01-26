@@ -4,11 +4,13 @@ Template.custom_modal.onRendered(function () {
       this.data.onClose();
     }
   };
+  document.body.classList.add("no-scroll");
 
   document.addEventListener("keypress", this.keypress);
 });
 
 Template.custom_modal.onDestroyed(function () {
+  document.body.classList.remove("no-scroll");
   document.removeEventListener("keypress", this.keypress);
 });
 

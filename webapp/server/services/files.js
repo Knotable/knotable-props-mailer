@@ -30,11 +30,11 @@ export default class FilesService {
   delete(query) {
     this.validator(query, {
       creatorId: Match.Optional(String),
-      filesIds: [String],
+      fileIds: [String],
     });
 
     return this.store.remove({
-      _id: { $in: query.filesIds },
+      _id: { $in: query.fileIds },
       creatorId: query.creatorId ? query.creatorId : { $exists: false },
     });
   }
