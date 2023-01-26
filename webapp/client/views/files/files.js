@@ -30,16 +30,32 @@ Template.files_list.helpers({
   },
 
   template() {
-    const file = Template.currentData();
-    const { template, ...rest } = Template.parentData() ?? {};
-    return {
-      template: template ?? "file_item",
-      data: { ...rest, ...file },
-    };
+    const { template } = Template.parentData() ?? {};
+    return template ?? "file_item";
   },
 
   files() {
     const { sort } = Template.instance();
     return Files.find({ creatorId: Meteor.userId() }, { sort });
+  },
+});
+
+Template.files_list.events({
+  "click .file-item_1[data-file-id]": (e, t) => {
+    const fileId = e.currentTarget.dataset?.fileId;
+    const file = Files.findOne(fileId);
+    const { onClick } = t.data;
+    if (file && typeof onClick === "function") {
+      onClick(file);
+    }
+  },
+
+  "click .file-item[data-file-id] .file-actions button.delete": (e, t) => {
+    const el = e.target.closest(".file-item");
+    const fileId = el.dataset?.fileId;
+    if (!fileId) return;
+    Meteor.call("files.delete", [fileId], (err, res) => {
+      if (err) showBootstrapGrowl(err.reason ?? err.message);
+    });
   },
 });

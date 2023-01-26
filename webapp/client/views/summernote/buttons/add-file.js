@@ -7,8 +7,11 @@ export default function AddFileButton(context) {
     img.alt = img.title = file.name;
     img.style.display = "block";
     img.src = file.s3_url;
-    context.invoke("insertNode", img);
+    img.style = "width: 100%";
     close();
+    context.invoke("editor.restoreRange");
+    context.invoke("editor.focus");
+    context.invoke("insertNode", img);
   };
 
   const close = () => {
@@ -19,10 +22,11 @@ export default function AddFileButton(context) {
   const button = ui.button({
     contents: '<i class="fa fa-paperclip"/> Add File',
     click: function () {
+      context.invoke("editor.saveRange");
       view = Blaze.renderWithData(
         Template.custom_modal,
         {
-          size: "sm",
+          size: "md",
           title: "Select File",
           template: {
             template: "files_list",

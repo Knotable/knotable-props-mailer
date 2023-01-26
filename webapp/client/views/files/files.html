@@ -3,7 +3,7 @@
   <div class="files_list"> 
     <div style="text-align: center;">
       {{#each files}}
-        {{> Template.dynamic template }}
+        {{> Template.dynamic template=template }}
       {{/each}}
     </div>
     {{#if isLoading }} 

@@ -10,8 +10,8 @@ body.no-scroll{
   right: 0;
   z-index: 1000;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
   background-color: rgba(0, 0, 0, 0.7);
 }
 
@@ -20,12 +20,17 @@ body.no-scroll{
   border-radius: 5px;
   display: flex;
   flex-direction: column;
+  margin-top: 50px;
+  box-shadow: 0 5px 15px rgba(0, 0, 0, .5);
+  overflow: hidden;
+  max-height: calc(100vh - 100px)
 }
 
 .custom-modal .custom-modal-content{
   background-color: #eee;
   overflow-y: auto;
   height: 100%;
+  border-radius: 0 0 5px 5px  ;
 }
 
 
@@ -42,15 +47,21 @@ body.no-scroll{
 
 .custom-modal.lg-width .custom-modal-view{
   width: 90%;
-  max-height: 70%;
 }
 
 .custom-modal.md-width .custom-modal-view{
   width: 70%;
-  max-height: 70%;
+  max-width: 800px;
 }
 
 .custom-modal.sm-width .custom-modal-view{
-  width: 50%;
-  max-height: 50%;
+  width: 60%;
+  max-width: 500px;
+}
+
+
+@media (max-width: 767px) {
+  .custom-modal[class*=-width] .custom-modal-view {
+    width: 90%;
+  }
 }

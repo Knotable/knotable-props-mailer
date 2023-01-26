@@ -1,6 +1,6 @@
 
 <template name="file_item">
-  <div class="file-item">
+  <div  data-file-id="{{_id}}" class="file-item">
     <div class="file-content">
       <div class="file-view" style="background-image:  url({{s3_url}});"></div>
       <div class="file-description">
@@ -18,12 +18,12 @@
 </template>
 
 <template name="file_item_1">
-  <div class="file-item_1" style="
+  <div data-file-id="{{_id}}" class="file-item_1" style="
       display: inline-block; 
       background-color: white; 
       padding: 10px; 
       border: 1px solid #ccc; 
-      margin: 10px; 
+      margin: 5px; 
       cursor: pointer;
       border-radius: 5px;">
     <div style="display: flex; align-items: center;">
