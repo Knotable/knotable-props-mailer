@@ -1,6 +1,5 @@
 import { getDomains } from "../mailgunDomains"
 import FilesService from "../services/files"
-import EmailEventsService from "../services/email-events"
 
 Meteor.methods
   createEmailEvent: (from, subject, recipients, campaigns, file_ids, due_date, user_id, type = @DRAFT) ->
@@ -16,14 +15,15 @@ Meteor.methods
 
 
   updateEmailEvent: (emailData, type = EmailHelperShared.DRAFT, status = EmailHelperShared.IN_QUEUE) ->
-    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
+    userId = Meteor.userId()
+    throw new Meteor.Error 401, 'Unauthorized' unless userId
     emailData = _.compactObject emailData
 
     urls = []
     for img in HtmlHelperShared.findImages(emailData.html) 
       urls.push(img.attribs.src)
 
-    emailData.file_ids = await FilesService.createDefault().createFromS3Urls(urls)
+    emailData.file_ids = await FilesService.createDefault().createFromS3Urls(urls, { creatorId: userId })
 
     check emailData, Match.ObjectIncluding
       _id: String
@@ -35,7 +35,7 @@ Meteor.methods
       campaigns: Match.Optional [ String ]
       tags: Match.Optional [ String ]
     emailData.text = HtmlHelperShared.htmlToText emailData.html
-    emailData.user_id = Meteor.userId()
+    emailData.user_id = userId
     emailData.is_test = false
     emailHelperShared.updateEmailEvent(emailData, type, status)
 
@@ -88,8 +88,3 @@ Meteor.methods
   getDomains: ->
     throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
     return getDomains()
-
-
-  getUserFiles: (skip, limit)->
-    throw new Meteor.Error 401, 'Unauthorized' unless Meteor.userId()
-    return EmailEventsService.createDefault().getFiles({ user_id: Meteor.userId()}, skip, limit)

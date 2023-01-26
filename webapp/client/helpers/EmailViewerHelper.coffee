@@ -290,7 +290,7 @@
     #     newFileIds.push fileId
     #   EmailEvents.update {_id: draftId}, {$set: {file_ids: newFileIds}}
 
-    Meteor.subscribe "fileByEmailEventId", draftId
+    # Meteor.subscribe "fileByEmailEventId", draftId
     Session.set "CURRENT_DRAFT_EVENT_ID", draftId
 
 

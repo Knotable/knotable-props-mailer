@@ -1,0 +1,30 @@
+
+<template name="file_item">
+  <div class="file-item">
+    <div class="file-content">
+      <div class="file-view" style="background-image:  url({{s3_url}});"></div>
+      <div class="file-description">
+          <div class="file-name">{{name}}</div>
+          <div> {{size}}</div>
+      </div>  
+      <div class="file-actions">
+        <button class="delete" style="color: red;">Delete</button>
+        <button>
+          <a href="{{s3_url}}" style="text-decoration: none;" target="_blank">Preview</a>
+        </button>
+      </div>  
+    </div>
+  </div>
+</template>
+
+<template name="file_item_1">
+  <div class="file-item">
+    <div class="file-content">
+      <div class="file-view" style="background-image:  url({{s3_url}});"></div>
+      <div class="file-description">
+          <div class="file-name">{{name}}</div>
+          <div> {{size}}</div>
+      </div>  
+    </div>
+  </div>
+</template>

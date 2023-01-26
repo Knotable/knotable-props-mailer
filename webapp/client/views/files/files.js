@@ -1,15 +1,26 @@
 import { ReactiveVar } from "meteor/reactive-var";
 
 Template.files_list.onCreated(function () {
-  this.files = new ReactiveVar([]);
+  this.sort = { ceratedDate: 1 };
   this.isLoading = new ReactiveVar(false);
 });
 
 Template.files_list.onRendered(function () {
-  this.isLoading.set(true);
-  Meteor.call("getUserFiles", (err, res) => {
-    if (res) this.files.set(res);
-    this.isLoading.set(false);
+  this.autorun(() => {
+    this.isLoading.set(true);
+    Meteor.subscribe(
+      "files.get",
+      { sort: this.sort },
+      {
+        onStop: (err) => {
+          if (err) showBootstrapGrowl(err.reason ?? err.message);
+          this.isLoading.set(false);
+        },
+        onReady: () => {
+          this.isLoading.set(false);
+        },
+      }
+    );
   });
 });
 
@@ -18,13 +29,17 @@ Template.files_list.helpers({
     return Template.instance().isLoading.get();
   },
 
-  files() {
-    return Template.instance().files.get();
+  template() {
+    const file = Template.currentData();
+    const { template, ...rest } = Template.parentData() ?? {};
+    return {
+      template: template ?? "file_item",
+      data: { ...rest, ...file },
+    };
   },
-});
 
-Template.file_item.helpers({
-  size() {
-    return FileHelper.fileSize2Text(this.size);
+  files() {
+    const { sort } = Template.instance();
+    return Files.find({ creatorId: Meteor.userId() }, { sort });
   },
 });

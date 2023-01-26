@@ -1,34 +1,17 @@
 
 <template name="files_list">
-  {{#if isLoading }} 
-    <div style="display: flex;" >
-      <div style="position: relative; margin: 0 auto;">
-        <div class="loading-circle"> </div> 
-      </div>
-    </div>
-  {{ else }}  
+  <div class="files_list"> 
     <div style="text-align: center;">
-        {{#each files}}
-          {{> file_item }}
-        {{/each}}
+      {{#each files}}
+        {{> Template.dynamic template }}
+      {{/each}}
     </div>
-  {{/if}}
-</template>
-
-
-
-<template name="file_item">
-  <div style="background-color: white; display: inline-block; margin: 10px; padding: 10px;  width: 200px;">
-    <div >
-      <div style=" width: 100%; height:200px; background: center / contain no-repeat  url({{s3_url}});"></div>
-      <div>
-          <div style="overflow:hidden; text-overflow:ellipsis; white-space: nowrap;">{{name}}</div>
-          <div> {{size}}</div>
-      </div>  
-      <div style="margin-top: 10px;">
-        <button>Delete</button>
-        <button>Preview</button>
-      </div>  
-    </div>
+    {{#if isLoading }} 
+      <div style="display: flex;" >
+        <div style="position: relative; margin: 0 auto;">
+          <div class="loading-circle"> </div> 
+        </div>
+      </div>
+    {{/if}}
   </div>
 </template>

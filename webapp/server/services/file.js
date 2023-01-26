@@ -5,7 +5,7 @@ export default class FileService {
     this.awsFileService = awsFileService;
   }
 
-  async createByS3Url(url) {
+  async createByS3Url(url, extra = {}) {
     const mime = await import("mime-types");
     const filePath = url.split("s3.amazonaws.com/").pop();
     let file = await this.awsFileService.getMetaData(filePath);
@@ -20,6 +20,7 @@ export default class FileService {
       name: fileName,
       size: file.ContentLength,
       s3_url: url,
+      ...extra,
     });
   }
 
@@ -29,8 +30,11 @@ export default class FileService {
       type: String,
       s3_url: String,
       size: Number,
+      creatorId: Match.Optional(String),
     });
-    const existsFile = this.get({ s3_url: file.s3_url });
+    const query = { s3_url: file.s3_url };
+    if (file.creatorId) query.creatorId = file.creatorId;
+    const existsFile = this.get(query);
     if (existsFile) return existsFile._id;
     return this.store.insert({ ...file, createdDate: new Date() });
   }
@@ -39,6 +43,7 @@ export default class FileService {
     this.validator(query, {
       _id: Match.Optional(String),
       s3_url: Match.Optional(String),
+      creatorId: Match.Optional(String),
     });
     if (Object.keys(query).length == 0) throw new Error("Query is empty");
     return this.store.findOne(query);

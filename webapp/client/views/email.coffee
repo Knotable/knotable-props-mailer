@@ -1,5 +1,5 @@
 import { ReactiveVar } from "meteor/reactive-var"
-
+import AddFileButton from './summernote/buttons/add-file'
 
 
 getParsedEmail = (store) ->
@@ -59,9 +59,11 @@ Template.new_email.onRendered ->
       ['height', ['height']],
       ['misc', ['fullscreen', 'codeview', 'undo', 'redo', 'help']]
       ['mybutton', ['uploadFile']]
+      ['addFile', ['addFile']]
     ]
     buttons:
       uploadFile: UploadButton
+      addFile: AddFileButton
     callbacks:
       onChange: =>
         content = $el.summernote 'code'
