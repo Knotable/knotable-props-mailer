@@ -82,6 +82,26 @@ body{
 }
 }
 
+.loading {
+  width: 30px;
+  height: 30px;
+  border: solid 5px #28ADE8;
+  border-radius: 50%;-moz-border-radius: 50%;-webkit-border-radius: 50%;
+  border-bottom-color: rgba(218, 218, 235, 0.5);
+  -webkit-animation: loading  2s linear infinite; /* Safari */
+  animation: loading  2s linear infinite;
+}
+
+@keyframes loading {
+  0% { transform:rotate(0deg);}
+  100% { transform:rotate(360deg);}
+}
+
+@-webkit-keyframes loading {
+  0% { transform:rotate(0deg);}
+  100% { transform:rotate(360deg);}
+}
+
 * {
   -webkit-box-sizing: border-box;
   -moz-box-sizing: border-box;
