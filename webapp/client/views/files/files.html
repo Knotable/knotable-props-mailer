@@ -2,10 +2,13 @@
 <template name="files_list">
   <div class="files_list" style="position: relative;"> 
     <div class="files-list-content" style="text-align: center;">
-      {{#each files}}
-        {{> Template.dynamic template=template }}
-      {{/each}}
-  
+      {{#if files}}
+        {{#each files}}
+          {{> Template.dynamic template=template }}
+        {{/each}}
+      {{else}}
+        <div style="padding: 20px; font-weight: bold;">No files found</div>
+      {{/if}}
     </div>
     {{#if isLoading }} 
       <div style="display: flex; justify-content: center; " >
