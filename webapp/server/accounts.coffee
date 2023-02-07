@@ -12,13 +12,19 @@ accountHelper =
       repo_access = if Array.isArray(repo_access) then repo_access else [repo_access]
       console.error "[#{username}] No access via team membership", team, err.message or err
       console.log "[#{username}] Try to access via repo membership", repo_access
-      params = new URLSearchParams()
-      params.append("per_page", 100)
-      repos = githubApi.getOrganizationRepos organization_name, params
-      names = _.pluck repos, "name"
-      unless repo_access.some((repo) -> names.includes(repo))
-        console.error "[#{username}] No developers access allowed", repo_access
-        throw new Meteor.Error 403, "To login you should have access to github team or repository"
+      page = 1
+      pageSize = 50
+      while true
+        params = new URLSearchParams()
+        params.append("page", page)
+        params.append("per_page", pageSize)
+        repos = githubApi.getOrganizationRepos organization_name, params
+        if repos.length == 0
+          console.error "[#{username}] No developers access allowed", repo_access
+          throw new Meteor.Error 403, "To login you should have access to github team or repository"
+        names = _.pluck repos, "name"
+        break if repo_access.some((repo) -> names.includes(repo))
+        page++
     true
 
 
