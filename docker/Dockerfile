@@ -1,4 +1,4 @@
-FROM registry.knotable.com:443/meteor-alpine:2.5 as builder
+FROM registry.knotable.com:443/meteor-alpine:2.9.0 as builder
 
 ENV METEOR_DISABLE_OPTIMISTIC_CACHING=1
 
