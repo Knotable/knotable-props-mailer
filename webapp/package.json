@@ -4,7 +4,7 @@
   "description": "",
   "main": "index",
   "scripts": {
-    "start": "SERVER_NODE_OPTIONS='--require dotenv/config' meteor run --settings ../conf/localhost.com.json",
+    "start": "dotenv -e .env -- meteor run --settings ../conf/localhost.com.json",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
@@ -21,7 +21,7 @@
     "request": "^2.88.2"
   },
   "devDependencies": {
-    "dotenv": "^10.0.0",
+    "dotenv-cli": "^7.0.0",
     "prettier": "^2.4.1"
   }
 }
