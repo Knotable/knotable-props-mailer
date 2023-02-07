@@ -1,5 +1,6 @@
 {
   "AWS": {
+    "region": "us-east-1",
     "accessKeyId": "AKIASFO2ZQKWK2OZDPHS",
     "secretAccessKey": "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",
     "username": "knotable-app",

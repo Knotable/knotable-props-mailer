@@ -1,15 +1,3 @@
-<template name="email_container">
-  <ul class="nav nav-tabs">
-    <li class="active"><a data-toggle="tab" href="#tab-compose">Compose</a></li>
-    <li><a data-toggle="tab" href="#tab-queued">Queued</a></li>
-    <li><a data-toggle="tab" href="#tab-sent">Sent</a></li>
-  </ul>
-  <div class="tab-content">
-    <div id="tab-compose" class="tab-pane fade in active">{{> new_email}}</div>
-    <div id="tab-queued" class="tab-pane fade">{{> email_list}}</div>
-    <div id="tab-sent" class="tab-pane fade">{{> sent_email_list}}</div>
-  </div>
-</template>
 
 <template name="new_email">
   <div class="email-container col-sm-12">

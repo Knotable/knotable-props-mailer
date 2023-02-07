@@ -12,7 +12,7 @@ Files.validation =
 
 
 
-@Files.allow
+@Files.deny
   insert: (userId, doc) ->
     true
 
@@ -21,3 +21,9 @@ Files.validation =
 
   remove: (userId, doc) ->
     true
+
+
+if Meteor.isServer 
+  Files.createIndex({
+    s3_url: 1
+  })

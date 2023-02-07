@@ -4,22 +4,24 @@
   "description": "",
   "main": "index",
   "scripts": {
-    "start": "SERVER_NODE_OPTIONS='--require dotenv/config' meteor run --settings ../conf/localhost.com.json",
+    "start": "dotenv -e .env -- meteor run --settings ../conf/localhost.com.json",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.257.0",
     "@babel/runtime": "^7.16.3",
     "cheerio": "^1.0.0-rc.10",
     "form-data": "^4.0.0",
     "inline-css": "^3.0.0",
     "mailgun.js": "^3.7.3",
+    "mime-types": "^2.1.35",
     "node-rsa": "^0.4.2",
     "request": "^2.88.2"
   },
   "devDependencies": {
-    "dotenv": "^10.0.0",
+    "dotenv-cli": "^7.0.0",
     "prettier": "^2.4.1"
   }
 }

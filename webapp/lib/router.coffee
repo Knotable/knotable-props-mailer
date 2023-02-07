@@ -37,7 +37,7 @@ if Meteor.isClient
 
     @route "email",
       path: "/email"
-      template: "email_container"
+      template: "nav_tabs"
       layoutTemplate: "layout"
       onBeforeAction: [loginFilter]
       onAfterAction: [emailSubscribe]

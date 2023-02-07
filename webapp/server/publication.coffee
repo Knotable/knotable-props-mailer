@@ -1,7 +1,7 @@
-Meteor.publish "fileByEmailEventId", (email_event_id) ->
-  if @userId
-    return Files.find {email_event_id: email_event_id}
-  return []
+# Meteor.publish "fileByEmailEventId", (email_event_id) ->
+#   if @userId
+#     return Files.find {email_event_id: email_event_id}
+#   return []
 
 
 Meteor.publish "emailEventsAndFiles", ->

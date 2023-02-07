@@ -1,0 +1,10 @@
+<template name="custom_modal">
+  <div class="custom-modal {{size}}-width">
+    <div class="custom-modal-view">
+        <div class="custom-modal-title">{{ title }}</div>
+        <div class="custom-modal-content">
+          {{> Template.dynamic template}}
+      </div>
+    </div>
+  </div>
+</template>
