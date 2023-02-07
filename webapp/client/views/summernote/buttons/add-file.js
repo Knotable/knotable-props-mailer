@@ -20,7 +20,7 @@ export default function AddFileButton(context) {
   };
 
   const button = ui.button({
-    contents: '<i class="fa fa-paperclip"/> Add File',
+    contents: '<i class="fa fa-paperclip"/> Files',
     click: function () {
       context.invoke("editor.saveRange");
       view = Blaze.renderWithData(
