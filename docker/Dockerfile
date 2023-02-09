@@ -1,4 +1,4 @@
-FROM registry.knotable.com:443/meteor-alpine:2.9.0 as builder
+FROM 149172093612.dkr.ecr.us-east-1.amazonaws.com/meteor-alpine:2.9.0 as builder
 
 ENV METEOR_DISABLE_OPTIMISTIC_CACHING=1
 
@@ -18,7 +18,7 @@ RUN cd ../built-app/bundle/programs/server \
     && npm install --production --quiet
 
 
-FROM registry.knotable.com:443/knote-runtime:2.5
+FROM 149172093612.dkr.ecr.us-east-1.amazonaws.com/knote-runtime:2.9.0
 LABEL maintainer="Knote <team@knote.com>"
 
 COPY --from=builder /home/meteor/built-app/bundle /app
