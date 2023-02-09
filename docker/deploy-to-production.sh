@@ -22,7 +22,7 @@ function launchServiceOnServer {
     echo 'Logging in...'                                            ;   \
     sudo docker login -u $REGISTRY_USER -p $REGISTRY_PASS $REGISTRY &&  \
     sudo docker tag $image $image:old                               ;   \
-    sudo docker pull $image                                         &&  \
+    sudo docker pull $image:$IMAGE_TAG                              &&  \
                                                                         \
     sudo docker rm -f props_meteor_app-mongo &> /dev/null           ;   \
     sleep 2                                                         ;   \
@@ -46,7 +46,7 @@ function launchServiceOnServer {
         --restart always                                                \
         --link props_meteor_app-mongo:props_meteor_app-mongo            \
         -v /knotable-var:/logs                                          \
-        $image:$GITHUB_SHA /bin/sh -c 'node main.js 1>>/logs/forever.log 2>&1' ; \
+        $image:$IMAGE_TAG /bin/sh -c 'node main.js 1>>/logs/forever.log 2>&1' ; \
     sudo docker rmi $image:old
   "
 }

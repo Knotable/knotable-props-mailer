@@ -80,7 +80,7 @@ jobs:
           MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
           MAILGUN_DOMAINS: ${{ secrets.MAILGUN_DOMAINS }}
           SSH_KEY_PATH: ~/.ssh/${{ env.SSH_KEY_NAME }}
-          GITHUB_SHA: 65c1dac0b7b5a24a4d637cad0f21ba0d43c5d358 #${{ github.sha }}
+          IMAGE_TAG: 65c1dac0b7b5a24a4d637cad0f21ba0d43c5d358 #${{ github.sha }}
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REGISTRY_USER: ${{ steps.login-ecr.outputs.docker_username_149172093612_dkr_ecr_us_east_1_amazonaws_com }}
           REGISTRY_PASS: ${{ steps.login-ecr.outputs.docker_password_149172093612_dkr_ecr_us_east_1_amazonaws_com }}
