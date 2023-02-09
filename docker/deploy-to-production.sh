@@ -24,16 +24,29 @@ function launchServiceOnServer {
     sudo docker tag $image $image:old                               ;   \
     sudo docker pull $image:$IMAGE_TAG                              &&  \
                                                                         \
-    echo 'Stopping old containers'                                            ;   \
     sudo docker rm -f props_meteor_app-mongo &> /dev/null           ;   \
     sudo docker rm -f props_meteor_app &> /dev/null                 ;   \
     sleep 2                                                         ;   \
-    echo 'Run DB'                                            ;   \
     sudo docker run -d                                                  \
       --name props_meteor_app-mongo                                     \
       -v /knotable-var/props_db:/data/db                                \
       mongo:2.6 mongod --smallfiles                                 &&  \
                                                                         \
+    sleep 2                                                         ;   \
+    sudo docker run -d                                                  \
+        --name props_meteor_app                                         \
+        --hostname $1                                                   \
+        -e PORT=3000                                                    \
+        -e ROOT_URL='http://$DomainLong'                                \
+        -e METEOR_SETTINGS='$(cat conf/"$DomainLong.json")'             \
+        -e MONGO_URL='mongodb://props_meteor_app-mongo'                 \
+        -e MAILGUN_API_KEY='$MAILGUN_API_KEY'                           \
+        -e MAILGUN_DOMAINS='$MAILGUN_DOMAINS'                           \
+        -p 80:3000                                                      \
+        --restart always                                                \
+        --link props_meteor_app-mongo:props_meteor_app-mongo            \
+        -v /knotable-var:/logs                                          \
+        $image:$IMAGE_TAG /bin/sh -c 'node main.js 1>>/logs/forever.log 2>&1' ; \
     sudo docker rmi $image:old
   "
 }
