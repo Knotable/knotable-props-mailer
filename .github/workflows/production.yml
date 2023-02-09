@@ -71,9 +71,6 @@ jobs:
           key: ${{ secrets.SSH_KEY }}
           name: ${{ env.SSH_KEY_NAME }}
           known_hosts: ${{ secrets.SSH_KNOWN_HOSTS }}
-          config: |
-            Host props.knote.com
-              PubkeyAcceptedKeyTypes +ssh-rsa
 
       - name: Deploy over SSH
         env:
