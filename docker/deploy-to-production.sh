@@ -18,7 +18,7 @@ function launchServiceOnServer {
   echo "
       Launching props_meteor_app on $1
   "
-  ssh -i $SSH_KEY_PATH ubuntu@$1 bash -c "                              \
+  ssh -i $SSH_KEY_PATH ec2-user@$1 bash -c "                            \
     echo 'Logging in...'                                            ;   \
     sudo docker login -u $REGISTRY_USER -p $REGISTRY_PASS $REGISTRY &&  \
     sudo docker tag $image $image:old                               ;   \
