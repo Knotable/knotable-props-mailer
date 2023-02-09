@@ -20,30 +20,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-#      - name: Set up QEMU
-#        uses: docker/setup-qemu-action@v2
-#
-#      - name: Set up Docker Buildx
-#        uses: docker/setup-buildx-action@v2
-#
-#      - name: Configure AWS credentials
-#        uses: aws-actions/configure-aws-credentials@v1
-#        with:
-#          role-to-assume: arn:aws:iam::149172093612:role/GitHubKmailWorkflowRole
-#          aws-region: us-east-1
-#
-#      - name: Login to Amazon ECR
-#        id: login-ecr
-#        uses: aws-actions/amazon-ecr-login@v1
-#
-#      - name: Build and push
-#        uses: docker/build-push-action@v4
-#        with:
-#          context: .
-#          file: docker/Dockerfile
-#          platforms: linux/amd64,linux/arm64
-#          push: true
-#          tags: ${{ steps.login-ecr.outputs.registry }}/props-app:${{ github.sha }}
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::149172093612:role/GitHubKmailWorkflowRole
+          aws-region: us-east-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/props-app:${{ github.sha }}
 
   deploy:
     environment: production
@@ -77,7 +77,7 @@ jobs:
           MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
           MAILGUN_DOMAINS: ${{ secrets.MAILGUN_DOMAINS }}
           SSH_KEY_PATH: ~/.ssh/${{ env.SSH_KEY_NAME }}
-          IMAGE_TAG: 65c1dac0b7b5a24a4d637cad0f21ba0d43c5d358 #${{ github.sha }}
+          IMAGE_TAG: ${{ github.sha }}
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REGISTRY_USER: ${{ steps.login-ecr.outputs.docker_username_149172093612_dkr_ecr_us_east_1_amazonaws_com }}
           REGISTRY_PASS: ${{ steps.login-ecr.outputs.docker_password_149172093612_dkr_ecr_us_east_1_amazonaws_com }}
