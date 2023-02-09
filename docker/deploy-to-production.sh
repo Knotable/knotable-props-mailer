@@ -30,7 +30,7 @@ function launchServiceOnServer {
     docker run -d                                                       \
       --name props_meteor_app-mongo                                     \
       -v /knotable-var/props_db:/data/db                                \
-      mongo:2.6 mongod --smallfiles                                 &&  \
+      mongo:4.4                                                     &&  \
                                                                         \
     sleep 2                                                         ;   \
     docker run -d                                                       \
