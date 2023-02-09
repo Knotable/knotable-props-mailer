@@ -39,7 +39,7 @@ function launchServiceOnServer {
       -e PORT=3000                                                      \
       -e ROOT_URL='http://$DomainLong'                                  \
       -e METEOR_SETTINGS='$(cat conf/"$DomainLong.json")'               \
-      -e MONGO_URL='mongodb://props_meteor_app-mongo'                   \
+      -e MONGO_URL='mongodb://props_meteor_app-mongo/service-db'        \
       -e MAILGUN_API_KEY='$MAILGUN_API_KEY'                             \
       -e MAILGUN_DOMAINS='$MAILGUN_DOMAINS'                             \
       -p 80:3000                                                        \
