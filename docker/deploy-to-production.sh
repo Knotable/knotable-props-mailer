@@ -24,15 +24,18 @@ function launchServiceOnServer {
     sudo docker tag $image $image:old                               ;   \
     sudo docker pull $image:$IMAGE_TAG                              &&  \
                                                                         \
+    echo 'Stopping old containers'                                            ;   \
     sudo docker rm -f props_meteor_app-mongo &> /dev/null           ;   \
+    sudo docker rm -f props_meteor_app &> /dev/null                 ;   \
     sleep 2                                                         ;   \
+    echo 'Run DB'                                            ;   \
     sudo docker run -d                                                  \
       --name props_meteor_app-mongo                                     \
       -v /knotable-var/props_db:/data/db                                \
       mongo:2.6 mongod --smallfiles                                 &&  \
                                                                         \
-    sudo docker rm -f props_meteor_app &> /dev/null                 ;   \
     sleep 2                                                         ;   \
+    echo 'Run APP'                                            ;   \
     sudo docker run -d                                                  \
         --name props_meteor_app                                         \
         --hostname $1                                                   \
