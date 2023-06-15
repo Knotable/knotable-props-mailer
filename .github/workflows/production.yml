@@ -21,30 +21,30 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v3
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v2
+      # - name: Set up QEMU
+      #   uses: docker/setup-qemu-action@v2
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v2
+      # - name: Set up Docker Buildx
+      #   uses: docker/setup-buildx-action@v2
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v1
-        with:
-          role-to-assume: arn:aws:iam::149172093612:role/GitHubKmailWorkflowRole
-          aws-region: us-east-1
+      # - name: Configure AWS credentials
+      #   uses: aws-actions/configure-aws-credentials@v1
+      #   with:
+      #     role-to-assume: arn:aws:iam::149172093612:role/GitHubKmailWorkflowRole
+      #     aws-region: us-east-1
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+      # - name: Login to Amazon ECR
+      #   id: login-ecr
+      #   uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build and push
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/props-app:${{ github.sha }}
+      # - name: Build and push
+      #   uses: docker/build-push-action@v4
+      #   with:
+      #     context: .
+      #     file: docker/Dockerfile
+      #     platforms: linux/amd64,linux/arm64
+      #     push: true
+      #     tags: ${{ steps.login-ecr.outputs.registry }}/props-app:${{ github.sha }}
 
   deploy:
     name: Compose docker services on a remote host
@@ -91,7 +91,8 @@ jobs:
           REGISTRY_USER: ${{ steps.login-ecr.outputs.docker_username_296506983298_dkr_ecr_eu_central_1_amazonaws_com }}
           REGISTRY_PASS: ${{ steps.login-ecr.outputs.docker_password_296506983298_dkr_ecr_eu_central_1_amazonaws_com }}
           IMAGE: ${{ steps.login-ecr.outputs.registry }}/props-app
-          IMAGE_TAG: ${{ github.sha }}
+          # IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: 45668722a53cc5964edcdebb6066f4afb70c884e	
           HOSTNAME: ${{ env.DOMAIN }}
           ROOT_URL: http://${{ env.DOMAIN }}
           MAILGUN_API_KEY: ${{ secrets.MAILGUN_API_KEY }}
@@ -112,6 +113,6 @@ jobs:
             MAILGUN_DOMAINS
           script: |
             echo $REGISTRY_PASS | docker login -u $REGISTRY_USER --password-stdin $REGISTRY
-            export METEOR_SETTINGS=$(cat settings.json)
-            docker-compose down
-            docker-compose up -d
+            # export METEOR_SETTINGS=$(cat settings.json)
+            # docker-compose down
+            # docker-compose up -d
