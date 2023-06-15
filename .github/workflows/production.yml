@@ -88,8 +88,8 @@ jobs:
         uses: appleboy/ssh-action@v0.1.10
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REGISTRY_USER: ${{ steps.login-ecr.outputs.docker_username_296506983298_dkr_ecr_eu_central_1_amazonaws_com }}
-          REGISTRY_PASS: ${{ steps.login-ecr.outputs.docker_password_296506983298_dkr_ecr_eu_central_1_amazonaws_com }}
+          REGISTRY_USER: ${{ steps.login-ecr.outputs.docker_username_149172093612_dkr_ecr_us_east_1_amazonaws_com }}
+          REGISTRY_PASS: ${{ steps.login-ecr.outputs.docker_password_149172093612_dkr_ecr_us_east_1_amazonaws_com }}
           IMAGE: ${{ steps.login-ecr.outputs.registry }}/props-app
           # IMAGE_TAG: ${{ github.sha }}
           IMAGE_TAG: 45668722a53cc5964edcdebb6066f4afb70c884e	
@@ -113,6 +113,6 @@ jobs:
             MAILGUN_DOMAINS
           script: |
             echo $REGISTRY_PASS | docker login -u $REGISTRY_USER --password-stdin $REGISTRY
-            # export METEOR_SETTINGS=$(cat settings.json)
-            # docker-compose down
-            # docker-compose up -d
+            export METEOR_SETTINGS=$(cat settings.json)
+            docker-compose down
+            docker-compose up -d
