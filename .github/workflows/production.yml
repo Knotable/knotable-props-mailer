@@ -112,7 +112,6 @@ jobs:
             MAILGUN_DOMAINS
           script: |
             echo $REGISTRY_PASS | docker login -u $REGISTRY_USER --password-stdin $REGISTRY
+            docker-compose down
             export METEOR_SETTINGS=$(cat settings.json)
-            docker-compose
-            # docker-compose down
-            # docker-compose up -d
+            docker-compose up -d
