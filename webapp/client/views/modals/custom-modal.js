@@ -4,26 +4,28 @@ Template.custom_modal.onRendered(function () {
       this.data.onClose();
     }
   };
+  document.activeElement?.blur();
   document.body.classList.add("no-scroll");
-
-  document.addEventListener("keypress", this.keypress);
+  document.addEventListener("keyup", this.keypress);
 });
 
 Template.custom_modal.onDestroyed(function () {
   document.body.classList.remove("no-scroll");
-  document.removeEventListener("keypress", this.keypress);
+  document.removeEventListener("keyup", this.keypress);
 });
 
 Template.custom_modal.events({
   "click .custom-modal": (e, t) => {
     const { onClose } = t.data;
-    if (typeof onClose === "function") {
+    if (e.target?.type != "submit" && typeof onClose === "function") {
       onClose();
     }
   },
 
   "click .custom-modal-view": (e, t) => {
-    e.stopPropagation();
-    e.preventDefault();
+    if (e.target?.type != "submit") {
+      e.stopPropagation();
+      e.preventDefault();
+    }
   },
 });

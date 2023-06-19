@@ -1,0 +1,127 @@
+<template name="users">
+  <div class="container" style="background-color: #fff">
+    <div
+      style="
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin: 20px 0;
+      "
+    >
+      <h3 style="margin: 0">Platform Users</h3>
+      <button class="btn btn-default btn-invite-user">Invite User</button>
+    </div>
+    <table class="table table-striped">
+      <thead>
+        <tr>
+          <th>User</th>
+          <th>Role</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody style="max-height: 70wh">
+        {{#each users}}{{> platform_user this}}{{/each}}
+      </tbody>
+    </table>
+  </div>
+</template>
+
+<template name="platform_user">
+  <tr>
+    <td>
+      <div style="display: flex">
+        <img
+          src="{{avatarUrl}}"
+          class="img-circle media-object"
+          width="40"
+          height="40"
+          style="margin-right: 2rem"
+        />
+        <div>
+          {{#if profile.name}}
+          <h4 style="margin-top: 0; font-weight: 400">{{profile.name}}</h4>
+          {{/if}}
+          <div>{{email}}</div>
+          {{#if hasPendingInvitation}}
+          <span class="label label-warning">Pending invitation</span>
+          {{/if}}
+        </div>
+      </div>
+    </td>
+    <td style="vertical-align: middle">
+      {{#if isCurrentUser}}
+      <button disabled class="btn btn-link">{{role}}</button>
+      {{else}}
+      <div class="dropdown">
+        <button
+          class="btn btn-link dropdown-toggle"
+          type="button"
+          id="{{_id}}"
+          data-toggle="dropdown"
+          aria-haspopup="true"
+          aria-expanded="true"
+        >
+          {{role}}
+          <span class="caret"></span>
+        </button>
+        <ul class="dropdown-menu" aria-labelledby="{{_id}}">
+          <li>
+            <a href="#" class="btn-change-user-role" data-value="Admin"
+              >Admin</a
+            >
+          </li>
+          <li>
+            <a href="#" class="btn-change-user-role" data-value="User">User</a>
+          </li>
+        </ul>
+      </div>
+      {{/if}}
+    </td>
+    <td style="vertical-align: middle; text-align: right">
+      {{#unless isCurrentUser}}
+      <button type="button" class="btn btn-link btn-remove-user">Remove</button>
+      {{/unless}}
+    </td>
+  </tr>
+</template>
+
+<template name="remove_user_confirmation">
+  <div style="padding: 20px; background-color: #fff">
+    Are you sure you want to remove {{userNameOrEmail}}?
+    <div style="display: flex; justify-content: flex-end; padding-top: 20px">
+      <button class="btn btn-link btn-cancel" style="margin-right: 10px">
+        Cancel
+      </button>
+      <button class="btn btn-default btn-remove">Remove</button>
+    </div>
+  </div>
+</template>
+
+<template name="invite_user">
+  <form style="padding: 20px; background-color: #fff">
+    <div class="form-group">
+      <label>Email address</label>
+      <input
+        required
+        name="email"
+        type="email"
+        class="form-control"
+        placeholder="Email"
+      />
+    </div>
+    <div class="form-group">
+      <label>User role</label>
+      <select name="role" class="form-control">
+        <option>Admin</option>
+        <option selected>User</option>
+      </select>
+    </div>
+
+    <div style="display: flex; justify-content: flex-end; padding-top: 20px">
+      <button class="btn btn-link btn-cancel" style="margin-right: 10px">
+        Cancel
+      </button>
+      <button class="btn btn-default" type="submit">Invite</button>
+    </div>
+  </form>
+</template>

@@ -1,7 +1,13 @@
+import { Role } from './role'
+
 if Meteor.isClient
 
   loginFilter = ->
-    Router.go "login"  unless Meteor.userId()
+    Router.go "login" unless Meteor.userId()
+    @next()
+
+  adminFilter = ->
+    Router.go "root" unless Meteor.user().role is Role.Admin
     @next()
 
   afterLogin = ->
@@ -49,3 +55,10 @@ if Meteor.isClient
       layoutTemplate: "layout"
       onBeforeAction: [loginFilter]
       onAfterAction: [mailingListSubscribe]
+
+    @route "users",
+      path: "/users"
+      template: "users"
+      layoutTemplate: "layout"
+      onBeforeAction: [loginFilter, adminFilter]
+      waitOn: -> Meteor.subscribe "users"

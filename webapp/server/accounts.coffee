@@ -29,17 +29,25 @@ accountHelper =
 
 
 
+Accounts.config({ forbidClientAccountCreation: true })
+
+
+
 Accounts.onCreateUser (options, user) ->
-  { accessToken } = user.services.github
-  githubApi = new GithubApi accessToken, "User-Agent": "Meteor/1.0"
-  user.profile = _.pick githubApi.user(),
-    "login", "name", "avatar_url", "url", "company", "blog", "location", "email", "bio", "html_url"
+  if user.services.github
+    { accessToken } = user.services.github
+    githubApi = new GithubApi accessToken, "User-Agent": "Meteor/1.0"
+    user.profile = _.pick githubApi.user(),
+      "login", "name", "avatar_url", "url", "company", "blog", "location", "email", "bio", "html_url"
   user
 
 
 
 Accounts.validateNewUser (user) ->
-  accountHelper.validateGithubAccess user.services.github
+  if user.services.github
+    return accountHelper.validateGithubAccess user.services.github
+  true
+
 
 
 

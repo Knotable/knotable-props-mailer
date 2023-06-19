@@ -3,42 +3,67 @@
     <div class="container-fluid">
       <!-- Brand and toggle get grouped for better mobile display -->
       <div class="navbar-header">
-        <button type="button" class="navbar-toggle" data-toggle="collapse" data-target="#bs-example-navbar-collapse-1">
+        <button
+          type="button"
+          class="navbar-toggle"
+          data-toggle="collapse"
+          data-target="#bs-example-navbar-collapse-1"
+        >
           <span class="sr-only">Toggle navigation</span>
           <span class="icon-bar"></span>
           <span class="icon-bar"></span>
           <span class="icon-bar"></span>
         </button>
         <a class="navbar-brand" href="#">Kmail</a>
-
       </div>
 
       <!-- Collect the nav links, forms, and other content for toggling -->
       <div class="collapse navbar-collapse" id="bs-example-navbar-collapse-1">
         <ul class="nav navbar-nav">
-            <li id="email-li">
-                <a href="#" class="dropdown-toggle email-tab" data-toggle="dropdown">Email</a>
-            </li>
-            <li id="list-li">
-                <a href="#" class="dropdown-toggle list-tab" data-toggle="dropdown">List</a>
-            </li>
-            <li id="faq-li">
-                <a href="https://knote.com/p/P8c0nW/How-to-write-emails-using-props-10th-installment"
-                   target="_blank"
-                   class="faq-tab">Help and FAQs</a>
-            </li>
+          {{#if currentUser}}
+          <li id="email-li">
+            <a href="#" class="dropdown-toggle email-tab" data-toggle="dropdown"
+              >Email</a
+            >
+          </li>
+          <li id="list-li">
+            <a href="#" class="dropdown-toggle list-tab" data-toggle="dropdown"
+              >List</a
+            >
+          </li>
+          {{/if}}
+          {{#if isAdmin}}
+          <li id="list-li">
+            <a
+              href="#"
+              class="dropdown-toggle list-users"
+              data-toggle="dropdown"
+              >Users</a
+            >
+          </li>
+          {{/if}}
+          {{#if currentUser}}
+          <li id="faq-li">
+            <a
+              href="https://knote.com/p/P8c0nW/How-to-write-emails-using-props-10th-installment"
+              target="_blank"
+              class="faq-tab"
+              >Help and FAQs</a
+            >
+          </li>
+          {{/if}}
         </ul>
 
         <ul class="nav pull-right">
           {{> user_info }}
         </ul>
-
-
-      </div><!-- /.navbar-collapse -->
-    </div><!-- /.container-fluid -->
+      </div>
+      <!-- /.navbar-collapse -->
+    </div>
+    <!-- /.container-fluid -->
   </nav>
 
-  <div class="container-fluid" style="max-width:1400px">
+  <div class="container-fluid" style="max-width: 1400px">
     <div class="row">
       {{> yield }}
       {{> loading_circle}}
@@ -50,39 +75,38 @@
   <div class="jumbotron">
     <h1>Welcome Guest</h1>
     <p>Welcome, please login to continue</p>
-    {{> user_loggedout}}
   </div>
 </template>
 
 <template name="user_info">
-    {{#if currentUser}}
-        {{> user_loggedin}}
-    {{else}}
-        <li>{{> user_loggedout}}</li>
-    {{/if}}
+  {{#if currentUser}}
+    {{> user_loggedin}}
+  {{else}}
+    <li><a>{{> loginButtons align="right"}}</a></li>
+  {{/if}}
 </template>
 
 <template name="user_loggedin">
-    {{#if logginIn}}
-        <li>Logging in...</li>
-    {{else}}
-        <li class="dropdown">
-            <a href="#" class="dropdown-toggle" data-toggle="dropdown">
-                <img src="{{currentUser.profile.avatar_url}}" class="img-rounded" style="width:25px" />
-                {{currentUser.profile.name}}
-                <b class="caret"></b>
-            </a>
-            <ul class="dropdown-menu">
-                <li><a id="logout">Logout</a></li>
-            </ul>
-        </li>
-    {{/if}}
+  {{#if logginIn}}
+  <li>Logging in...</li>
+  {{else}}
+  <li class="dropdown">
+    <a href="#" class="dropdown-toggle" data-toggle="dropdown">
+      <img
+        src="{{currentUser.profile.avatar_url}}"
+        class="img-rounded"
+        style="width: 25px"
+      />
+      {{currentUser.profile.name}}
+      <b class="caret"></b>
+    </a>
+    <ul class="dropdown-menu">
+      <li><a id="logout">Logout</a></li>
+    </ul>
+  </li>
+  {{/if}}
 </template>
 
-<template name="user_loggedout">
-    <a href="#" id="login">Login with Github</a>
-</template>
-
-<Template name="loading_circle">
+<template name="loading_circle">
   <div class="loading-circle hidden"></div>
-</Template>
+</template>
