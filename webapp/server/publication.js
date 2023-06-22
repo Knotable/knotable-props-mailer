@@ -61,6 +61,7 @@ Meteor.publish(null, function () {
   return Meteor.users.find(this.userId, {
     fields: {
       role: 1,
+      "services.invitation": 1,
     },
   });
 });

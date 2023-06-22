@@ -1,9 +1,12 @@
 import { Role } from './role'
+import { Accounts } from 'meteor/accounts-base';
 
 if Meteor.isClient
 
   loginFilter = ->
     Router.go "login" unless Meteor.userId()
+    user = Meteor.user()
+    Router.go "completeProfile" if user?.services?.invitation
     @next()
 
   adminFilter = ->
@@ -62,3 +65,31 @@ if Meteor.isClient
       layoutTemplate: "layout"
       onBeforeAction: [loginFilter, adminFilter]
       waitOn: -> Meteor.subscribe "users"
+
+    @route "completeProfile",
+      path: "/completeProfile"
+      layoutTemplate: "empty_layout"
+      action: ->
+        @render('loading')
+        user = Meteor.user()
+        if user?.services?.invitation
+         @render('complete_profile')
+        else
+          Router.go "email"
+
+    @route "loginWithToken",
+      path: "/loginWithToken"
+      layoutTemplate: "empty_layout"
+      action: -> 
+        @render('loading')
+        user = Meteor.user()
+        if user?.services?.invitation
+          Router.go "completeProfile"
+        else if user
+          Router.go "email"
+        else
+           Accounts.onLoginFailure ->
+            Router.go "login"
+        
+
+      

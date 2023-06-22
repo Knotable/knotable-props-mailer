@@ -31,8 +31,7 @@
               >List</a
             >
           </li>
-          {{/if}}
-          {{#if isAdmin}}
+          {{/if}} {{#if isAdmin}}
           <li id="list-li">
             <a
               href="#"
@@ -41,8 +40,7 @@
               >Users</a
             >
           </li>
-          {{/if}}
-          {{#if currentUser}}
+          {{/if}} {{#if currentUser}}
           <li id="faq-li">
             <a
               href="https://knote.com/p/P8c0nW/How-to-write-emails-using-props-10th-installment"
@@ -64,26 +62,53 @@
   </nav>
 
   <div class="container-fluid" style="max-width: 1400px">
-    <div class="row">
-      {{> yield }}
-      {{> loading_circle}}
-    </div>
+    <div class="row">{{> yield }} {{> loading_circle}}</div>
   </div>
 </template>
 
 <template name="login">
-  <div class="jumbotron">
-    <h1>Welcome Guest</h1>
-    <p>Welcome, please login to continue</p>
+  <div class="container" style="display: flex; justify-content: center">
+    <form
+      style="
+        margin-top: 80px;
+        background-color: white;
+        max-width: 500px;
+        text-align: center;
+      "
+      class="jumbotron"
+    >
+      <img width="100" src="/images/logo.svg" style="margin-left: -10px" />
+      {{#if isSent}}
+      <p>
+        The one-time login link was sent to your inbox successfully
+      </p>
+      {{else}}
+      <p>
+        Enter your email address and we will send you a one-time login link
+      </p>
+      <div class="form-group" style="margin-top: 40px">
+        <input
+          class="form-control"
+          type="email"
+          name="email"
+          placeholder="Email"
+          disabled="{{isSending}}"
+          required
+        />
+      </div>
+      <div style="padding-top: 10px; display: flex; justify-content: center">
+        <button type="submit" class="btn btn-primary" disabled="{{isSending}}">Send Login Link</button>
+      </div>
+      {{/if}}
+    </form>
   </div>
+  {{#if isSending}}
+    {{> loading}}
+  {{/if}}
 </template>
 
 <template name="user_info">
-  {{#if currentUser}}
-    {{> user_loggedin}}
-  {{else}}
-    <li><a>{{> loginButtons align="right"}}</a></li>
-  {{/if}}
+  {{#if currentUser}} {{> user_loggedin}} {{/if}}
 </template>
 
 <template name="user_loggedin">
@@ -91,14 +116,19 @@
   <li>Logging in...</li>
   {{else}}
   <li class="dropdown">
-    <a href="#" class="dropdown-toggle" data-toggle="dropdown">
-      <img
-        src="{{currentUser.profile.avatar_url}}"
-        class="img-rounded"
-        style="width: 25px"
-      />
+    <a
+      href="#"
+      class="dropdown-toggle"
+      data-toggle="dropdown"
+      style="
+        display: flex;
+        align-items: center;
+        column-gap: 10px;
+        padding: 15px;
+      "
+    >
+      <img src="{{avatarUrl}}" class="img-rounded" style="width: 25px" />
       {{currentUser.profile.name}}
-      <b class="caret"></b>
     </a>
     <ul class="dropdown-menu">
       <li><a id="logout">Logout</a></li>

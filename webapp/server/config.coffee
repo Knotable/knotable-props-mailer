@@ -1,15 +1,3 @@
-@init_github_settings = ->
-  console.log "Init Github"
-  unless Meteor.settings.github.client_id and Meteor.settings.github.client_secret
-    throw new Meteor.Error 'Github settings not found. Tearing down the server'
-  ServiceConfiguration.configurations.remove service: "github"
-  ServiceConfiguration.configurations.insert
-    service: "github"
-    clientId: Meteor.settings.github.client_id
-    secret: Meteor.settings.github.client_secret
-
-
-
 @init_aws = ->
   console.info 'Init AWS'
   Meteor.settings.AWS = {} unless Meteor.settings.AWS

@@ -1,6 +1,9 @@
 import { Accounts } from "meteor/accounts-base";
 import { Role } from "../../lib/role";
-import { defaultDomainConfig } from "../mailgunDomains";
+import {
+  notEmptyDocumentIdMatcher,
+  notEmptyStringMatcher,
+} from "../helpers/matchers";
 
 function authorize(userId) {
   const error = new Meteor.Error(403, "Unauthorized");
@@ -28,26 +31,26 @@ Meteor.methods({
         role,
         "services.invitation": {
           invitedDate: new Date(),
+          userId: this.userId,
         },
       },
     });
     const currentUser = Meteor.users.findOne(this.userId, {
       fields: { profile: 1 },
     });
-    emailServerShared.sendEmail(defaultDomainConfig.domain, {
-      to: email,
-      from: `noreply@${defaultDomainConfig.domain}`,
-      subject: `${currentUser.profile.name} invited you to Kmail`,
-      text: `Hello!
 
-      ${currentUser.profile.name} sent you an invitation to Kmail service.
-
-      To accept this invitation follow the link below.
-
-      ${Meteor.absoluteUrl(`invitation/${userId}`)}
-
-      Sincerely,
-      Kmail team`,
+    Meteor.call("requestLoginTokenForUser", {
+      selector: { id: userId },
+      userData: {},
+      options: {
+        userCreationDisabled: true,
+        extra: {
+          template: {
+            name: "inviteUser",
+            subject: `${currentUser.profile.name} invited you to Kmail`,
+          },
+        },
+      },
     });
   },
 
@@ -63,6 +66,29 @@ Meteor.methods({
       throw new Meteor.Error(400, "Invalid user role");
     }
     Meteor.users.update(id, { $set: { role } });
+  },
+
+  "user.update"({ id, firstName, lastName } = {}) {
+    check(id, notEmptyDocumentIdMatcher());
+    check(firstName, notEmptyStringMatcher());
+    check(lastName, notEmptyStringMatcher());
+
+    if (this.userId != id) {
+      authorize(this.userId);
+    }
+    Meteor.users.update(
+      { _id: id },
+      {
+        $set: {
+          "profile.firstName": firstName,
+          "profile.lastName": lastName,
+          "profile.name": `${firstName} ${lastName}`.trim(),
+        },
+        $unset: {
+          "services.invitation": 1,
+        },
+      }
+    );
   },
 
   "user.remove"({ id } = {}) {
