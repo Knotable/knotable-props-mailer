@@ -6,16 +6,6 @@
     "username": "knotable-app",
     "bucket": "knotable-assets-app"
   },
-  "github": {
-    "organization_name": "Knotable",
-    "repo_access": ["knotable-ops", "props-mailer-access"],
-    "client_id": "99b557b551692a8fcea4",
-    "client_secret": "436b7440986a61999c79914925eed07c0cdd5ac4",
-    "team": {
-      "id": "1855277",
-      "name": "Email-Props"
-    }
-  },
   "apikey": "voyiUAkXCYLBsWUiee7bwvH9ypdya",
   "mailChimp": {
     "api_key": "c08682e712205ce4db39d215597be90d",

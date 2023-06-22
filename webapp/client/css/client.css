@@ -9,15 +9,15 @@
 
 .btn-red {
   background-color: #c9302c;
-  color: white
+  color: white;
 }
 
 .btn-red:hover {
-  color: white
+  color: white;
 }
 
-body{
-  background-color: #f4f4f4
+body {
+  background-color: #f4f4f4;
 }
 
 .logs-container {
@@ -35,71 +35,83 @@ body{
   left: 20px;
   width: 50px;
   height: 50px;
-  border: solid 2px #28ADE8;
-  border-radius: 50%;-moz-border-radius: 50%;-webkit-border-radius: 50%;
+  border: solid 2px #28ade8;
+  border-radius: 50%;
+  -moz-border-radius: 50%;
+  -webkit-border-radius: 50%;
   border-bottom-color: rgba(218, 218, 235, 0);
-  -webkit-animation: loading-circle .6s linear infinite;
+  -webkit-animation: loading-circle 0.6s linear infinite;
   animation: loading-circle 4s infinite;
 }
 
 @keyframes loading-circle {
-0% {
-    transform:rotate(0deg);
-}
+  0% {
+    transform: rotate(0deg);
+  }
 
-100% {
-    transform:rotate(360deg);
-}
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 @-webkit-keyframes loading-circle {
-0% {
-    -webkit-transform:rotate(0deg);
-}
+  0% {
+    -webkit-transform: rotate(0deg);
+  }
 
-100% {
-    -webkit-transform:rotate(360deg);
-}
+  100% {
+    -webkit-transform: rotate(360deg);
+  }
 }
 
 @-moz-keyframes loading-circle {
-0% {
-    -moz-transform:rotate(0deg);
-}
+  0% {
+    -moz-transform: rotate(0deg);
+  }
 
-100% {
-    -moz-transform:rotate(360deg);
-}
+  100% {
+    -moz-transform: rotate(360deg);
+  }
 }
 
 @-o-keyframes loading-circle {
-0% {
-    -o-transform:rotate(0deg);
-}
+  0% {
+    -o-transform: rotate(0deg);
+  }
 
-100% {
-    -o-transform:rotate(360deg);
-}
+  100% {
+    -o-transform: rotate(360deg);
+  }
 }
 
 .loading {
   width: 30px;
   height: 30px;
-  border: solid 5px #28ADE8;
-  border-radius: 50%;-moz-border-radius: 50%;-webkit-border-radius: 50%;
+  border: solid 5px #28ade8;
+  border-radius: 50%;
+  -moz-border-radius: 50%;
+  -webkit-border-radius: 50%;
   border-bottom-color: rgba(218, 218, 235, 0.5);
-  -webkit-animation: loading  2s linear infinite; /* Safari */
-  animation: loading  2s linear infinite;
+  -webkit-animation: loading 2s linear infinite; /* Safari */
+  animation: loading 2s linear infinite;
 }
 
 @keyframes loading {
-  0% { transform:rotate(0deg);}
-  100% { transform:rotate(360deg);}
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 @-webkit-keyframes loading {
-  0% { transform:rotate(0deg);}
-  100% { transform:rotate(360deg);}
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
 }
 
 * {
@@ -135,7 +147,9 @@ a {
   cursor: pointer;
 }
 
-input[type="text"],input[type="email"],input[type="password"] {
+input[type="text"],
+input[type="email"],
+input[type="password"] {
   box-shadow: none;
   -webkit-box-shadow: none;
   height: auto;
@@ -144,12 +158,11 @@ h4 {
   font-weight: 600;
 }
 
-
 .clear {
   clear: both;
 }
 
-.email-container  {
+.email-container {
   padding: 0 0 30px 0;
   font-size: 14px;
   background-color: #fff;
@@ -166,12 +179,11 @@ h4 {
   margin-left: 30px;
 }
 
-.email-event-list .list-group-item{
+.email-event-list .list-group-item {
   margin: 20px 30px 0 0;
   float: left;
   width: 500px;
 }
-
 
 .input-tran input {
   border-radius: 4px;
@@ -185,15 +197,13 @@ h4 {
   height: 100%;
   z-index: 1;
   right: 2px;
-  top: 7px
+  top: 7px;
 }
-
-
 
 .my-date-picker .ui-datepicker {
   padding: 0;
   width: 100%;
-  border: 1px solid #DADADA;
+  border: 1px solid #dadada;
   -webkit-border-radius: 3px;
   border-radius: 3px;
 }
@@ -219,7 +229,7 @@ h4 {
 
 .my-date-picker .ui-datepicker table {
   background: #fff;
-  margin-bottom: 0
+  margin-bottom: 0;
 }
 
 .my-date-picker .ui-datepicker th {
@@ -263,7 +273,7 @@ h4 {
 }
 
 .my-date-picker .ui-datepicker td.ui-datepicker-current-day a {
-  color: #FFFFFF;
+  color: #ffffff;
 }
 
 .my-date-picker .ui-datepicker .ui-datepicker-prev span {
@@ -288,13 +298,13 @@ h4 {
 .my-date-picker .ui-widget-header .ui-datepicker-prev .ui-icon,
 .my-date-picker .ui-widget-header .ui-datepicker-prev-hover .ui-icon {
   background: url("/images/_calendar-prev.png") no-repeat left center
-  transparent;
+    transparent;
 }
 
 .my-date-picker .ui-widget-header .ui-datepicker-next .ui-icon,
 .my-date-picker .ui-widget-header .ui-datepicker-next-hover .ui-icon {
   background: url("/images/_calendar-next.png") no-repeat right center
-  transparent;
+    transparent;
 }
 .transparent {
   opacity: 0;
@@ -333,17 +343,17 @@ h4 {
   vertical-align: top;
 }
 
-.file-box .file,.thumb-box .thumb {
+.file-box .file,
+.thumb-box .thumb {
   margin-bottom: 3px;
-
 }
 
-.file-box .file{
+.file-box .file {
   position: relative;
 }
 
 .thumb-box .thumb {
-  background-color: #FFFFFF;
+  background-color: #ffffff;
 }
 
 .thumb-box .thumb.thumb-loading {
@@ -355,8 +365,8 @@ h4 {
   -webkit-animation: flash 1s infinite;
 }
 
-
-.file > a, .thumb .file {
+.file > a,
+.thumb .file {
   display: inline-block;
   text-decoration: none;
   background-repeat: no-repeat;
@@ -368,7 +378,7 @@ h4 {
 }
 
 .thumbnail-wrapper .file {
-  border: 1px solid #e6e6e6!important;
+  border: 1px solid #e6e6e6 !important;
 }
 .thumbnail-wrapper .thumb + .file {
   display: none;
@@ -394,16 +404,26 @@ h4 {
   position: relative;
 }
 
-.file.image>a,.file.gif>a,.file.jpg>a,.file.png>a,.thumb.image,.thumb.gif,.thumb.jpg,.thumb.png
-{
+.file.image > a,
+.file.gif > a,
+.file.jpg > a,
+.file.png > a,
+.thumb.image,
+.thumb.gif,
+.thumb.jpg,
+.thumb.png {
   background-image: none;
 }
 
-.file.txt>a,.thumb.txt,.thumb a.file[href$=".txt"] {
+.file.txt > a,
+.thumb.txt,
+.thumb a.file[href$=".txt"] {
   background-image: url("/images/file_type_icon/txt.png");
 }
 
-.file.html>a,.thumb.html,.thumb a.file[href$=".html"] {
+.file.html > a,
+.thumb.html,
+.thumb a.file[href$=".html"] {
   background-image: url("/images/file_type_icon/html.png");
 }
 .file {
@@ -412,12 +432,12 @@ h4 {
 }
 
 .input-error {
-  border-color: #A82424 !important;
+  border-color: #a82424 !important;
 }
 
 /*bootstrap-growl noti*/
 .bootstrap-growl {
-  background-color: #78C5E8;
+  background-color: #78c5e8;
   color: #fff;
   font-size: 12px;
   border: 1px solid #fff;
@@ -448,21 +468,21 @@ h4 {
   border-radius: 8px;
 }
 
-.email-box.sent{
+.email-box.sent {
   max-width: 420px;
 }
 
-.email-box.sent dl{
+.email-box.sent dl {
   background: #efefef;
   font-size: 13px;
   padding: 12px;
 }
-.email-box.sent dl dt{
-  width:20%;
+.email-box.sent dl dt {
+  width: 20%;
 }
 
-.email-box.sent dl dd{
-  margin-left:26%;
+.email-box.sent dl dd {
+  margin-left: 26%;
 }
 
 .email-box-badge {
@@ -475,7 +495,7 @@ h4 {
 
 .file-attachment-box .file {
   margin: 0 auto;
-  padding-top: 0px
+  padding-top: 0px;
 }
 
 .right {
@@ -483,7 +503,7 @@ h4 {
 }
 
 .email-box-date-buttons {
-  margin : 3px;
+  margin: 3px;
 }
 
 .hidden {
@@ -507,16 +527,16 @@ a.file-review {
   top: 3px;
   right: 3px;
   cursor: pointer;
-  z-index:100;
+  z-index: 100;
 }
 
 span.change-date {
-  font-size:11px;
+  font-size: 11px;
   cursor: pointer;
 }
 
 td.due-date-disabled {
-  background-color:#C7C5C5
+  background-color: #c7c5c5;
 }
 
 input.my-width {
@@ -527,32 +547,154 @@ input.my-small-width {
   width: 170px;
 }
 
-.date-from-now{
+.date-from-now {
   overflow: hidden;
   text-align: center;
 }
 
-.date-from-now select{
+.date-from-now select {
   width: auto;
 }
 
-.tab-content>.tab-pane{
-  display: none
+.tab-content > .tab-pane {
+  display: none;
 }
 
-.tab-content>.active{
-  display: block
+.tab-content > .active {
+  display: block;
 }
 
 .fade.in {
-  opacity: 1
+  opacity: 1;
 }
 
 .fade {
   opacity: 0;
-  transition: opacity 0.15s linear
+  transition: opacity 0.15s linear;
 }
 
 .note-editable {
   min-height: 192px;
+}
+
+.loading-wrapper {
+  position: relative;
+  height: 100%;
+}
+
+.profile-main-loader {
+  left: 50% !important;
+  margin-left: -50px;
+  position: fixed !important;
+  top: 50% !important;
+  margin-top: -50px;
+  width: 45px;
+  z-index: 9000 !important;
+}
+
+.profile-main-loader .loader {
+  position: relative;
+  margin: 0px auto;
+  width: 100px;
+  height: 100px;
+}
+.profile-main-loader .loader:before {
+  content: "";
+  display: block;
+  padding-top: 100%;
+}
+
+.circular-loader {
+  -webkit-animation: rotate 2s linear infinite;
+  animation: rotate 2s linear infinite;
+  height: 100%;
+  -webkit-transform-origin: center center;
+  -ms-transform-origin: center center;
+  transform-origin: center center;
+  width: 100%;
+  position: absolute;
+  top: 0;
+  left: 0;
+  margin: auto;
+}
+
+.loader-path {
+  stroke-dasharray: 150, 200;
+  stroke-dashoffset: -10;
+  -webkit-animation: dash 1.5s ease-in-out infinite,
+    color 6s ease-in-out infinite;
+  animation: dash 1.5s ease-in-out infinite, color 6s ease-in-out infinite;
+  stroke-linecap: round;
+}
+
+@-webkit-keyframes rotate {
+  100% {
+    -webkit-transform: rotate(360deg);
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes rotate {
+  100% {
+    -webkit-transform: rotate(360deg);
+    transform: rotate(360deg);
+  }
+}
+@-webkit-keyframes dash {
+  0% {
+    stroke-dasharray: 1, 200;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 89, 200;
+    stroke-dashoffset: -35;
+  }
+  100% {
+    stroke-dasharray: 89, 200;
+    stroke-dashoffset: -124;
+  }
+}
+@keyframes dash {
+  0% {
+    stroke-dasharray: 1, 200;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 89, 200;
+    stroke-dashoffset: -35;
+  }
+  100% {
+    stroke-dasharray: 89, 200;
+    stroke-dashoffset: -124;
+  }
+}
+@-webkit-keyframes color {
+  0% {
+    stroke: #28ade8;
+  }
+  40% {
+    stroke: #28ade8;
+  }
+  66% {
+    stroke: #28ade8;
+  }
+  80%,
+  90% {
+    stroke: #28ade8;
+  }
+}
+@keyframes color {
+  0% {
+    stroke: #28ade8;
+  }
+  40% {
+    stroke: #28ade8;
+  }
+  66% {
+    stroke: #28ade8;
+  }
+  80%,
+  90% {
+    stroke: #28ade8;
+  }
 }
