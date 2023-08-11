@@ -1,4 +1,3 @@
-
 <template name="new_email">
   <div class="email-container col-sm-12">
     {{> file_upload}}
@@ -254,26 +253,28 @@
 </template>
 
 <template name="sent_email_box">
-  <p class="list-group-item-heading">
-    <strong>{{subject}}</strong>
-  </p>
-
-  <dl class="dl-horizontal">
-    <dt>Created at</dt>
-    <dd>{{displayDate created_time}}</dd>
-    <dt>Due Date</dt>
-    <dd>{{displayDate due_date}}</dd>
-    <dt>From</dt>
-    <dd>{{from}}</dd>
-    <dt>Campaign</dt>
-    <dd>{{joinArray campaigns}}</dd>
-    {{#if file}}
-    <dt>Html</dt>
-    <dd><a href="{{file.s3_url}}" target="_blank">{{file.name}}</a></dd>
-    {{/if}}
-    <dt>Recipients</dt>
-    <dd>{{joinArray recipients}}</dd>
-  </dl>
+  <div style="display: flex">
+    <div style="min-width: 150px">
+      <div><strong>Subject</strong></div>
+      <div><strong>Created at</strong></div>
+      <div><strong>Due Date</strong></div>
+      <div><strong>From</strong></div>
+      <div><strong>Campaign</strong></div>
+      <div><strong>Recipients</strong></div>
+      <div><strong>Html</strong></div>
+    </div>
+    <div>
+      <div>{{subject}}</div>
+      <div>{{displayDate created_time}}</div>
+      <div>{{displayDate due_date}}</div>
+      <div>{{from}}</div>
+      <div>{{joinArray campaigns}}</div>
+      <div>{{joinArray recipients}}</div>
+      <details>
+        <div>{{{html}}}</div>
+      </details>
+    </div>
+  </div>
 </template>
 
 <template name="file_attachment_box">

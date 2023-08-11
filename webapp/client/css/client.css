@@ -20,6 +20,9 @@ body {
   background-color: #f4f4f4;
 }
 
+img {
+  max-width: 100%;
+}
 .logs-container {
   max-height: 500px;
   overflow-y: scroll;
@@ -180,9 +183,9 @@ h4 {
 }
 
 .email-event-list .list-group-item {
-  margin: 20px 30px 0 0;
-  float: left;
-  width: 500px;
+  margin: 20px ;
+  /* float: left; */
+  /* width: 500px; */
 }
 
 .input-tran input {
@@ -467,23 +470,23 @@ h4 {
   right: 82px;
   border-radius: 8px;
 }
-
+/* 
 .email-box.sent {
   max-width: 420px;
-}
+} */
 
 .email-box.sent dl {
   background: #efefef;
   font-size: 13px;
   padding: 12px;
 }
-.email-box.sent dl dt {
+/* .email-box.sent dl dt {
   width: 20%;
-}
-
+} */
+/* 
 .email-box.sent dl dd {
   margin-left: 26%;
-}
+} */
 
 .email-box-badge {
   background-color: #ffffff !important;
