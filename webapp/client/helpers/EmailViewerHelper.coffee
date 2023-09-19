@@ -34,7 +34,7 @@
     @validateEmail $form, false, (err, emailData) ->
       return callback err if err
       Meteor.call "updateEmailEvent", emailData, EmailHelperShared.ACTIVE, EmailHelperShared.IN_QUEUE, (err, result) ->
-        # EmailViewerHelper.afterAddToQueue emailData unless err
+        EmailViewerHelper.afterAddToQueue emailData unless err
         callback err, result
 
 
