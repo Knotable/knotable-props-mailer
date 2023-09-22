@@ -263,16 +263,14 @@
       <div><strong>Recipients</strong></div>
       <div><strong>Html</strong></div>
     </div>
-    <div>
+    <div style="flex: 1">
       <div>{{subject}}</div>
       <div>{{displayDate created_time}}</div>
       <div>{{displayDate due_date}}</div>
       <div>{{from}}</div>
       <div>{{joinArray campaigns}}</div>
       <div>{{joinArray recipients}}</div>
-      <details>
-        <div>{{{html}}}</div>
-      </details>
+      {{ > html_display html}}
     </div>
   </div>
 </template>

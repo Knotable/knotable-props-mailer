@@ -1,0 +1,25 @@
+<template name="html_display">
+  <div
+    style="width: 100%; overflow-y: hidden; max-height: {{#if open}} unset {{else}} {{maxHeight}}px {{/if}};"
+  >
+    {{#if this}}
+    <div style="text-align: right">
+      <i class="fa fa-copy" style="font-size: 20px; cursor: pointer"></i>
+    </div>
+    {{{this}}} {{/if}}
+  </div>
+  {{#if isLoadMore}}
+  <a
+    class="show-more-less"
+    style="
+      display: block;
+      padding: 10px;
+      text-align: center;
+      display: block;
+      text-decoration: none;
+    "
+  >
+    Show {{#if open}} Less {{else}} More {{/if}}
+  </a>
+  {{/if}}
+</template>
