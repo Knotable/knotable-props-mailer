@@ -13,6 +13,7 @@
     "@aws-sdk/client-s3": "^3.257.0",
     "@babel/runtime": "^7.16.3",
     "cheerio": "^1.0.0-rc.10",
+    "copy-to-clipboard": "^3.3.3",
     "form-data": "^4.0.0",
     "inline-css": "^3.0.0",
     "mailgun.js": "^3.7.3",

@@ -1,4 +1,5 @@
 import { ReactiveVar } from "meteor/reactive-var";
+import copy from "copy-to-clipboard";
 
 Template.html_display.onCreated(function () {
   this.maxHeight = 300;
@@ -29,11 +30,8 @@ Template.html_display.events({
     t.open.set(!t.open.get());
   },
 
-  "click .fa-copy": (e, t) => {
-    const type = "text/html";
-    const blob = new Blob([t.data], { type });
-    const data = [new ClipboardItem({ [type]: blob })];
-    navigator.clipboard.write(data);
-    showBootstrapGrowl("Copied to clipboard.");
+  "click .fa-copy": async (e, t) => {
+    if (copy(t.data, { format: "text/html" }))
+      showBootstrapGrowl("Copied to clipboard.");
   },
 });
