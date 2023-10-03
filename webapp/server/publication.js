@@ -36,7 +36,7 @@ Meteor.publish("sentEmailEventsAndFiles", function () {
       status: EmailHelperShared.SENT,
       type: EmailHelperShared.ACTIVE,
     };
-    const option = { limit: 40 };
+    const option = { limit: 100, sort: { due_date: -1 } };
 
     const emailEventCursor = EmailEvents.find(findQuery, option);
     let eventIds = emailEventCursor.map((event) => event._id);
