@@ -16,7 +16,7 @@
         campaigns: campaigns.getValue()
         tags: tags.getValue()
         html: emailBody.getValue().html
-        due_date: date.getValue()
+        due_date: moment(date.getValue()).set("seconds",0).set("milliseconds", 0).toDate()
         file_ids: event.file_ids
 
 
@@ -25,8 +25,8 @@
     @validateEmail $form, true, (err, emailData) ->
       return callback err if err
       Meteor.call 'sendTestEmail', emailData, (err, result) ->
-        return callback null, 'Queued on Mailgun. Thank you!' if result
-        callback err, result
+        return callback err, null if err
+        return callback null, 'Queued on Mailgun. Thank you!' 
 
 
 

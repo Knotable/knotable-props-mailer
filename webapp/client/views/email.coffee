@@ -77,6 +77,7 @@ Template.new_email.onRendered ->
               img = document.createElement 'img'
               img.alt = img.title = file.name
               img.style.display = 'block'
+              img.style.maxWidth = '100%'
               img.src = url
               $el.summernote 'insertNode', img
             next()
@@ -292,12 +293,12 @@ reset_new_email_event_form = ($form) ->
 
 Template.email_list.helpers
   email_events : ->
-    currentDate = new Date()
+    # currentDate = new Date()
     query =
       status : EmailHelperShared.IN_QUEUE
       type: EmailHelperShared.ACTIVE
-      due_date:
-        $gte : currentDate
+      # due_date:
+        # $gte : currentDate
     email_events = EmailEvents.find(query).fetch()
     return email_events
 
@@ -311,6 +312,26 @@ Template.sent_email_list.helpers
     email_sent_events = EmailEvents.find(query, {sort: {due_date: -1 }}).fetch()
     return email_sent_events
 
+
+Template.email_box.onCreated -> 
+  duration = () => moment(@data.due_date) - moment()
+  format = (dur) => moment(dur).format("mm:ss")
+
+  @time = new ReactiveVar( if (duration() > 0) then format(duration()) else '')
+
+  tick = () => 
+    @timerId = setTimeout( =>
+      dur = duration()
+      return if dur <= 0
+      @time.set(format(dur))
+      tick()
+    , 1000)
+
+  tick()
+
+
+Template.email_box.onDestroyed ->
+  clearTimeout(@timerId)
 
 
 Template.email_box.helpers
@@ -332,8 +353,7 @@ Template.email_box.helpers
 
 
   timeFromNow: ->
-    timeTick.depend()
-    return DateHelperShared.getCountDown @due_date
+    return Template.instance().time.get()
 
 
 

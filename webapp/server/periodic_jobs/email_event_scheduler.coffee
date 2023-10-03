@@ -12,14 +12,13 @@ class EmailEventScheduler
       status : EmailHelperShared.IN_QUEUE
       type: EmailHelperShared.ACTIVE
       due_date:
-        $gte : DateHelperShared.from_minutes(currentDate, -1)
-        $lt : currentDate
+        $gt: moment(currentDate).subtract(1, 'minutes').toDate()
+        $lte: currentDate
     return EmailEvents.find(query).fetch()
 
 
 
-
-  doProcessing: ->
+  _doProcessing = =>
     console.info "[Email scheduler] begin processing..."
     try
       emailEvents = _findEmailEventInQueue()
@@ -40,11 +39,21 @@ class EmailEventScheduler
 
 
 
+  _delay = -> 
+    moment().add(1, 'minutes').set('seconds', 0) - moment()
+
+
+
+  job: =>
+    Meteor.setTimeout -> 
+      _doProcessing()
+      emailEventScheduler.job()
+    , _delay()
+
+
 @emailEventScheduler = new EmailEventScheduler()
 
 Meteor.startup ->
   console.log "Starting email event scheduler..."
-  Meteor.setInterval ->
-    emailEventScheduler.doProcessing()
-  ,60*1000
+  emailEventScheduler.job()
   console.log "Started email event scheduler"
