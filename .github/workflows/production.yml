@@ -115,3 +115,5 @@ jobs:
             export METEOR_SETTINGS=$(cat settings.json)
             docker-compose down
             docker-compose up -d
+            # Prune all unused images
+            docker image prune --all --force
