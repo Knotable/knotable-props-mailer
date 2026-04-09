@@ -10,7 +10,7 @@ export default async function ListsPage() {
       <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">Mailing Lists</p>
         <h2 className="text-2xl font-semibold text-slate-900">Manage Lists</h2>
-        <p className="text-sm text-slate-500">Supabase-backed lists sync to Mailgun on demand.</p>
+        <p className="text-sm text-slate-500">Supabase-backed lists stay local; future work will push them to SES suppression lists.</p>
       </header>
       <form action={upsertListAction} className="rounded-lg border border-slate-200 bg-slate-50 p-6">
         <p className="text-sm font-medium text-slate-700">Create or update list</p>

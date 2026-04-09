@@ -2,7 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
-import { sendEmail } from "@/lib/mailgun";
+import { sendEmail } from "@/lib/emailProvider";
 
 type DraftPayload = {
   from: string;

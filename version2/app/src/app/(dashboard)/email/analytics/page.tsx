@@ -43,7 +43,7 @@ export default async function AnalyticsPage() {
       <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">Insights</p>
         <h2 className="text-2xl font-semibold text-slate-900">Engagement</h2>
-        <p className="text-sm text-slate-500">Mailgun webhooks → Supabase provider_events → UI.</p>
+        <p className="text-sm text-slate-500">Amazon SES events → Supabase provider_events → UI (hook up via SNS).</p>
       </header>
       <div className="grid gap-4 sm:grid-cols-3">
         {metrics.map((metric) => (

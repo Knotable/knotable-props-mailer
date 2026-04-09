@@ -6,7 +6,7 @@ export default function ComposerPage() {
       <section>
         <p className="text-xs uppercase tracking-wide text-slate-400">Draft</p>
         <h2 className="text-2xl font-semibold text-slate-900">Compose Email</h2>
-        <p className="text-sm text-slate-500">This mirrors the original Props composer and hooks into Supabase + Mailgun.</p>
+        <p className="text-sm text-slate-500">This mirrors the original Props composer and hooks into Supabase + Amazon SES.</p>
       </section>
       <form action={saveDraftAction} className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-6">
         <div className="grid gap-4 sm:grid-cols-2">
