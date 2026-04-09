@@ -7,3 +7,6 @@ env.keys
 *.env.*
 version2/app/.env.local
 version2/app/.env
+
+.DS_Store
+version2/.DS_Store
