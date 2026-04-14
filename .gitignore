@@ -1,12 +1,20 @@
+# Node / Next.js
+node_modules
+.next
+out
 
-webapp/.meteor/dev_bundle
-.idea/
+# OS cruft
+.DS_Store
+
 # Local environment secrets (root-level or nested)
 env.keys
 *.env
 *.env.*
-version2/app/.env.local
-version2/app/.env
+!.env.example
 
-.DS_Store
-version2/.DS_Store
+# Build artifacts
+supabase/.schema-hash
+
+# Legacy directories deleted in git history
+webapp
+conf
