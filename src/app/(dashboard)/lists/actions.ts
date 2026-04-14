@@ -1,7 +1,9 @@
 'use server';
 
 import { revalidatePath } from "next/cache";
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+
+const ADMIN_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 const parseEmails = (input: string) =>
   input
@@ -10,9 +12,7 @@ const parseEmails = (input: string) =>
     .filter(Boolean);
 
 export async function upsertListAction(formData: FormData) {
-  const supabase = await createServerSupabaseClient();
-  const { data: user } = await supabase.auth.getUser();
-  if (!user.user) throw new Error("Not authenticated");
+  const supabase = getSupabaseAdmin();
 
   const name = String(formData.get("name"));
   const address = String(formData.get("address"));
@@ -20,7 +20,7 @@ export async function upsertListAction(formData: FormData) {
 
   const { error } = await supabase.from("lists").upsert(
     {
-      owner_id: user.user.id,
+      owner_id: ADMIN_USER_ID,
       name,
       address,
       description,
@@ -33,7 +33,7 @@ export async function upsertListAction(formData: FormData) {
 }
 
 export async function importMembersAction(formData: FormData) {
-  const supabase = await createServerSupabaseClient();
+  const supabase = getSupabaseAdmin();
   const listId = String(formData.get("listId"));
   const raw = String(formData.get("members"));
   const emails = parseEmails(raw).slice(0, 10000);
