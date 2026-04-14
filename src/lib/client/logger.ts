@@ -13,11 +13,14 @@ export type ClientLogPayload = {
   correlationId?: string;
 };
 
+type LogMethod = "trace" | "debug" | "info" | "warn" | "error";
+
 export const clientLog = ({ message, level = "info", context, error }: ClientLogPayload) => {
+  const method = (typeof level === "string" ? level : "info") as LogMethod;
   if (error instanceof Error) {
-    log[level](`${message}: ${error.message}`, { stack: error.stack, ...context });
+    log[method](`${message}: ${error.message}`, { stack: error.stack, ...context });
   } else {
-    log[level](message, context);
+    log[method](message, context);
   }
 };
 

@@ -51,6 +51,7 @@ export interface Database {
           updated_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["emails"]["Insert"]>;
+        Relationships: [];
       };
       draft_snapshots: {
         Row: {
@@ -72,6 +73,7 @@ export interface Database {
           created_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["draft_snapshots"]["Insert"]>;
+        Relationships: [];
       };
       error_logs: {
         Row: {
@@ -95,6 +97,7 @@ export interface Database {
           created_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["error_logs"]["Insert"]>;
+        Relationships: [];
       };
       audit_logs: {
         Row: {
@@ -116,6 +119,7 @@ export interface Database {
           created_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["audit_logs"]["Insert"]>;
+        Relationships: [];
       };
       mail_queue: {
         Row: {
@@ -153,6 +157,7 @@ export interface Database {
           updated_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["mail_queue"]["Insert"]>;
+        Relationships: [];
       };
       queue_metrics: {
         Row: {
@@ -170,6 +175,7 @@ export interface Database {
           last_run_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["queue_metrics"]["Insert"]>;
+        Relationships: [];
       };
       feature_flags: {
         Row: {
@@ -187,6 +193,7 @@ export interface Database {
           updated_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["feature_flags"]["Insert"]>;
+        Relationships: [];
       };
       admin_audit: {
         Row: {
@@ -206,6 +213,7 @@ export interface Database {
           created_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["admin_audit"]["Insert"]>;
+        Relationships: [];
       };
       provider_events: {
         Row: {
@@ -227,6 +235,7 @@ export interface Database {
           received_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["provider_events"]["Insert"]>;
+        Relationships: [];
       };
       lists: {
         Row: {
@@ -254,6 +263,7 @@ export interface Database {
           updated_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["lists"]["Insert"]>;
+        Relationships: [];
       };
       list_members: {
         Row: {
@@ -277,6 +287,7 @@ export interface Database {
           metadata?: Json | null;
         };
         Update: Partial<Database["public"]["Tables"]["list_members"]["Insert"]>;
+        Relationships: [];
       };
       files: {
         Row: {
@@ -296,6 +307,7 @@ export interface Database {
           created_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["files"]["Insert"]>;
+        Relationships: [];
       };
       email_recipients: {
         Row: {
@@ -319,6 +331,7 @@ export interface Database {
           updated_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["email_recipients"]["Insert"]>;
+        Relationships: [];
       };
       profiles: {
         Row: {
@@ -334,6 +347,7 @@ export interface Database {
           created_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["profiles"]["Insert"]>;
+        Relationships: [];
       };
     };
     Views: Record<string, never>;
