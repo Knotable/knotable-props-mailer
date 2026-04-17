@@ -23,6 +23,7 @@ const parseRecipients = (input: string) =>
     .filter(Boolean);
 
 export async function saveDraftAction(formData: FormData) {
+        const id = formData.get("id") as string | null;
         const payload: DraftPayload = {
                     from: String(formData.get("from")),
                     subject: String(formData.get("subject")),
@@ -35,32 +36,58 @@ export async function saveDraftAction(formData: FormData) {
 
     const supabase = getSupabaseAdmin();
 
-    const { data: emailRow, error } = await supabase.from("emails").insert({
-                author_id: ADMIN_USER_ID,
+    const emailFields = {
                 from_address: payload.from,
                 subject: payload.subject,
                 html: payload.html,
                 text: payload.html.replace(/<[^>]+>/g, " "),
-                status: "draft",
+                status: "draft" as const,
                 scheduled_at: payload.scheduledAt ? new Date(payload.scheduledAt).toISOString() : null,
                 campaigns: payload.campaigns?.split(",").map((c) => c.trim()).filter(Boolean) ?? [],
                 tags: payload.tags?.split(",").map((t) => t.trim()).filter(Boolean) ?? [],
-    }).select("id").single();
+    };
 
-    if (error) throw error;
+    let emailId: string;
+
+    if (id) {
+        // Update existing draft
+        const { error } = await supabase
+            .from("emails")
+            .update(emailFields)
+            .eq("id", id);
+        if (error) throw error;
+        emailId = id;
+
+        // Replace recipients: delete old ones, insert new
+        const { error: delError } = await supabase
+            .from("email_recipients")
+            .delete()
+            .eq("email_id", emailId);
+        if (delError) throw delError;
+    } else {
+        // Insert new draft
+        const { data: emailRow, error } = await supabase.from("emails").insert({
+            author_id: ADMIN_USER_ID,
+            ...emailFields,
+        }).select("id").single();
+        if (error) throw error;
+        emailId = emailRow.id;
+    }
 
     const recipientRows = parseRecipients(payload.recipients).map((addr) => ({
-                email_id: emailRow.id,
+                email_id: emailId,
                 recipient_address: addr,
     }));
 
-    const { error: recipientError } = await supabase
+    if (recipientRows.length) {
+        const { error: recipientError } = await supabase
             .from("email_recipients")
             .insert(recipientRows);
-
-    if (recipientError) throw recipientError;
+        if (recipientError) throw recipientError;
+    }
 
     revalidatePath("/email/schedule");
+    revalidatePath("/email/composer");
 }
 
 export async function sendTestAction(formData: FormData) {

@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
 
 export default async function SchedulePage() {
@@ -27,6 +28,14 @@ export default async function SchedulePage() {
                 {item.scheduled_at ? new Date(item.scheduled_at).toLocaleString() : "Send ASAP"}
               </div>
               <div className="flex gap-2">
+                {item.status === "draft" && (
+                  <Link
+                    href={`/email/composer?id=${item.id}`}
+                    className="rounded-md border border-slate-900 px-3 py-1 text-xs font-medium text-slate-900 hover:bg-slate-100"
+                  >
+                    Edit
+                  </Link>
+                )}
                 <button className="rounded-md border border-slate-200 px-3 py-1 text-xs">Pause</button>
                 <button className="rounded-md border border-red-200 px-3 py-1 text-xs text-red-600">Cancel</button>
               </div>
