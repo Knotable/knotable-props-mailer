@@ -33,7 +33,7 @@ export const AppShell = ({ children }: PropsWithChildren) => {
           </div>
           <div className="text-right text-xs text-slate-500">
             <p>Signed in as</p>
-            <p className="font-medium text-slate-700">admin@knotable.com</p>
+            <p className="font-medium text-slate-700">amol@sarva.co</p>
           </div>
         </div>
       </header>

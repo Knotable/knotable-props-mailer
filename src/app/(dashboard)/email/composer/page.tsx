@@ -12,7 +12,7 @@ export default function ComposerPage() {
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="text-sm font-medium text-slate-700">
             From
-            <input name="from" required defaultValue="Kmail <noreply@knotable.com>" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" />
+            <input name="from" required defaultValue="Kmail <amol@sarva.co>" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" />
           </label>
           <label className="text-sm font-medium text-slate-700">
             Scheduled send (optional)
