@@ -125,6 +125,8 @@ export interface Database {
         Row: {
           id: string;
           email_id: string | null;
+          list_id: string | null;
+          ses_message_id: string | null;
           payload: Json;
           status: "pending" | "processing" | "succeeded" | "failed" | "dead";
           attempts: number;
@@ -144,6 +146,8 @@ export interface Database {
         Insert: {
           id?: string;
           email_id?: string | null;
+          list_id?: string | null;
+          ses_message_id?: string | null;
           payload: Json;
           status?: Database["public"]["Tables"]["mail_queue"]["Row"]["status"];
           attempts?: number;
@@ -226,6 +230,7 @@ export interface Database {
           event_type: string;
           message_id: string | null;
           recipient: string | null;
+          email_id: string | null;
           payload: Json;
           received_at: string | null;
         };
@@ -235,6 +240,7 @@ export interface Database {
           event_type: string;
           message_id?: string | null;
           recipient?: string | null;
+          email_id?: string | null;
           payload: Json;
           received_at?: string | null;
         };

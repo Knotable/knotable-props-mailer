@@ -16,6 +16,11 @@ export const dashboardNav: NavItem[] = [
     description: "Queue, pause, or cancel scheduled sends",
   },
   {
+    label: "Past Sends",
+    href: "/email/sends",
+    description: "View sent emails, delivery stats, and previews",
+  },
+  {
     label: "Analytics",
     href: "/email/analytics",
     description: "Track opens, clicks, and deliverability",

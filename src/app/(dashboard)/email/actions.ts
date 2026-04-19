@@ -131,6 +131,7 @@ export async function queueCampaignAction(formData: FormData) {
   // Build mail_queue rows, assigning each recipient to the right calendar day.
   const queueRows: {
     email_id: string;
+    list_id: string;
     payload: Json;
     status: "pending" | "processing" | "succeeded" | "failed" | "dead";
     available_at: string;
@@ -149,6 +150,7 @@ export async function queueCampaignAction(formData: FormData) {
       const member = members[memberIndex++];
       queueRows.push({
         email_id:       emailId,
+        list_id:        listId,
         payload: {
           from:      email.from_address,
           to:        member.email,

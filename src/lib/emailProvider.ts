@@ -43,5 +43,11 @@ export async function sendEmail(payload: SendEmailPayload) {
     console.info("SES test email sent", info.messageId);
   }
 
-  return info;
+  // info.messageId is the SES Message-ID header value, e.g.
+  // "<01020195abc...@email.amazonses.com>" — strip angle brackets for storage.
+  const sesMessageId = info.messageId
+    ? info.messageId.replace(/^<|>$/g, "")
+    : null;
+
+  return { ...info, sesMessageId };
 }

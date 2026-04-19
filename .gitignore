@@ -14,7 +14,7 @@ env.keys
 
 # Build artifacts
 supabase/.schema-hash
-.vercel/output
+.vercel/
 patch_autopush.py
 
 # Legacy directories deleted in git history

@@ -50,7 +50,7 @@ export async function POST(request: Request) {
   // Only pick items whose available_at is ≤ now (respects multi-day scheduling).
   const { data: items, error: fetchError } = await supabase
     .from("mail_queue")
-    .select("id, email_id, payload")
+    .select("id, email_id, payload, list_id")
     .eq("status", "pending")
     .lte("available_at", new Date().toISOString())
     .order("available_at", { ascending: true })
@@ -93,7 +93,7 @@ export async function POST(request: Request) {
     };
 
     try {
-      await sendEmail({
+      const result = await sendEmail({
         from: payload.from,
         to: [payload.to],
         subject: payload.subject,
@@ -108,6 +108,7 @@ export async function POST(request: Request) {
         .update({
           status: "succeeded",
           send_date: today,
+          ses_message_id: result.sesMessageId ?? null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", item.id);
