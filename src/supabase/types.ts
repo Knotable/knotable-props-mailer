@@ -136,6 +136,8 @@ export interface Database {
           last_error: string | null;
           correlation_id: string | null;
           last_heartbeat: string | null;
+          send_date: string | null;
+          campaign_label: string | null;
           created_at: string | null;
           updated_at: string | null;
         };
@@ -153,6 +155,8 @@ export interface Database {
           last_error?: string | null;
           correlation_id?: string | null;
           last_heartbeat?: string | null;
+          send_date?: string | null;
+          campaign_label?: string | null;
           created_at?: string | null;
           updated_at?: string | null;
         };

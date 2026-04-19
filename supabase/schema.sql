@@ -87,11 +87,16 @@ create table if not exists public.mail_queue (
   last_error text,
   correlation_id text,
   last_heartbeat timestamptz,
+  -- daily quota tracking
+  send_date date,           -- set to the calendar day the item was sent (UTC)
+  campaign_label text,      -- links multi-day batches of the same campaign
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
 
 create index if not exists mail_queue_status_idx on public.mail_queue(status, available_at);
+create index if not exists mail_queue_send_date_status_idx on public.mail_queue(send_date, status);
+create index if not exists mail_queue_campaign_label_idx on public.mail_queue(campaign_label);
 
 create table if not exists public.queue_metrics (
   id uuid primary key default gen_random_uuid(),
@@ -158,6 +163,7 @@ create table if not exists public.list_members (
 );
 
 create index if not exists list_members_list_idx on public.list_members(list_id);
+create unique index if not exists list_members_list_email_idx on public.list_members(list_id, email);
 
 -- RLS policies placeholders
 -- alter table public.emails enable row level security;
