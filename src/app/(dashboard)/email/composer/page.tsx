@@ -66,7 +66,7 @@ export default async function ComposerPage({ searchParams }: Props) {
             <input
               name="from"
               required
-              defaultValue={draft?.from_address ?? "Kmail <amol@sarva.co>"}
+              defaultValue={draft?.from_address ?? "Amol Sarva <amol@sarva.co>"}
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
             />
           </label>
