@@ -1,13 +1,9 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { saveDraftAction, sendTestAction, queueCampaignAction } from "../actions";
 
-type List = {
-  id: string;
-  name: string;
-  address: string;
-};
+type List = { id: string; name: string; address: string };
 
 type Draft = {
   id: string;
@@ -21,65 +17,81 @@ type Draft = {
   list_id: string | null;
 };
 
-type Props = {
-  draft: Draft | null;
-  lists: List[];
-};
+type Props = { draft: Draft | null; lists: List[] };
 
 export function ComposerForm({ draft, lists }: Props) {
-  // If the draft was previously sent to a list, pre-select it
   const initialList = draft?.list_id
-    ? lists.find((l) => l.id === draft.list_id) ?? null
+    ? (lists.find((l) => l.id === draft.list_id) ?? null)
     : null;
 
   const [selectedList, setSelectedList] = useState<List | null>(initialList);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   const [sending, setSending] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [banner, setBanner] = useState<{ ok: boolean; message: string } | null>(null);
+
   const formRef = useRef<HTMLFormElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
   const scheduledAtLocal = draft?.scheduled_at
     ? new Date(draft.scheduled_at).toISOString().slice(0, 16)
     : "";
 
-  const handleSelectList = (list: List) => {
-    if (selectedList?.id === list.id) {
-      // Deselect
-      setSelectedList(null);
-    } else {
-      setSelectedList(list);
-    }
-    setResult(null);
-  };
-
-  const handleSend = async (e: React.FormEvent) => {
+  // ── Save Draft ────────────────────────────────────────────────────────────
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formRef.current) return;
+    setSaving(true);
+    setBanner(null);
+    try {
+      const fd = new FormData(formRef.current);
+      await saveDraftAction(fd);
+      setBanner({ ok: true, message: "Draft saved." });
+    } catch (err) {
+      setBanner({ ok: false, message: err instanceof Error ? err.message : "Save failed." });
+    } finally {
+      setSaving(false);
+    }
+  };
 
+  // ── Send ──────────────────────────────────────────────────────────────────
+  const handleSend = async () => {
+    if (!formRef.current) return;
     setSending(true);
-    setResult(null);
-
-    const formData = new FormData(formRef.current);
+    setBanner(null);
+    const fd = new FormData(formRef.current);
 
     try {
-      if (selectedList && draft?.id) {
-        // Queue campaign to list
-        formData.set("emailId", draft.id);
-        formData.set("listId", selectedList.id);
-        const res = await queueCampaignAction(formData);
-        setResult({
+      if (selectedList) {
+        if (!draft?.id) {
+          setBanner({ ok: false, message: "Save the draft before sending to a list." });
+          return;
+        }
+        fd.set("emailId", draft.id);
+        fd.set("listId", selectedList.id);
+        const res = await queueCampaignAction(fd);
+        setBanner({
           ok: true,
-          message: `Queued ${res.totalRecipients.toLocaleString()} emails across ${res.daysNeeded} day${res.daysNeeded !== 1 ? "s" : ""}.`,
+          message: `Queued ${res.totalRecipients.toLocaleString()} emails to "${selectedList.name}"${res.daysNeeded > 1 ? ` across ${res.daysNeeded} days` : ""}.`,
         });
       } else {
-        // Send test directly to individual addresses in recipients field
-        await sendTestAction(formData);
-        setResult({ ok: true, message: "Test sent successfully." });
+        // No list selected — send directly to addresses in the To field
+        await sendTestAction(fd);
+        setBanner({ ok: true, message: "Sent." });
       }
     } catch (err) {
-      setResult({
-        ok: false,
-        message: err instanceof Error ? err.message : "Send failed.",
-      });
+      setBanner({ ok: false, message: err instanceof Error ? err.message : "Send failed." });
     } finally {
       setSending(false);
     }
@@ -87,194 +99,202 @@ export function ComposerForm({ draft, lists }: Props) {
 
   return (
     <div className="space-y-6">
-      <section>
+      <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">
           {draft ? "Editing Draft" : "Draft"}
         </p>
         <h2 className="text-2xl font-semibold text-slate-900">Compose Email</h2>
-        <p className="text-sm text-slate-500">
-          This mirrors the original Props composer and hooks into Supabase + Amazon SES.
-        </p>
-      </section>
+      </header>
 
       <form
         ref={formRef}
-        action={saveDraftAction}
+        onSubmit={handleSave}
         className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-6"
       >
         {draft && <input type="hidden" name="id" value={draft.id} />}
 
+        {/* From + Scheduled */}
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="text-sm font-medium text-slate-700">
+          <label className="block text-sm font-medium text-slate-700">
             From
             <input
               name="from"
               required
               defaultValue={draft?.from_address ?? "Amol Sarva <amol@sarva.co>"}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 bg-white"
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>
-          <label className="text-sm font-medium text-slate-700">
+          <label className="block text-sm font-medium text-slate-700">
             Scheduled send (optional)
             <input
               name="scheduledAt"
               type="datetime-local"
               defaultValue={scheduledAtLocal}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 bg-white"
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>
         </div>
 
-        <label className="text-sm font-medium text-slate-700">
+        {/* Subject */}
+        <label className="block text-sm font-medium text-slate-700">
           Subject
           <input
             name="subject"
             required
             defaultValue={draft?.subject ?? ""}
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 bg-white"
+            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
           />
         </label>
 
-        {/* ── To / Recipients ── */}
+        {/* To field with Lists dropdown */}
         <div>
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-sm font-medium text-slate-700">To</span>
-            {selectedList && (
-              <button
-                type="button"
-                onClick={() => setSelectedList(null)}
-                className="text-xs text-slate-400 hover:text-slate-700"
-              >
-                ✕ clear list
-              </button>
+          <label className="block text-sm font-medium text-slate-700 mb-1">To</label>
+          <div className="flex gap-2 items-start">
+            {/* Text field or selected list pill */}
+            <div className="flex-1">
+              {selectedList ? (
+                <div className="flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2">
+                  <span className="text-sm text-slate-800 font-medium flex-1">
+                    {selectedList.name}
+                    <span className="ml-1 text-slate-400 font-normal text-xs">
+                      &lt;{selectedList.address}&gt;
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedList(null)}
+                    className="text-slate-400 hover:text-slate-700 text-xs leading-none"
+                    title="Remove list"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ) : (
+                <textarea
+                  name="recipients"
+                  rows={2}
+                  defaultValue={draft?.recipients.join("\n") ?? ""}
+                  placeholder="email@example.com, one per line or comma-separated"
+                  className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              )}
+              {selectedList && (
+                <p className="mt-1 text-xs text-slate-500">
+                  Sends individually to every active member of this list.
+                </p>
+              )}
+              {/* Hidden field so form still submits recipient info when list selected */}
+              {selectedList && (
+                <input type="hidden" name="recipients" value={selectedList.address} />
+              )}
+            </div>
+
+            {/* Lists dropdown button */}
+            {lists.length > 0 && (
+              <div className="relative shrink-0" ref={dropdownRef}>
+                <button
+                  type="button"
+                  onClick={() => setDropdownOpen((o) => !o)}
+                  className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                >
+                  Lists
+                  <span className="text-slate-400">▾</span>
+                </button>
+
+                {dropdownOpen && (
+                  <div className="absolute right-0 top-full z-20 mt-1 w-64 rounded-lg border border-slate-200 bg-white shadow-lg">
+                    <div className="p-1">
+                      {lists.map((list) => (
+                        <button
+                          key={list.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedList(list);
+                            setDropdownOpen(false);
+                          }}
+                          className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors ${
+                            selectedList?.id === list.id
+                              ? "bg-slate-900 text-white"
+                              : "text-slate-700 hover:bg-slate-100"
+                          }`}
+                        >
+                          <span className="font-medium">{list.name}</span>
+                          <span className={`ml-2 text-xs ${selectedList?.id === list.id ? "text-slate-300" : "text-slate-400"}`}>
+                            {list.address}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
-
-          {/* List picker */}
-          {lists.length > 0 && (
-            <div className="flex flex-wrap gap-2 mb-2">
-              {lists.map((list) => (
-                <button
-                  key={list.id}
-                  type="button"
-                  onClick={() => handleSelectList(list)}
-                  className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                    selectedList?.id === list.id
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-300 text-slate-600 hover:border-slate-500 hover:text-slate-900"
-                  }`}
-                >
-                  {list.name}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Recipients field — shows list name when list selected, or individual addresses */}
-          <textarea
-            name="recipients"
-            required={!selectedList}
-            rows={selectedList ? 1 : 3}
-            readOnly={!!selectedList}
-            value={
-              selectedList
-                ? `${selectedList.name} <${selectedList.address}>`
-                : undefined
-            }
-            defaultValue={
-              !selectedList
-                ? (draft?.recipients.join("\n") ?? "")
-                : undefined
-            }
-            placeholder="Paste addresses or choose a list above"
-            className={`w-full rounded-md border px-3 py-2 text-sm transition-colors ${
-              selectedList
-                ? "border-slate-200 bg-slate-100 text-slate-600 cursor-default"
-                : "border-slate-300 bg-white"
-            }`}
-          />
-          {selectedList && (
-            <p className="mt-1 text-xs text-slate-500">
-              Will send individually to every active member of this list.
-            </p>
-          )}
         </div>
 
-        <label className="text-sm font-medium text-slate-700">
+        {/* HTML */}
+        <label className="block text-sm font-medium text-slate-700">
           HTML
           <textarea
             name="html"
             required
             rows={8}
             defaultValue={draft?.html ?? ""}
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 bg-white"
+            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-mono"
           />
         </label>
 
+        {/* Campaigns + Tags */}
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="text-sm font-medium text-slate-700">
+          <label className="block text-sm font-medium text-slate-700">
             Campaigns
             <input
               name="campaigns"
               placeholder="campaign-a,campaign-b"
               defaultValue={draft?.campaigns.join(",") ?? ""}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 bg-white"
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>
-          <label className="text-sm font-medium text-slate-700">
+          <label className="block text-sm font-medium text-slate-700">
             Tags
             <input
               name="tags"
               placeholder="weekly,update"
               defaultValue={draft?.tags.join(",") ?? ""}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 bg-white"
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>
         </div>
 
-        {/* Result banner */}
-        {result && (
-          <div
-            className={`rounded-md px-4 py-3 text-sm ${
-              result.ok
-                ? "bg-green-50 text-green-800 border border-green-200"
-                : "bg-red-50 text-red-800 border border-red-200"
-            }`}
-          >
-            {result.message}
+        {/* Banner */}
+        {banner && (
+          <div className={`rounded-md px-4 py-3 text-sm border ${
+            banner.ok
+              ? "bg-green-50 text-green-800 border-green-200"
+              : "bg-red-50 text-red-800 border-red-200"
+          }`}>
+            {banner.message}
           </div>
         )}
 
-        <div className="flex flex-wrap gap-3">
+        {/* Actions */}
+        <div className="flex flex-wrap gap-3 pt-1">
           <button
             type="submit"
-            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+            disabled={saving}
+            className="rounded-md bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
           >
-            Save Draft
+            {saving ? "Saving…" : "Save Draft"}
           </button>
 
           <button
             type="button"
             onClick={handleSend}
-            disabled={sending || (selectedList !== null && !draft?.id)}
-            className={`rounded-md border px-4 py-2 text-sm font-semibold transition-colors ${
-              selectedList
-                ? "border-slate-900 bg-slate-900 text-white hover:bg-slate-700"
-                : "border-slate-900 text-slate-900 hover:bg-slate-50"
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
+            disabled={sending}
+            className="rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
           >
-            {sending
-              ? "Sending…"
-              : selectedList
-              ? `Send to ${selectedList.name}`
-              : "Send Test"}
+            {sending ? "Sending…" : "Send"}
           </button>
-
-          {selectedList && !draft?.id && (
-            <p className="self-center text-xs text-amber-600">
-              Save the draft first before sending to a list.
-            </p>
-          )}
         </div>
       </form>
     </div>
