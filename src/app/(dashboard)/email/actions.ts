@@ -129,14 +129,22 @@ export async function queueCampaignAction(formData: FormData) {
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
 
-  // Load active list members.
-  const { data: members, error: membersError } = await supabase
-    .from("list_members")
-    .select("email")
-    .eq("list_id", listId)
-    .eq("status", "active");
-  if (membersError) throw membersError;
-  if (!members || members.length === 0) throw new Error("List has no active members");
+  // Load active list members — paginate to bypass PostgREST's 1000-row default cap.
+  const PAGE = 1000;
+  const members: { email: string }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data: page, error: pageError } = await supabase
+      .from("list_members")
+      .select("email")
+      .eq("list_id", listId)
+      .eq("status", "active")
+      .range(from, from + PAGE - 1);
+    if (pageError) throw pageError;
+    if (!page || page.length === 0) break;
+    members.push(...page);
+    if (page.length < PAGE) break;
+  }
+  if (members.length === 0) throw new Error("List has no active members");
 
   // Work out the multi-day schedule.
   const today         = todayUTC();
