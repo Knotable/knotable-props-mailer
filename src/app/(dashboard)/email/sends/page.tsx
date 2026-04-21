@@ -1,18 +1,65 @@
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import Link from "next/link";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { SendsClient } from "./sends-client";
 
-export default async function PastSendsPage() {
-  const supabase = await createServerSupabaseClient();
+const PAGE_SIZE = 20;
 
-  // Get all emails that have at least one queued/sent mail_queue entry
-  // Join with mail_queue to get per-email send stats and list info
-  const { data: queueRows } = await supabase
-    .from("mail_queue")
-    .select("email_id, list_id, status, send_date, campaign_label, created_at")
-    .in("status", ["succeeded", "failed", "dead", "processing", "pending"])
-    .order("created_at", { ascending: false });
+// searchParams is a Promise in Next.js 15+.
+export default async function PastSendsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[]>>;
+}) {
+  const params = await searchParams;
+  const page = Math.max(1, parseInt((params.page as string) ?? "1", 10));
+  const offset = (page - 1) * PAGE_SIZE;
 
-  if (!queueRows || queueRows.length === 0) {
+  const supabase = getSupabaseAdmin();
+
+  // ── Use the email_send_stats VIEW for O(emails) instead of O(queue rows) ────
+  // If the migration hasn't been applied yet, fall back to a note.
+  type StatRow = {
+    email_id: string;
+    list_ids: string[] | null;
+    sent: number;
+    failed: number;
+    pending: number;
+    first_sent: string | null;
+    last_queued_at: string | null;
+  };
+
+  const [{ count: totalCount }, { data: stats, error: statsError }] = await Promise.all([
+    supabase
+      .from("email_send_stats")
+      .select("email_id", { count: "exact", head: true }),
+    supabase
+      .from("email_send_stats")
+      .select("email_id, list_ids, sent, failed, pending, first_sent, last_queued_at")
+      .order("last_queued_at", { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1),
+  ]);
+
+  if (statsError) {
+    return (
+      <div className="space-y-6">
+        <Header />
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-800">
+          <p className="font-medium">Migration required</p>
+          <p className="mt-1">
+            Run{" "}
+            <code className="rounded bg-amber-100 px-1">
+              supabase/migrations/20260421_analytics_views.sql
+            </code>{" "}
+            in your Supabase project to enable the Past Sends page.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const rows = (stats ?? []) as StatRow[];
+
+  if (rows.length === 0 && page === 1) {
     return (
       <div className="space-y-6">
         <Header />
@@ -23,56 +70,16 @@ export default async function PastSendsPage() {
     );
   }
 
-  // Aggregate per email_id: collect unique list_ids, counts by status
-  type EmailSummary = {
-    email_id: string;
-    list_ids: Set<string>;
-    sent: number;
-    failed: number;
-    pending: number;
-    first_sent: string | null;
-    campaign_labels: Set<string>;
-  };
-
-  const emailMap = new Map<string, EmailSummary>();
-  for (const row of queueRows) {
-    const eid = row.email_id as string;
-    if (!eid) continue;
-    const existing = emailMap.get(eid);
-    const isSent = row.status === "succeeded";
-    const isFailed = row.status === "failed" || row.status === "dead";
-    const isPending = row.status === "pending" || row.status === "processing";
-
-    if (existing) {
-      if (row.list_id) existing.list_ids.add(row.list_id as string);
-      if (isSent) existing.sent++;
-      if (isFailed) existing.failed++;
-      if (isPending) existing.pending++;
-      if (isSent && row.send_date && (!existing.first_sent || row.send_date < existing.first_sent)) {
-        existing.first_sent = row.send_date as string;
-      }
-      if (row.campaign_label) existing.campaign_labels.add(row.campaign_label as string);
-    } else {
-      emailMap.set(eid, {
-        email_id: eid,
-        list_ids: new Set(row.list_id ? [row.list_id as string] : []),
-        sent: isSent ? 1 : 0,
-        failed: isFailed ? 1 : 0,
-        pending: isPending ? 1 : 0,
-        first_sent: isSent ? (row.send_date as string | null) : null,
-        campaign_labels: new Set(row.campaign_label ? [row.campaign_label as string] : []),
-      });
-    }
-  }
-
-  // Fetch email details
-  const emailIds = [...emailMap.keys()];
-  const listIds = [...new Set([...emailMap.values()].flatMap((e) => [...e.list_ids]))];
+  // Fetch email details and list details for this page only.
+  const emailIds = rows.map((r) => r.email_id);
+  const listIds = [
+    ...new Set(rows.flatMap((r) => r.list_ids ?? []).filter(Boolean)),
+  ];
 
   const [{ data: emails }, { data: lists }] = await Promise.all([
     supabase
       .from("emails")
-      .select("id, subject, from_address, html, status, created_at, updated_at")
+      .select("id, subject, from_address, html, status, created_at")
       .in("id", emailIds),
     listIds.length
       ? supabase.from("lists").select("id, name, address").in("id", listIds)
@@ -82,48 +89,92 @@ export default async function PastSendsPage() {
   const emailDetails = new Map((emails ?? []).map((e) => [e.id, e]));
   const listDetails = new Map((lists ?? []).map((l) => [l.id, l]));
 
-  // Build final sorted list (most recent first)
-  const sends = [...emailMap.entries()]
-    .map(([eid, summary]) => {
-      const email = emailDetails.get(eid);
-      const sendLists = [...summary.list_ids]
-        .map((lid) => listDetails.get(lid))
-        .filter(Boolean) as { id: string; name: string; address: string }[];
+  const sends = rows.map((row) => {
+    const email = emailDetails.get(row.email_id);
+    const sendLists = (row.list_ids ?? [])
+      .map((lid) => listDetails.get(lid))
+      .filter(Boolean) as { id: string; name: string; address: string }[];
 
-      return {
-        email_id: eid,
-        subject: email?.subject ?? "(untitled)",
-        from_address: email?.from_address ?? "",
-        status: email?.status ?? "unknown",
-        sent: summary.sent,
-        failed: summary.failed,
-        pending: summary.pending,
-        first_sent: summary.first_sent,
-        lists: sendLists,
-        created_at: email?.created_at ?? null,
-      };
-    })
-    .sort((a, b) => {
-      // Sort by first_sent desc, then created_at desc
-      const aDate = a.first_sent ?? a.created_at ?? "";
-      const bDate = b.first_sent ?? b.created_at ?? "";
-      return bDate.localeCompare(aDate);
-    });
+    return {
+      email_id: row.email_id,
+      subject: email?.subject ?? "(untitled)",
+      from_address: email?.from_address ?? "",
+      status: email?.status ?? "unknown",
+      sent: Number(row.sent),
+      failed: Number(row.failed),
+      pending: Number(row.pending),
+      first_sent: row.first_sent,
+      lists: sendLists,
+      created_at: email?.created_at ?? null,
+    };
+  });
+
+  const total = totalCount ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
     <div className="space-y-6">
-      <Header />
+      <Header total={total} />
       <SendsClient sends={sends} />
+      {totalPages > 1 && (
+        <Pagination page={page} totalPages={totalPages} />
+      )}
     </div>
   );
 }
 
-function Header() {
+function Header({ total }: { total?: number }) {
   return (
-    <header>
-      <p className="text-xs uppercase tracking-wide text-slate-400">History</p>
-      <h2 className="text-2xl font-semibold text-slate-900">Past Sends</h2>
-      <p className="text-sm text-slate-500">Emails queued or sent, with delivery stats and preview.</p>
+    <header className="flex flex-wrap items-end justify-between gap-2">
+      <div>
+        <p className="text-xs uppercase tracking-wide text-slate-400">History</p>
+        <h2 className="text-2xl font-semibold text-slate-900">Past Sends</h2>
+        <p className="text-sm text-slate-500">
+          Emails queued or sent, with delivery stats and preview.
+        </p>
+      </div>
+      {total !== undefined && (
+        <p className="text-sm text-slate-400">{total.toLocaleString()} total</p>
+      )}
     </header>
+  );
+}
+
+function Pagination({ page, totalPages }: { page: number; totalPages: number }) {
+  const prev = page > 1 ? page - 1 : null;
+  const next = page < totalPages ? page + 1 : null;
+
+  return (
+    <div className="flex items-center justify-between text-sm">
+      <span className="text-slate-500">
+        Page {page} of {totalPages}
+      </span>
+      <div className="flex gap-2">
+        {prev ? (
+          <Link
+            href={`?page=${prev}`}
+            className="rounded-md border border-slate-300 px-3 py-1 text-slate-700 hover:bg-slate-50"
+          >
+            ← Previous
+          </Link>
+        ) : (
+          <span className="rounded-md border border-slate-200 px-3 py-1 text-slate-300">
+            ← Previous
+          </span>
+        )}
+        {next ? (
+          <Link
+            href={`?page=${next}`}
+            className="rounded-md border border-slate-300 px-3 py-1 text-slate-700 hover:bg-slate-50"
+          >
+            Next →
+          </Link>
+        ) : (
+          <span className="rounded-md border border-slate-200 px-3 py-1 text-slate-300">
+            Next →
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
