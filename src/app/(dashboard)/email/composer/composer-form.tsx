@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { saveDraftAction, sendTestAction, queueCampaignAction } from "../actions";
 
 const LAST_DRAFT_KEY = "composer.lastDraftId";
+const AUTOSAVE_DELAY_MS = 3_000;
 
 type List = { id: string; name: string; address: string };
 
@@ -22,6 +23,8 @@ type Draft = {
 
 type Props = { draft: Draft | null; lists: List[] };
 
+type AutosaveState = "idle" | "pending" | "saving" | "saved" | "error";
+
 export function ComposerForm({ draft, lists }: Props) {
   const router = useRouter();
   const initialList = draft?.list_id
@@ -33,13 +36,18 @@ export function ComposerForm({ draft, lists }: Props) {
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; message: string } | null>(null);
-  // Track the draft id in state so it stays current after a save without a full page reload.
   const [draftId, setDraftId] = useState<string | null>(draft?.id ?? null);
+  const [autosaveState, setAutosaveState] = useState<AutosaveState>("idle");
 
   const formRef = useRef<HTMLFormElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const autosaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Keep a ref so the autosave closure always sees the latest draftId without
+  // needing to re-register the form onChange handler.
+  const draftIdRef = useRef<string | null>(draftId);
+  useEffect(() => { draftIdRef.current = draftId; }, [draftId]);
 
-  // Persist / restore last open draft across reloads and redeploys
+  // Persist / restore last open draft across reloads
   useEffect(() => {
     if (draft?.id) {
       localStorage.setItem(LAST_DRAFT_KEY, draft.id);
@@ -60,15 +68,57 @@ export function ComposerForm({ draft, lists }: Props) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Format a Date as YYYY-MM-DDTHH:mm in the *browser's* local timezone,
-  // which is what datetime-local inputs expect and submit.
+  // Clear the autosave timer on unmount
+  useEffect(() => {
+    return () => {
+      if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    };
+  }, []);
+
+  // Core autosave logic — reads from formRef so it always has the latest values.
+  const runAutosave = useCallback(async () => {
+    if (!formRef.current) return;
+    setAutosaveState("saving");
+    try {
+      const fd = new FormData(formRef.current);
+      // Inject the current draftId (may differ from the mounted prop).
+      const currentId = draftIdRef.current;
+      if (currentId && !fd.get("id")) fd.set("id", currentId);
+      const res = await saveDraftAction(fd);
+      if (res?.id && res.id !== draftIdRef.current) {
+        draftIdRef.current = res.id;
+        setDraftId(res.id);
+        localStorage.setItem(LAST_DRAFT_KEY, res.id);
+        router.replace(`/email/composer?id=${res.id}`, { scroll: false });
+      }
+      setAutosaveState("saved");
+      // Fade "Saved" back to idle after 4 s
+      setTimeout(() => setAutosaveState((s) => (s === "saved" ? "idle" : s)), 4_000);
+    } catch {
+      setAutosaveState("error");
+    }
+  }, [router]);
+
+  // Schedule an autosave 3 s after the user stops typing.
+  const scheduleAutosave = useCallback(() => {
+    if (autosaveTimerRef.current) clearTimeout(autosaveTimerRef.current);
+    setAutosaveState("pending");
+    autosaveTimerRef.current = setTimeout(runAutosave, AUTOSAVE_DELAY_MS);
+  }, [runAutosave]);
+
+  const cancelAutosave = () => {
+    if (autosaveTimerRef.current) {
+      clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+    setAutosaveState("idle");
+  };
+
   const toDatetimeLocal = (d: Date) => {
     const offsetMs = d.getTimezoneOffset() * 60_000;
     return new Date(d.getTime() - offsetMs).toISOString().slice(0, 16);
   };
 
-  // Default to "now" (rounded down to the minute).
-  // If the draft has a future scheduled_at, use that; otherwise use now.
   const scheduledAtLocal = (() => {
     const now = new Date();
     now.setSeconds(0, 0);
@@ -78,16 +128,16 @@ export function ComposerForm({ draft, lists }: Props) {
     return draftStr > nowStr ? draftStr : nowStr;
   })();
 
-  // ── Save Draft ────────────────────────────────────────────────────────────
+  // ── Save Draft ─────────────────────────────────────────────────────────────
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formRef.current) return;
+    cancelAutosave();
     setSaving(true);
     setBanner(null);
     try {
       const fd = new FormData(formRef.current);
       const res = await saveDraftAction(fd);
-      // Keep the draft id in state so subsequent Send calls work without a reload.
       if (res?.id && res.id !== draftId) {
         setDraftId(res.id);
         localStorage.setItem(LAST_DRAFT_KEY, res.id);
@@ -101,9 +151,10 @@ export function ComposerForm({ draft, lists }: Props) {
     }
   };
 
-  // ── Send ──────────────────────────────────────────────────────────────────
+  // ── Send ───────────────────────────────────────────────────────────────────
   const handleSend = async () => {
     if (!formRef.current) return;
+    cancelAutosave();
     setSending(true);
     setBanner(null);
     const fd = new FormData(formRef.current);
@@ -122,7 +173,6 @@ export function ComposerForm({ draft, lists }: Props) {
           message: `Queued ${res.totalRecipients.toLocaleString()} emails to "${selectedList.name}"${res.daysNeeded > 1 ? ` across ${res.daysNeeded} days` : ""}.`,
         });
       } else {
-        // No list selected — send directly to addresses in the To field
         const res = await sendTestAction(fd);
         const n = res.sent;
         setBanner({
@@ -149,9 +199,10 @@ export function ComposerForm({ draft, lists }: Props) {
       <form
         ref={formRef}
         onSubmit={handleSave}
+        onChange={scheduleAutosave}
         className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-6"
       >
-        {draft && <input type="hidden" name="id" value={draft.id} />}
+        {draftId && <input type="hidden" name="id" value={draftId} />}
 
         {/* From + Scheduled */}
         <div className="grid gap-4 sm:grid-cols-2">
@@ -190,7 +241,6 @@ export function ComposerForm({ draft, lists }: Props) {
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">To</label>
           <div className="flex gap-2 items-start">
-            {/* Text field or selected list pill */}
             <div className="flex-1">
               {selectedList ? (
                 <div className="flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2">
@@ -223,13 +273,11 @@ export function ComposerForm({ draft, lists }: Props) {
                   Sends individually to every active member of this list.
                 </p>
               )}
-              {/* Hidden field so form still submits recipient info when list selected */}
               {selectedList && (
                 <input type="hidden" name="recipients" value={selectedList.address} />
               )}
             </div>
 
-            {/* Lists dropdown button */}
             {lists.length > 0 && (
               <div className="relative shrink-0" ref={dropdownRef}>
                 <button
@@ -318,7 +366,7 @@ export function ComposerForm({ draft, lists }: Props) {
         )}
 
         {/* Actions */}
-        <div className="flex flex-wrap gap-3 pt-1">
+        <div className="flex flex-wrap items-center gap-3 pt-1">
           <button
             type="submit"
             disabled={saving}
@@ -335,6 +383,22 @@ export function ComposerForm({ draft, lists }: Props) {
           >
             {sending ? "Sending…" : "Send"}
           </button>
+
+          {/* Autosave indicator */}
+          <span className="ml-auto text-xs">
+            {autosaveState === "pending" && (
+              <span className="text-slate-300">●</span>
+            )}
+            {autosaveState === "saving" && (
+              <span className="text-slate-400">Autosaving…</span>
+            )}
+            {autosaveState === "saved" && (
+              <span className="text-green-600">Autosaved</span>
+            )}
+            {autosaveState === "error" && (
+              <span className="text-amber-600">Autosave failed</span>
+            )}
+          </span>
         </div>
       </form>
     </div>

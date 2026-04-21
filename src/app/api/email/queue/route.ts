@@ -1,14 +1,16 @@
 /**
  * POST /api/email/queue
  *
- * Queue worker — called by Vercel Cron (e.g. every 5 minutes).
- * Processes pending mail_queue items up to the remaining daily quota.
+ * Queue worker — called by Vercel Cron daily at midnight UTC (vercel.json).
+ * Can also be triggered manually via triggerQueueAction on the Schedule page.
  *
- * Vercel cron.json entry (see vercel.json at repo root):
- *   schedule: every 5 minutes
- *
- * The route is protected by a CRON_SECRET header check so only Vercel
- * (or an authorised caller) can trigger it.
+ * Each invocation:
+ *   1. Reclaims stuck "processing" rows (worker crash / timeout recovery).
+ *   2. Checks the daily send quota.
+ *   3. Claims a batch of pending items using locked_at as an optimistic lock.
+ *   4. Sends each via SES SMTP.
+ *   5. Updates row status: succeeded / back-to-pending with backoff / dead.
+ *   6. Writes a queue_metrics snapshot.
  */
 
 import { NextResponse } from "next/server";
@@ -16,43 +18,76 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, DAILY_SEND_LIMIT, todayUTC } from "@/lib/dailyQuota";
 
-// How many items to attempt in a single cron invocation.
 const WORKER_BATCH_SIZE = 50;
+// Rows stuck in "processing" longer than this are assumed abandoned (worker crash / timeout).
+const STUCK_PROCESSING_TTL_MS = 15 * 60 * 1000;
 
 export async function POST(request: Request) {
-  // ── Auth ────────────────────────────────────────────────────────────────────
+  // ── Auth ─────────────────────────────────────────────────────────────────
   const cronSecret = process.env.CRON_SECRET;
-  if (cronSecret) {
-    const authHeader = request.headers.get("authorization");
-    if (authHeader !== `Bearer ${cronSecret}`) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
+  if (!cronSecret) {
+    // Fail loudly in production so misconfiguration is caught immediately.
+    console.error("[queue worker] CRON_SECRET is not set — refusing request");
+    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 });
+  }
+  const authHeader = request.headers.get("authorization");
+  if (authHeader !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
+  const now = new Date();
 
-  // ── Check daily quota ───────────────────────────────────────────────────────
+  // ── 1. Reclaim stuck processing rows ─────────────────────────────────────
+  // If a prior worker invocation crashed or was killed by Vercel's function
+  // timeout, its rows remain in "processing" forever.  Reset any row that has
+  // been locked for more than STUCK_PROCESSING_TTL_MS.
+  const staleLockedBefore = new Date(now.getTime() - STUCK_PROCESSING_TTL_MS).toISOString();
+  const { data: reclaimed } = await supabase
+    .from("mail_queue")
+    .update({
+      status: "pending",
+      locked_at: null,
+      updated_at: now.toISOString(),
+    })
+    .eq("status", "processing")
+    .lt("locked_at", staleLockedBefore)
+    .select("id");
+
+  const reclaimedCount = reclaimed?.length ?? 0;
+  if (reclaimedCount > 0) {
+    console.info(`[queue worker] reclaimed ${reclaimedCount} stuck processing row(s)`);
+  }
+
+  // ── 2. Check daily quota ──────────────────────────────────────────────────
   const sentToday = await getDailySentCount(today);
   const remaining = Math.max(0, DAILY_SEND_LIMIT - sentToday);
 
   if (remaining === 0) {
+    await writeMetrics(supabase, { queueDepth: 0, processed: 0, failed: 0 });
     return NextResponse.json({
       ok: true,
       message: `Daily cap of ${DAILY_SEND_LIMIT} reached. No sends this run.`,
       sentToday,
+      reclaimed: reclaimedCount,
     });
   }
 
   const limit = Math.min(remaining, WORKER_BATCH_SIZE);
 
-  // ── Claim a batch of pending items ──────────────────────────────────────────
-  // Only pick items whose available_at is ≤ now (respects multi-day scheduling).
+  // ── 3. Claim a batch of pending items ─────────────────────────────────────
+  // Select then immediately mark as "processing".  Two concurrent invocations
+  // can race here — the second one will also update the same rows, but both
+  // will attempt the send.  This is the best we can do without FOR UPDATE
+  // SKIP LOCKED (not exposed by Supabase JS client).  The duplicate-send risk
+  // is low given cron fires at most once daily; manual triggers should not
+  // overlap since they're initiated by a single operator.
   const { data: items, error: fetchError } = await supabase
     .from("mail_queue")
     .select("id, email_id, payload, list_id")
     .eq("status", "pending")
-    .lte("available_at", new Date().toISOString())
+    .lte("available_at", now.toISOString())
     .order("available_at", { ascending: true })
     .limit(limit);
 
@@ -62,22 +97,27 @@ export async function POST(request: Request) {
   }
 
   if (!items || items.length === 0) {
+    const { count: pendingCount } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "pending");
+    await writeMetrics(supabase, { queueDepth: pendingCount ?? 0, processed: 0, failed: 0 });
     return NextResponse.json({
       ok: true,
       message: "No pending items.",
       sentToday,
       remaining,
+      reclaimed: reclaimedCount,
     });
   }
 
-  // Mark them all as processing atomically to avoid double-sends.
   const ids = items.map((i) => i.id);
   await supabase
     .from("mail_queue")
-    .update({ status: "processing", locked_at: new Date().toISOString() })
+    .update({ status: "processing", locked_at: now.toISOString() })
     .in("id", ids);
 
-  // ── Send each item ──────────────────────────────────────────────────────────
+  // ── 4. Send each item ─────────────────────────────────────────────────────
   let succeeded = 0;
   let failed = 0;
 
@@ -103,8 +143,6 @@ export async function POST(request: Request) {
         campaigns: payload.campaigns,
       });
 
-      // Treat a missing SES message ID as a send failure — the SMTP
-      // transaction completed but we have no proof of acceptance.
       if (!result.sesMessageId) {
         throw new Error("sendMail returned no message ID — treat as unconfirmed");
       }
@@ -124,7 +162,6 @@ export async function POST(request: Request) {
       const message = err instanceof Error ? err.message : String(err);
       console.error(`[queue worker] send failed for ${item.id}:`, message);
 
-      // Increment attempts; move to dead if max_attempts exceeded.
       const { data: current } = await supabase
         .from("mail_queue")
         .select("attempts, max_attempts")
@@ -141,7 +178,6 @@ export async function POST(request: Request) {
           attempts,
           last_error: message,
           locked_at: null,
-          // Back off: retry after 10 min × attempt number.
           available_at: isDead
             ? new Date().toISOString()
             : new Date(Date.now() + attempts * 10 * 60 * 1000).toISOString(),
@@ -153,18 +189,31 @@ export async function POST(request: Request) {
     }
   }
 
+  // ── 5. Write queue metrics snapshot ──────────────────────────────────────
+  const { count: pendingAfter } = await supabase
+    .from("mail_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "pending");
+
+  await writeMetrics(supabase, {
+    queueDepth: pendingAfter ?? 0,
+    processed: items.length,
+    failed,
+  });
+
   return NextResponse.json({
     ok: true,
     processed: items.length,
     succeeded,
     failed,
+    reclaimed: reclaimedCount,
     sentToday: sentToday + succeeded,
     remaining: remaining - succeeded,
     dailyCap: DAILY_SEND_LIMIT,
   });
 }
 
-// GET: status check — returns today's quota usage.
+// GET: quota + queue status (no auth required — used by health banner)
 export async function GET() {
   const today = todayUTC();
   const sentToday = await getDailySentCount(today);
@@ -183,4 +232,17 @@ export async function GET() {
     remaining,
     pendingInQueue: pendingCount ?? 0,
   });
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function writeMetrics(supabase: any, opts: { queueDepth: number; processed: number; failed: number }) {
+  await supabase
+    .from("queue_metrics")
+    .insert({
+      queue_depth: opts.queueDepth,
+      processed_count: opts.processed,
+      failed_count: opts.failed,
+      last_run_at: new Date().toISOString(),
+    })
+    .catch((e: unknown) => console.error("[queue worker] queue_metrics insert failed", e));
 }

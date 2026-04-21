@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useTransition } from "react";
+import { requeueDeadAction } from "../actions";
 
 type SendItem = {
   email_id: string;
@@ -69,12 +70,10 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
               onClick={() => toggleExpand(send.email_id)}
               className="w-full text-left px-5 py-4 flex items-start gap-4 hover:bg-slate-50 transition-colors"
             >
-              {/* Chevron */}
               <span className="mt-0.5 text-slate-400 shrink-0">
                 {isOpen ? "▾" : "▸"}
               </span>
 
-              {/* Main info */}
               <div className="flex-1 min-w-0">
                 <p className="font-semibold text-slate-800 truncate">{send.subject}</p>
                 <p className="text-xs text-slate-500 mt-0.5">
@@ -97,7 +96,6 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                 )}
               </div>
 
-              {/* Stats */}
               <div className="shrink-0 text-right">
                 <div className="flex gap-3 text-xs">
                   <span className="text-green-700 font-medium">
@@ -174,14 +172,21 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                   </div>
                 )}
 
-                {/* Send details */}
-                <div className="px-5 py-3 bg-slate-50 text-xs text-slate-500 flex flex-wrap gap-4 border-t border-slate-100">
+                {/* Send details + actions */}
+                <div className="px-5 py-3 bg-slate-50 text-xs text-slate-500 flex flex-wrap items-center gap-4 border-t border-slate-100">
                   <span>ID: <code className="font-mono text-slate-700">{send.email_id}</code></span>
                   <span>Status: <code className="font-mono text-slate-700">{send.status}</code></span>
                   {send.first_sent && <span>First sent: {send.first_sent}</span>}
                   {send.lists.length > 0 && (
                     <span>
                       Lists: {send.lists.map((l) => `${l.name} (${l.address})`).join(", ")}
+                    </span>
+                  )}
+
+                  {/* Requeue dead rows button — only shown when there are failures */}
+                  {send.failed > 0 && (
+                    <span className="ml-auto">
+                      <RequeueDeadButton emailId={send.email_id} failedCount={send.failed} />
                     </span>
                   )}
                 </div>
@@ -191,6 +196,45 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
         );
       })}
     </div>
+  );
+}
+
+function RequeueDeadButton({ emailId, failedCount }: { emailId: string; failedCount: number }) {
+  const [pending, startTransition] = useTransition();
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  const handleRequeue = () => {
+    setResult(null);
+    const fd = new FormData();
+    fd.set("emailId", emailId);
+    startTransition(async () => {
+      try {
+        const res = await requeueDeadAction(fd);
+        setResult({ ok: true, message: `Requeued ${res.requeued} failed item(s)` });
+      } catch (err) {
+        setResult({
+          ok: false,
+          message: err instanceof Error ? err.message : "Requeue failed",
+        });
+      }
+    });
+  };
+
+  return (
+    <span className="flex items-center gap-2">
+      {result && (
+        <span className={result.ok ? "text-green-700" : "text-red-700"}>
+          {result.message}
+        </span>
+      )}
+      <button
+        onClick={handleRequeue}
+        disabled={pending}
+        className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100 disabled:opacity-50"
+      >
+        {pending ? "Requeueing…" : `Requeue ${failedCount} failed`}
+      </button>
+    </span>
   );
 }
 
