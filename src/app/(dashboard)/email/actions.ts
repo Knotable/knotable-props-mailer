@@ -2,11 +2,25 @@
 
 import { revalidatePath } from "next/cache";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { createServerSupabaseClient } from "@/lib/supabaseServer";
 import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
 import type { Json } from "@/supabase/types";
 
-const ADMIN_USER_ID = "00000000-0000-0000-0000-000000000001";
+// Fallback UUID used only when there is no authenticated session
+// (e.g. running in cron or test context). In normal usage the real
+// user ID is resolved from the session cookie via getAuthUserId().
+const FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000001";
+
+async function getAuthUserId(): Promise<string> {
+  try {
+    const supabase = await createServerSupabaseClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    return user?.id ?? FALLBACK_USER_ID;
+  } catch {
+    return FALLBACK_USER_ID;
+  }
+}
 
 type DraftPayload = {
         from: string;
@@ -67,9 +81,10 @@ export async function saveDraftAction(formData: FormData) {
             .eq("email_id", emailId);
         if (delError) throw delError;
     } else {
-        // Insert new draft
+        // Insert new draft — use the real auth user if available
+        const authorId = await getAuthUserId();
         const { data: emailRow, error } = await supabase.from("emails").insert({
-            author_id: ADMIN_USER_ID,
+            author_id: authorId,
             ...emailFields,
         }).select("id").single();
         if (error) throw error;
@@ -252,6 +267,40 @@ export async function sendTestAction(formData: FormData) {
   }
 
   return { sent: succeeded.length };
+}
+
+// ── Manually trigger the queue worker ───────────────────────────────────────
+// Works around the Vercel Hobby-plan daily-cron limitation.
+// Calls the queue worker endpoint via an internal fetch.
+export async function triggerQueueAction(): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
+  const base =
+    process.env.APP_BASE_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+  const secret = process.env.CRON_SECRET ?? "";
+
+  const res = await fetch(`${base}/api/email/queue`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Queue worker returned ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
+  revalidatePath("/email/schedule");
+  revalidatePath("/email/sends");
+  return {
+    processed: data.processed ?? 0,
+    succeeded: data.succeeded ?? 0,
+    failed: data.failed ?? 0,
+    message: data.message ?? `Processed ${data.processed ?? 0} items`,
+  };
 }
 
 // ── Cancel a queued email ────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
-import { ScheduleActions } from "./schedule-actions";
+import { ScheduleActions, TriggerQueueButton } from "./schedule-actions";
 
 export default async function SchedulePage() {
   const supabase = await createServerSupabaseClient();
@@ -15,12 +15,16 @@ export default async function SchedulePage() {
 
   return (
     <div className="space-y-6">
-      <header>
-        <p className="text-xs uppercase tracking-wide text-slate-400">Queue</p>
-        <h2 className="text-2xl font-semibold text-slate-900">Drafts &amp; Scheduled</h2>
-        <p className="text-sm text-slate-500">
-          Drafts you&apos;re working on, plus emails queued to send.
-        </p>
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-slate-400">Queue</p>
+          <h2 className="text-2xl font-semibold text-slate-900">Drafts &amp; Scheduled</h2>
+          <p className="text-sm text-slate-500">
+            Drafts you&apos;re working on, plus emails queued to send.
+          </p>
+        </div>
+        {/* Manual queue trigger — works around the daily-only Hobby plan cron */}
+        <TriggerQueueButton />
       </header>
 
       <div className="divide-y rounded-lg border border-slate-200">

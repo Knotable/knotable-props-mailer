@@ -22,7 +22,9 @@ const NavLink = ({ href, label, description }: { href: string; label: string; de
   );
 };
 
-export const AppShell = ({ children }: PropsWithChildren) => {
+type AppShellProps = PropsWithChildren<{ userEmail: string | null }>;
+
+export const AppShell = ({ children, userEmail }: AppShellProps) => {
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="border-b bg-white">
@@ -32,8 +34,14 @@ export const AppShell = ({ children }: PropsWithChildren) => {
             <h1 className="text-xl font-semibold text-slate-900">Mail Console</h1>
           </div>
           <div className="text-right text-xs text-slate-500">
-            <p>Signed in as</p>
-            <p className="font-medium text-slate-700">amol@sarva.co</p>
+            {userEmail ? (
+              <>
+                <p>Signed in as</p>
+                <p className="font-medium text-slate-700">{userEmail}</p>
+              </>
+            ) : (
+              <p className="text-slate-400">Not signed in</p>
+            )}
           </div>
         </div>
       </header>
