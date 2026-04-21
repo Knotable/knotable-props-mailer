@@ -16,8 +16,6 @@ export default async function PastSendsPage({
 
   const supabase = getSupabaseAdmin();
 
-  // ── Use the email_send_stats VIEW for O(emails) instead of O(queue rows) ────
-  // If the migration hasn't been applied yet, fall back to a note.
   type StatRow = {
     email_id: string;
     list_ids: string[] | null;
@@ -28,6 +26,10 @@ export default async function PastSendsPage({
     last_queued_at: string | null;
   };
 
+  // ── Try the email_send_stats VIEW (O(emails) query) ───────────────────────
+  // If the migration hasn't been applied yet, fall back to a bounded direct
+  // scan of mail_queue (last 90 days, max 5 000 rows) so the page still shows
+  // historical data rather than a blocking advisory.
   const [{ count: totalCount }, { data: stats, error: statsError }] = await Promise.all([
     supabase
       .from("email_send_stats")
@@ -39,25 +41,63 @@ export default async function PastSendsPage({
       .range(offset, offset + PAGE_SIZE - 1),
   ]);
 
+  let viewMissing = false;
+  let rows: StatRow[] = [];
+  let total: number;
+
   if (statsError) {
-    return (
-      <div className="space-y-6">
-        <Header />
-        <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-800">
-          <p className="font-medium">Migration required</p>
-          <p className="mt-1">
-            Run{" "}
-            <code className="rounded bg-amber-100 px-1">
-              supabase/migrations/20260421_analytics_views.sql
-            </code>{" "}
-            in your Supabase project to enable the Past Sends page.
-          </p>
-        </div>
-      </div>
-    );
+    viewMissing = true;
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: rawRows } = await supabase
+      .from("mail_queue")
+      .select("email_id, list_id, status, send_date, created_at")
+      .not("email_id", "is", null)
+      .gte("created_at", ninetyDaysAgo)
+      .limit(5000);
+
+    const grouped = new Map<string, StatRow & { _last_queued: string }>();
+    for (const row of rawRows ?? []) {
+      if (!row.email_id) continue;
+      const entry = grouped.get(row.email_id) ?? {
+        email_id: row.email_id,
+        list_ids: [] as string[],
+        sent: 0,
+        failed: 0,
+        pending: 0,
+        first_sent: null,
+        last_queued_at: row.created_at,
+        _last_queued: row.created_at ?? "",
+      };
+      if (row.list_id && !(entry.list_ids ?? []).includes(row.list_id)) {
+        (entry.list_ids as string[]).push(row.list_id);
+      }
+      if (row.status === "succeeded") {
+        entry.sent++;
+        if (!entry.first_sent || (row.send_date && row.send_date < entry.first_sent)) {
+          entry.first_sent = row.send_date;
+        }
+      } else if (row.status === "failed" || row.status === "dead") {
+        entry.failed++;
+      } else if (row.status === "pending" || row.status === "processing") {
+        entry.pending++;
+      }
+      if (row.created_at && row.created_at > (entry._last_queued ?? "")) {
+        entry._last_queued = row.created_at;
+        entry.last_queued_at = row.created_at;
+      }
+      grouped.set(row.email_id, entry);
+    }
+
+    const allRows = [...grouped.values()]
+      .sort((a, b) => ((b._last_queued ?? "") > (a._last_queued ?? "") ? 1 : -1));
+    total = allRows.length;
+    rows = allRows.slice(offset, offset + PAGE_SIZE).map(({ _last_queued: _lq, ...r }) => r) as StatRow[];
+  } else {
+    rows = (stats ?? []) as StatRow[];
+    total = totalCount ?? 0;
   }
 
-  const rows = (stats ?? []) as StatRow[];
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   if (rows.length === 0 && page === 1) {
     return (
@@ -109,12 +149,19 @@ export default async function PastSendsPage({
     };
   });
 
-  const total = totalCount ?? 0;
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
   return (
     <div className="space-y-6">
       <Header total={total} />
+      {viewMissing && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+          <span className="font-medium">Showing last 90 days (fallback).</span>{" "}
+          Run{" "}
+          <code className="rounded bg-amber-100 px-1">
+            supabase/migrations/20260421_analytics_views.sql
+          </code>{" "}
+          for full history and better performance.
+        </div>
+      )}
       <SendsClient sends={sends} />
       {totalPages > 1 && (
         <Pagination page={page} totalPages={totalPages} />

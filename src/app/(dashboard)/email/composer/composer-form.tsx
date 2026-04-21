@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { saveDraftAction, sendTestAction, queueCampaignAction } from "../actions";
+import { saveDraftAction, sendTestAction, queueCampaignAction, type QueueCampaignConfirm } from "../actions";
 
 const LAST_DRAFT_KEY = "composer.lastDraftId";
 const AUTOSAVE_DELAY_MS = 3_000;
@@ -38,6 +38,8 @@ export function ComposerForm({ draft, lists }: Props) {
   const [banner, setBanner] = useState<{ ok: boolean; message: string } | null>(null);
   const [draftId, setDraftId] = useState<string | null>(draft?.id ?? null);
   const [autosaveState, setAutosaveState] = useState<AutosaveState>("idle");
+  // Duplicate-send confirmation state — set when the server returns requiresConfirmation:true.
+  const [dupWarning, setDupWarning] = useState<QueueCampaignConfirm | null>(null);
 
   const formRef = useRef<HTMLFormElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -151,33 +153,28 @@ export function ComposerForm({ draft, lists }: Props) {
     }
   };
 
-  // ── Send ───────────────────────────────────────────────────────────────────
-  const handleSend = async () => {
-    if (!formRef.current) return;
+  // ── Core queue helper (used by both first-send and "send anyway") ─────────
+  const runQueueCampaign = async (skipDuplicateCheck: boolean) => {
+    if (!formRef.current || !selectedList || !draftId) return;
     cancelAutosave();
     setSending(true);
     setBanner(null);
+    setDupWarning(null);
     const fd = new FormData(formRef.current);
+    fd.set("emailId", draftId);
+    fd.set("listId", selectedList.id);
+    if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
 
     try {
-      if (selectedList) {
-        if (!draftId) {
-          setBanner({ ok: false, message: "Save the draft before sending to a list." });
-          return;
-        }
-        fd.set("emailId", draftId);
-        fd.set("listId", selectedList.id);
-        const res = await queueCampaignAction(fd);
+      const res = await queueCampaignAction(fd);
+      if (!res.ok && res.requiresConfirmation) {
+        setDupWarning(res);
+        return;
+      }
+      if (res.ok) {
         setBanner({
           ok: true,
           message: `Queued ${res.totalRecipients.toLocaleString()} emails to "${selectedList.name}"${res.daysNeeded > 1 ? ` across ${res.daysNeeded} days` : ""}.`,
-        });
-      } else {
-        const res = await sendTestAction(fd);
-        const n = res.sent;
-        setBanner({
-          ok: true,
-          message: `Sent to ${n} recipient${n !== 1 ? "s" : ""}.`,
         });
       }
     } catch (err) {
@@ -186,6 +183,40 @@ export function ComposerForm({ draft, lists }: Props) {
       setSending(false);
     }
   };
+
+  // ── Send ───────────────────────────────────────────────────────────────────
+  const handleSend = async () => {
+    if (!formRef.current) return;
+    cancelAutosave();
+    setBanner(null);
+    setDupWarning(null);
+
+    if (selectedList) {
+      if (!draftId) {
+        setBanner({ ok: false, message: "Save the draft before sending to a list." });
+        return;
+      }
+      await runQueueCampaign(false);
+    } else {
+      setSending(true);
+      const fd = new FormData(formRef.current);
+      try {
+        const res = await sendTestAction(fd);
+        const n = res.sent;
+        setBanner({
+          ok: true,
+          message: `Sent to ${n} recipient${n !== 1 ? "s" : ""}.`,
+        });
+      } catch (err) {
+        setBanner({ ok: false, message: err instanceof Error ? err.message : "Send failed." });
+      } finally {
+        setSending(false);
+      }
+    }
+  };
+
+  // ── Send anyway (override duplicate warning) ───────────────────────────────
+  const handleSendAnyway = () => runQueueCampaign(true);
 
   return (
     <div className="space-y-6">
@@ -362,6 +393,55 @@ export function ComposerForm({ draft, lists }: Props) {
               : "bg-red-50 text-red-800 border-red-200"
           }`}>
             {banner.message}
+          </div>
+        )}
+
+        {/* Duplicate-send confirmation */}
+        {dupWarning && (
+          <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-4 text-sm space-y-3">
+            <p className="font-semibold text-amber-900">Duplicate send detected</p>
+            <ul className="space-y-1 text-amber-800">
+              {dupWarning.duplicateCount > 0 && (
+                <li>
+                  <span className="font-medium">{dupWarning.duplicateCount.toLocaleString()}</span>{" "}
+                  recipient{dupWarning.duplicateCount !== 1 ? "s" : ""} already received this exact email
+                  {dupWarning.listName ? ` via "${dupWarning.listName}"` : ""}.
+                </li>
+              )}
+              {dupWarning.recentlySentCount > 0 && (
+                <li>
+                  <span className="font-medium">{dupWarning.recentlySentCount.toLocaleString()}</span>{" "}
+                  recipient{dupWarning.recentlySentCount !== 1 ? "s" : ""} on this list received a different email in the last 30 days.
+                </li>
+              )}
+            </ul>
+            {dupWarning.sampleAddresses.length > 0 && (
+              <div>
+                <p className="text-xs font-medium text-amber-700 mb-1">Sample addresses:</p>
+                <ul className="text-xs text-amber-700 space-y-0.5">
+                  {dupWarning.sampleAddresses.map((addr) => (
+                    <li key={addr} className="font-mono">{addr}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setDupWarning(null)}
+                className="rounded-md border border-amber-300 bg-white px-4 py-1.5 text-sm font-medium text-amber-800 hover:bg-amber-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSendAnyway}
+                disabled={sending}
+                className="rounded-md bg-amber-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+              >
+                {sending ? "Sending…" : "Send anyway"}
+              </button>
+            </div>
           </div>
         )}
 

@@ -42,3 +42,19 @@ GROUP BY email_id;
 -- views surface only aggregates so no row-level data is exposed).
 GRANT SELECT ON public.campaign_stats   TO anon, authenticated, service_role;
 GRANT SELECT ON public.email_send_stats TO anon, authenticated, service_role;
+
+-- ── Supporting indexes ─────────────────────────────────────────────────────────
+-- Speeds up:
+--   • Both views (GROUP BY email_id / campaign_label with status filter)
+--   • Duplicate-detection COUNT in queueCampaignAction
+--   • Recent-contact COUNT in queueCampaignAction
+CREATE INDEX IF NOT EXISTS mail_queue_email_list_status
+  ON public.mail_queue (email_id, list_id, status);
+
+CREATE INDEX IF NOT EXISTS mail_queue_list_status_created
+  ON public.mail_queue (list_id, status, created_at DESC)
+  WHERE list_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS mail_queue_campaign_label_status
+  ON public.mail_queue (campaign_label, status)
+  WHERE campaign_label IS NOT NULL;

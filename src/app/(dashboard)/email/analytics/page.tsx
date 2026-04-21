@@ -79,8 +79,41 @@ export default async function AnalyticsPage() {
     .limit(100);
 
   if (campaignError) {
-    // View doesn't exist yet — migration not applied.
+    // View not yet created — fall back to a bounded scan of mail_queue
+    // (last 90 days, max 5 000 rows) so historical data is still visible.
     viewMissing = true;
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: rawRows } = await supabase
+      .from("mail_queue")
+      .select("campaign_label, email_id, list_id, status, created_at")
+      .not("campaign_label", "is", null)
+      .gte("created_at", ninetyDaysAgo)
+      .limit(5000);
+
+    const grouped = new Map<string, CampaignStat>();
+    for (const row of rawRows ?? []) {
+      if (!row.campaign_label || !row.email_id) continue;
+      const key = row.campaign_label;
+      const entry: CampaignStat = grouped.get(key) ?? {
+        campaign_label: key,
+        email_id: row.email_id,
+        list_id: row.list_id ?? null,
+        sent: 0,
+        failed: 0,
+        pending: 0,
+        started_at: row.created_at,
+      };
+      if (row.status === "succeeded") entry.sent++;
+      else if (row.status === "failed" || row.status === "dead") entry.failed++;
+      else if (row.status === "pending" || row.status === "processing") entry.pending++;
+      if (row.created_at && row.created_at < (entry.started_at ?? row.created_at)) {
+        entry.started_at = row.created_at;
+      }
+      grouped.set(key, entry);
+    }
+    campaignStats = [...grouped.values()]
+      .sort((a, b) => ((b.started_at ?? "") > (a.started_at ?? "") ? 1 : -1))
+      .slice(0, 100);
   } else {
     campaignStats = (campaignData ?? []) as CampaignStat[];
   }
@@ -196,18 +229,17 @@ export default async function AnalyticsPage() {
           <span className="font-normal text-slate-400">(most recent 100)</span>
         </h3>
 
-        {viewMissing ? (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-800">
-            <p className="font-medium">Migration required</p>
-            <p className="mt-1">
-              Run{" "}
-              <code className="rounded bg-amber-100 px-1">
-                supabase/migrations/20260421_analytics_views.sql
-              </code>{" "}
-              in your Supabase project to enable per-campaign analytics.
-            </p>
+        {viewMissing && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 mb-3">
+            <span className="font-medium">Showing last 90 days (fallback).</span>{" "}
+            Run{" "}
+            <code className="rounded bg-amber-100 px-1">
+              supabase/migrations/20260421_analytics_views.sql
+            </code>{" "}
+            for full history and better performance.
           </div>
-        ) : campaigns.length === 0 ? (
+        )}
+        {campaigns.length === 0 ? (
           <div className="rounded-xl border border-dashed border-slate-300 p-6 text-sm text-slate-500">
             No campaigns sent yet.
           </div>

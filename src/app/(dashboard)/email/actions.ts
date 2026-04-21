@@ -143,22 +143,50 @@ export async function saveDraftAction(formData: FormData) {
   return { id: emailId };
 }
 
+// ── Return types for queueCampaignAction ───────────────────────────────────
+// ok:true  — campaign was queued successfully
+// ok:false — pre-flight check found duplicates or recent sends; caller must
+//            confirm before proceeding (pass skipDuplicateCheck=true)
+export type QueueCampaignOk = {
+  ok: true;
+  totalRecipients: number;
+  daysNeeded: number;
+  schedule: { date: string; count: number }[];
+};
+export type QueueCampaignConfirm = {
+  ok: false;
+  requiresConfirmation: true;
+  // > 0  →  this exact email was already succeeded-sent to some of these people
+  duplicateCount: number;
+  // > 0  →  *any* email was sent to this list in the last 30 days
+  recentlySentCount: number;
+  sampleAddresses: string[];  // up to 8 examples of duplicated addresses
+  listName?: string;
+};
+export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm;
+
 /**
  * Queue a campaign send to a mailing list, automatically splitting across
  * multiple days if the list is larger than the 45k daily cap.
  *
- * Honors the email's scheduled_at: if that date is in the future, the
- * campaign starts on that date rather than today.
+ * Pre-flight duplicate check (skipped when skipDuplicateCheck=true):
+ *  1. Blocks if this exact email_id was already sent succeeded to any member
+ *     of this list — catches accidental re-sends of the same draft.
+ *  2. Warns if any email was sent to this list in the last 30 days — surface
+ *     recent contact so the operator can decide intentionally.
+ * Returns QueueCampaignConfirm (ok:false) instead of throwing, so the UI can
+ * show the count + sample and ask for explicit authorization.
  *
- * Idempotent: throws if this email already has pending/processing queue rows
- * so the same campaign cannot be double-queued by accident.
+ * Honors the email's scheduled_at if it's in the future.
+ * Idempotent: throws if pending/processing rows already exist for this email.
  */
-export async function queueCampaignAction(formData: FormData) {
+export async function queueCampaignAction(formData: FormData): Promise<QueueCampaignResult> {
   const userId = await requireAuthUserId();
 
   const supabase = getSupabaseAdmin();
   const emailId = String(formData.get("emailId"));
   const listId = String(formData.get("listId"));
+  const skipDuplicateCheck = formData.get("skipDuplicateCheck") === "true";
 
   // Load the email draft (include scheduled_at so we can honor it).
   const { data: email, error: emailError } = await supabase
@@ -168,7 +196,7 @@ export async function queueCampaignAction(formData: FormData) {
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
 
-  // Idempotency guard: prevent double-queuing the same campaign.
+  // Hard guard: can't queue if a run is already in flight.
   const { count: existingCount } = await supabase
     .from("mail_queue")
     .select("id", { count: "exact", head: true })
@@ -180,6 +208,68 @@ export async function queueCampaignAction(formData: FormData) {
       `This email already has ${existingCount} pending queue item(s). ` +
       "Cancel the existing campaign before re-queuing.",
     );
+  }
+
+  // ── Pre-flight duplicate / recent-contact check ─────────────────────────
+  if (!skipDuplicateCheck) {
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    // Check 1 (hard): same email already sent to someone on this list, ever.
+    const { count: duplicateCount } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("email_id", emailId)
+      .eq("list_id", listId)
+      .eq("status", "succeeded");
+
+    // Check 2 (soft): any email sent to this list in the last 30 days.
+    const { count: recentlySentCount } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("list_id", listId)
+      .eq("status", "succeeded")
+      .gte("created_at", thirtyDaysAgo);
+
+    if ((duplicateCount ?? 0) > 0 || (recentlySentCount ?? 0) > 0) {
+      // Fetch a sample of addresses that would be duplicated.
+      let sampleAddresses: string[] = [];
+      if ((duplicateCount ?? 0) > 0) {
+        const { data: sampleRows } = await supabase
+          .from("mail_queue")
+          .select("payload")
+          .eq("email_id", emailId)
+          .eq("list_id", listId)
+          .eq("status", "succeeded")
+          .limit(8);
+        sampleAddresses = (sampleRows ?? [])
+          .map((r) => (r.payload as { to?: string })?.to ?? "")
+          .filter(Boolean);
+      }
+
+      // Fetch the list name for the confirmation dialog.
+      const { data: listRow } = await supabase
+        .from("lists")
+        .select("name")
+        .eq("id", listId)
+        .maybeSingle();
+
+      logAudit({
+        userId,
+        action: "campaign.duplicate_check_triggered",
+        entity: "emails",
+        entityId: emailId,
+        payload: { listId, duplicateCount, recentlySentCount },
+      }).catch(console.error);
+
+      return {
+        ok: false,
+        requiresConfirmation: true,
+        duplicateCount: duplicateCount ?? 0,
+        recentlySentCount: recentlySentCount ?? 0,
+        sampleAddresses,
+        listName: listRow?.name,
+      };
+    }
   }
 
   // Load active list members.
@@ -285,6 +375,7 @@ export async function queueCampaignAction(formData: FormData) {
   revalidatePath("/email/schedule");
 
   return {
+    ok: true as const,
     totalRecipients: members.length,
     daysNeeded: schedule.length,
     schedule: schedule.map((s) => ({ date: s.date, count: s.count })),
