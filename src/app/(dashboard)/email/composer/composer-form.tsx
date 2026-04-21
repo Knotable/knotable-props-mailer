@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { saveDraftAction, sendTestAction, queueCampaignAction } from "../actions";
+
+const LAST_DRAFT_KEY = "composer.lastDraftId";
 
 type List = { id: string; name: string; address: string };
 
@@ -20,6 +23,7 @@ type Draft = {
 type Props = { draft: Draft | null; lists: List[] };
 
 export function ComposerForm({ draft, lists }: Props) {
+  const router = useRouter();
   const initialList = draft?.list_id
     ? (lists.find((l) => l.id === draft.list_id) ?? null)
     : null;
@@ -32,6 +36,16 @@ export function ComposerForm({ draft, lists }: Props) {
 
   const formRef = useRef<HTMLFormElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Persist / restore last open draft across reloads and redeploys
+  useEffect(() => {
+    if (draft?.id) {
+      localStorage.setItem(LAST_DRAFT_KEY, draft.id);
+    } else {
+      const lastId = localStorage.getItem(LAST_DRAFT_KEY);
+      if (lastId) router.replace(`/email/composer?id=${lastId}`);
+    }
+  }, [draft?.id, router]);
 
   // Close dropdown on outside click
   useEffect(() => {
