@@ -33,6 +33,8 @@ export function ComposerForm({ draft, lists }: Props) {
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; message: string } | null>(null);
+  // Track the draft id in state so it stays current after a save without a full page reload.
+  const [draftId, setDraftId] = useState<string | null>(draft?.id ?? null);
 
   const formRef = useRef<HTMLFormElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -84,7 +86,13 @@ export function ComposerForm({ draft, lists }: Props) {
     setBanner(null);
     try {
       const fd = new FormData(formRef.current);
-      await saveDraftAction(fd);
+      const res = await saveDraftAction(fd);
+      // Keep the draft id in state so subsequent Send calls work without a reload.
+      if (res?.id && res.id !== draftId) {
+        setDraftId(res.id);
+        localStorage.setItem(LAST_DRAFT_KEY, res.id);
+        router.replace(`/email/composer?id=${res.id}`, { scroll: false });
+      }
       setBanner({ ok: true, message: "Draft saved." });
     } catch (err) {
       setBanner({ ok: false, message: err instanceof Error ? err.message : "Save failed." });
@@ -102,11 +110,11 @@ export function ComposerForm({ draft, lists }: Props) {
 
     try {
       if (selectedList) {
-        if (!draft?.id) {
+        if (!draftId) {
           setBanner({ ok: false, message: "Save the draft before sending to a list." });
           return;
         }
-        fd.set("emailId", draft.id);
+        fd.set("emailId", draftId);
         fd.set("listId", selectedList.id);
         const res = await queueCampaignAction(fd);
         setBanner({

@@ -253,3 +253,42 @@ export async function sendTestAction(formData: FormData) {
 
   return { sent: succeeded.length };
 }
+
+// ── Cancel a queued email ────────────────────────────────────────────────────
+// Removes pending queue entries and marks the email as canceled.
+export async function cancelEmailAction(formData: FormData) {
+  const id = String(formData.get("id"));
+  if (!id) throw new Error("Missing email id");
+  const supabase = getSupabaseAdmin();
+
+  // Delete only pending queue items (leave succeeded/failed for history).
+  await supabase
+    .from("mail_queue")
+    .delete()
+    .eq("email_id", id)
+    .in("status", ["pending", "processing"]);
+
+  const { error } = await supabase
+    .from("emails")
+    .update({ status: "canceled" })
+    .eq("id", id);
+  if (error) throw error;
+
+  revalidatePath("/email/schedule");
+}
+
+// ── Delete a draft or canceled email ────────────────────────────────────────
+export async function deleteEmailAction(formData: FormData) {
+  const id = String(formData.get("id"));
+  if (!id) throw new Error("Missing email id");
+  const supabase = getSupabaseAdmin();
+
+  // Delete dependents first (FK may not cascade).
+  await supabase.from("mail_queue").delete().eq("email_id", id);
+  await supabase.from("email_recipients").delete().eq("email_id", id);
+
+  const { error } = await supabase.from("emails").delete().eq("id", id);
+  if (error) throw error;
+
+  revalidatePath("/email/schedule");
+}
