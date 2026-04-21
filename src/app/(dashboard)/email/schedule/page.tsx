@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
-import { cancelEmailAction, deleteEmailAction } from "../actions";
+import { ScheduleActions } from "./schedule-actions";
 
 export default async function SchedulePage() {
   const supabase = await createServerSupabaseClient();
@@ -18,7 +18,9 @@ export default async function SchedulePage() {
       <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">Queue</p>
         <h2 className="text-2xl font-semibold text-slate-900">Drafts &amp; Scheduled</h2>
-        <p className="text-sm text-slate-500">Drafts you&apos;re working on, plus emails queued to send.</p>
+        <p className="text-sm text-slate-500">
+          Drafts you&apos;re working on, plus emails queued to send.
+        </p>
       </header>
 
       <div className="divide-y rounded-lg border border-slate-200">
@@ -27,13 +29,17 @@ export default async function SchedulePage() {
             const isDraft = item.status === "draft";
             const isQueued = item.status === "queued" || item.status === "sending";
 
+            // Format date as ISO string on the server; the client component can
+            // display it however it likes — avoids hydration mismatches.
+            const scheduledIso = item.scheduled_at ?? null;
+
             return (
               <div
                 key={item.id}
                 className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
               >
                 {/* Left: subject + status badge */}
-                <div className="flex items-center gap-3 min-w-0">
+                <div className="flex min-w-0 items-center gap-3">
                   <span
                     className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
                       isDraft
@@ -48,54 +54,28 @@ export default async function SchedulePage() {
                   </p>
                 </div>
 
-                {/* Middle: send time */}
+                {/* Middle: send time — rendered as static text to avoid hydration issues */}
                 <div className="shrink-0 text-sm text-slate-500">
-                  {item.scheduled_at
-                    ? new Date(item.scheduled_at).toLocaleString()
+                  {scheduledIso
+                    ? scheduledIso.replace("T", " ").slice(0, 16) + " UTC"
                     : isDraft
                     ? "Not scheduled"
                     : "Send ASAP"}
                 </div>
 
-                {/* Right: action buttons */}
-                <div className="flex shrink-0 gap-2">
+                {/* Right: Edit link + client-side Cancel/Delete buttons */}
+                <div className="flex shrink-0 items-center gap-2">
                   <Link
                     href={`/email/composer?id=${item.id}`}
                     className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
                   >
                     Edit
                   </Link>
-
-                  {/* Cancel (queued only) — removes from queue, marks canceled */}
-                  {isQueued && (
-                    <form action={cancelEmailAction}>
-                      <input type="hidden" name="id" value={item.id} />
-                      <button
-                        type="submit"
-                        className="rounded-md border border-orange-200 px-3 py-1 text-xs font-medium text-orange-600 hover:bg-orange-50"
-                      >
-                        Cancel
-                      </button>
-                    </form>
-                  )}
-
-                  {/* Delete — removes entirely */}
-                  <form
-                    action={deleteEmailAction}
-                    onSubmit={(e) => {
-                      if (!confirm(`Delete "${item.subject || "this draft"}"?`)) {
-                        e.preventDefault();
-                      }
-                    }}
-                  >
-                    <input type="hidden" name="id" value={item.id} />
-                    <button
-                      type="submit"
-                      className="rounded-md border border-red-200 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
-                    >
-                      Delete
-                    </button>
-                  </form>
+                  <ScheduleActions
+                    id={item.id}
+                    subject={item.subject ?? ""}
+                    isQueued={isQueued}
+                  />
                 </div>
               </div>
             );
