@@ -90,6 +90,7 @@ export async function saveDraftAction(formData: FormData) {
 
     revalidatePath("/email/schedule");
     revalidatePath("/email/composer");
+    return { id: emailId };
 }
 
 /**
@@ -193,21 +194,62 @@ export async function queueCampaignAction(formData: FormData) {
 }
 
 export async function sendTestAction(formData: FormData) {
-        const recipients = parseRecipients(String(formData.get("recipients")));
-        if (!recipients.length) throw new Error("Need at least one recipient");
-        // Send individually so recipients never see each other in the To field
-        await Promise.all(
-                recipients.map((recipient) =>
-                        sendEmail({
-                                from: String(formData.get("from")),
-                                to: [recipient],
-                                subject: String(formData.get("subject")),
-                                html: String(formData.get("html")),
-                                text: (formData.get("text") as string) || undefined,
-                                tags: (formData.get("tags") as string | null)?.split(",").map((t) => t.trim()).filter(Boolean),
-                                campaigns: (formData.get("campaigns") as string | null)?.split(",").map((c) => c.trim()).filter(Boolean),
-                                testMode: true,
-                        })
-                )
-        );
+  const recipients = parseRecipients(String(formData.get("recipients")));
+  if (!recipients.length) throw new Error("Need at least one recipient");
+
+  const id        = formData.get("id") as string | null;
+  const from      = String(formData.get("from"));
+  const subject   = String(formData.get("subject"));
+  const html      = String(formData.get("html"));
+  const text      = (formData.get("text") as string) || undefined;
+  const tags      = (formData.get("tags") as string | null)?.split(",").map((t) => t.trim()).filter(Boolean);
+  const campaigns = (formData.get("campaigns") as string | null)?.split(",").map((c) => c.trim()).filter(Boolean);
+
+  // Send individually (so recipients never see each other) and collect results.
+  const results = await Promise.allSettled(
+    recipients.map(async (recipient) => {
+      const result = await sendEmail({ from, to: [recipient], subject, html, text, tags, campaigns, testMode: true });
+      return { recipient, sesMessageId: result.sesMessageId };
+    })
+  );
+
+  const succeeded = results.filter(
+    (r): r is PromiseFulfilledResult<{ recipient: string; sesMessageId: string | null }> =>
+      r.status === "fulfilled",
+  );
+  const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+  // Log successful sends to mail_queue so they appear in Past Sends.
+  if (id && succeeded.length > 0) {
+    const supabase = getSupabaseAdmin();
+    const today    = todayUTC();
+    const queueRows = succeeded.map(({ value }) => ({
+      email_id:       id,
+      list_id:        null as string | null,
+      payload:        { from, to: value.recipient, subject } as Json,
+      status:         "succeeded" as const,
+      available_at:   new Date().toISOString(),
+      send_date:      today,
+      ses_message_id: value.sesMessageId ?? null,
+      campaign_label: `test:${id}:${today}`,
+    }));
+    const { error: qErr } = await supabase.from("mail_queue").insert(queueRows);
+    if (qErr) console.error("[sendTestAction] mail_queue insert error", qErr);
+
+    await supabase.from("emails").update({ status: "sent" }).eq("id", id);
+    revalidatePath("/email/sends");
+  }
+
+  if (failed.length > 0) {
+    const firstMsg = failed[0].reason instanceof Error
+      ? failed[0].reason.message
+      : String(failed[0].reason);
+    throw new Error(
+      failed.length === recipients.length
+        ? `Send failed: ${firstMsg}`
+        : `${succeeded.length} sent, ${failed.length} failed — ${firstMsg}`,
+    );
+  }
+
+  return { sent: succeeded.length };
 }

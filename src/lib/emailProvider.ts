@@ -39,8 +39,17 @@ export async function sendEmail(payload: SendEmailPayload) {
     text: payload.text,
   });
 
+  // If SES SMTP accepted the connection but rejected specific recipients,
+  // nodemailer surfaces them in info.rejected rather than throwing.
+  if (info.rejected && info.rejected.length > 0) {
+    throw new Error(`SMTP rejected recipient(s): ${info.rejected.join(", ")}`);
+  }
+  if (!info.accepted || info.accepted.length === 0) {
+    throw new Error("SMTP server did not accept the message (no accepted recipients)");
+  }
+
   if (payload.testMode) {
-    console.info("SES test email sent", info.messageId);
+    console.info("SES test email sent", info.messageId, "→", info.accepted);
   }
 
   // info.messageId is the SES Message-ID header value, e.g.

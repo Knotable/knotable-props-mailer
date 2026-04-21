@@ -58,9 +58,23 @@ export function ComposerForm({ draft, lists }: Props) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  const scheduledAtLocal = draft?.scheduled_at
-    ? new Date(draft.scheduled_at).toISOString().slice(0, 16)
-    : "";
+  // Format a Date as YYYY-MM-DDTHH:mm in the *browser's* local timezone,
+  // which is what datetime-local inputs expect and submit.
+  const toDatetimeLocal = (d: Date) => {
+    const offsetMs = d.getTimezoneOffset() * 60_000;
+    return new Date(d.getTime() - offsetMs).toISOString().slice(0, 16);
+  };
+
+  // Default to "now" (rounded down to the minute).
+  // If the draft has a future scheduled_at, use that; otherwise use now.
+  const scheduledAtLocal = (() => {
+    const now = new Date();
+    now.setSeconds(0, 0);
+    const nowStr = toDatetimeLocal(now);
+    if (!draft?.scheduled_at) return nowStr;
+    const draftStr = toDatetimeLocal(new Date(draft.scheduled_at));
+    return draftStr > nowStr ? draftStr : nowStr;
+  })();
 
   // ── Save Draft ────────────────────────────────────────────────────────────
   const handleSave = async (e: React.FormEvent) => {
@@ -101,8 +115,12 @@ export function ComposerForm({ draft, lists }: Props) {
         });
       } else {
         // No list selected — send directly to addresses in the To field
-        await sendTestAction(fd);
-        setBanner({ ok: true, message: "Sent." });
+        const res = await sendTestAction(fd);
+        const n = res.sent;
+        setBanner({
+          ok: true,
+          message: `Sent to ${n} recipient${n !== 1 ? "s" : ""}.`,
+        });
       }
     } catch (err) {
       setBanner({ ok: false, message: err instanceof Error ? err.message : "Send failed." });

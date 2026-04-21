@@ -103,12 +103,18 @@ export async function POST(request: Request) {
         campaigns: payload.campaigns,
       });
 
+      // Treat a missing SES message ID as a send failure — the SMTP
+      // transaction completed but we have no proof of acceptance.
+      if (!result.sesMessageId) {
+        throw new Error("sendMail returned no message ID — treat as unconfirmed");
+      }
+
       await supabase
         .from("mail_queue")
         .update({
           status: "succeeded",
           send_date: today,
-          ses_message_id: result.sesMessageId ?? null,
+          ses_message_id: result.sesMessageId,
           updated_at: new Date().toISOString(),
         })
         .eq("id", item.id);
