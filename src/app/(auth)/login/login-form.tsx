@@ -30,7 +30,7 @@ export function LoginForm({ initialError }: Props) {
         <p className="text-2xl">📬</p>
         <p className="font-semibold text-green-800">Check your email</p>
         <p className="text-sm text-green-700">
-          We sent a magic link to <strong>a@sarva.com</strong>. Click it to sign in.
+          We sent a magic link to <strong>a@sarva.co</strong>. Click it to sign in.
         </p>
         <p className="text-xs text-green-600 mt-4">
           The link expires in 1 hour. If you don&apos;t see it, check spam.
