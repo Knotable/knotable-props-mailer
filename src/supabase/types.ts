@@ -360,7 +360,30 @@ export interface Database {
         Relationships: [];
       };
     };
-    Views: Record<string, never>;
+    Views: {
+      campaign_stats: {
+        Row: {
+          campaign_label: string;
+          email_id: string;
+          list_id: string | null;
+          sent: number;
+          failed: number;
+          pending: number;
+          started_at: string | null;
+        };
+      };
+      email_send_stats: {
+        Row: {
+          email_id: string;
+          list_ids: string[] | null;
+          sent: number;
+          failed: number;
+          pending: number;
+          first_sent: string | null;
+          last_queued_at: string | null;
+        };
+      };
+    };
     Functions: Record<string, never>;
     Enums: Record<string, never>;
   };

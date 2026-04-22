@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { PropsWithChildren } from "react";
+import { PropsWithChildren, useTransition } from "react";
 import { dashboardNav } from "@/lib/nav";
+import { signOutAction } from "@/app/(auth)/login/actions";
 
 const NavLink = ({ href, label, description }: { href: string; label: string; description: string }) => {
   const pathname = usePathname();
@@ -22,6 +23,26 @@ const NavLink = ({ href, label, description }: { href: string; label: string; de
   );
 };
 
+function LogoutButton() {
+  const [pending, startTransition] = useTransition();
+
+  const handleLogout = () => {
+    startTransition(async () => {
+      await signOutAction();
+    });
+  };
+
+  return (
+    <button
+      onClick={handleLogout}
+      disabled={pending}
+      className="mt-1 text-xs text-slate-400 hover:text-slate-600 disabled:opacity-50 transition-colors"
+    >
+      {pending ? "Signing out…" : "Sign out"}
+    </button>
+  );
+}
+
 type AppShellProps = PropsWithChildren<{ userEmail: string | null }>;
 
 export const AppShell = ({ children, userEmail }: AppShellProps) => {
@@ -38,6 +59,7 @@ export const AppShell = ({ children, userEmail }: AppShellProps) => {
               <>
                 <p>Signed in as</p>
                 <p className="font-medium text-slate-700">{userEmail}</p>
+                <LogoutButton />
               </>
             ) : (
               <p className="text-slate-400">Not signed in</p>

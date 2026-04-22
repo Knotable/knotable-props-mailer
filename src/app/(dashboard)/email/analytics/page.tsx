@@ -1,21 +1,10 @@
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
-
-type CampaignRow = {
-  campaign_label: string;
-  email_id: string;
-  subject: string | null;
-  list_name: string | null;
-  sent: number;
-  failed: number;
-  opens: number;
-  clicks: number;
-  bounces: number;
-};
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { DAILY_SEND_LIMIT } from "@/lib/dailyQuota";
 
 export default async function AnalyticsPage() {
-  const supabase = await createServerSupabaseClient();
+  const supabase = getSupabaseAdmin();
 
-  // ── Delivery totals from mail_queue ────────────────────────────────────────
+  // ── Delivery totals — COUNT queries at DB level, not full table scans ────────
   const [
     { count: totalSent },
     { count: totalFailed },
@@ -42,14 +31,13 @@ export default async function AnalyticsPage() {
   const deliveryRate =
     totalAttempted > 0 ? Math.round((delivered / totalAttempted) * 100) : null;
 
-  // ── Engagement totals from provider_events (last 30 days) ──────────────────
+  // ── Engagement totals — last 30 days, event type only (no payload) ──────────
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
   const { data: recentEvents } = await supabase
     .from("provider_events")
     .select("event_type")
-    .gte(
-      "received_at",
-      new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString()
-    );
+    .gte("received_at", thirtyDaysAgo);
 
   const eventCounts =
     recentEvents?.reduce<Record<string, number>>((acc, e) => {
@@ -66,63 +54,94 @@ export default async function AnalyticsPage() {
   const clickRate =
     delivered > 0 ? ((clicks / delivered) * 100).toFixed(1) : null;
 
-  // ── Per-campaign breakdown ─────────────────────────────────────────────────
-  // Get distinct campaign_labels with their email_id, then join emails + lists
-  const { data: campaignGroups } = await supabase
-    .from("mail_queue")
-    .select(
-      "campaign_label, email_id, list_id, status"
-    )
-    .not("campaign_label", "is", null)
-    .order("campaign_label", { ascending: false });
+  const hasSnsEvents = (recentEvents?.length ?? 0) > 0;
 
-  // Aggregate per campaign_label
-  const campaignMap = new Map<
-    string,
-    { email_id: string; list_id: string | null; sent: number; failed: number }
-  >();
+  // ── Per-campaign breakdown — uses campaign_stats VIEW (DB-level GROUP BY) ────
+  // Falls back to an empty list with an advisory message if the migration has
+  // not been applied yet.
+  type CampaignStat = {
+    campaign_label: string;
+    email_id: string;
+    list_id: string | null;
+    sent: number;
+    failed: number;
+    pending: number;
+    started_at: string | null;
+  };
 
-  for (const row of campaignGroups ?? []) {
-    const key = row.campaign_label as string;
-    const existing = campaignMap.get(key);
-    const isSent = row.status === "succeeded";
-    const isFailed = row.status === "failed" || row.status === "dead";
-    if (existing) {
-      if (isSent) existing.sent++;
-      if (isFailed) existing.failed++;
-    } else {
-      campaignMap.set(key, {
-        email_id: row.email_id as string,
-        list_id: row.list_id as string | null,
-        sent: isSent ? 1 : 0,
-        failed: isFailed ? 1 : 0,
-      });
+  let campaignStats: CampaignStat[] = [];
+  let viewMissing = false;
+
+  const { data: campaignData, error: campaignError } = await supabase
+    .from("campaign_stats")
+    .select("campaign_label, email_id, list_id, sent, failed, pending, started_at")
+    .order("started_at", { ascending: false })
+    .limit(100);
+
+  if (campaignError) {
+    // View not yet created — fall back to a bounded scan of mail_queue
+    // (last 90 days, max 5 000 rows) so historical data is still visible.
+    viewMissing = true;
+    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: rawRows } = await supabase
+      .from("mail_queue")
+      .select("campaign_label, email_id, list_id, status, created_at")
+      .not("campaign_label", "is", null)
+      .gte("created_at", ninetyDaysAgo)
+      .limit(5000);
+
+    const grouped = new Map<string, CampaignStat>();
+    for (const row of rawRows ?? []) {
+      if (!row.campaign_label || !row.email_id) continue;
+      const key = row.campaign_label;
+      const entry: CampaignStat = grouped.get(key) ?? {
+        campaign_label: key,
+        email_id: row.email_id,
+        list_id: row.list_id ?? null,
+        sent: 0,
+        failed: 0,
+        pending: 0,
+        started_at: row.created_at,
+      };
+      if (row.status === "succeeded") entry.sent++;
+      else if (row.status === "failed" || row.status === "dead") entry.failed++;
+      else if (row.status === "pending" || row.status === "processing") entry.pending++;
+      if (row.created_at && row.created_at < (entry.started_at ?? row.created_at)) {
+        entry.started_at = row.created_at;
+      }
+      grouped.set(key, entry);
     }
+    campaignStats = [...grouped.values()]
+      .sort((a, b) => ((b.started_at ?? "") > (a.started_at ?? "") ? 1 : -1))
+      .slice(0, 100);
+  } else {
+    campaignStats = (campaignData ?? []) as CampaignStat[];
   }
 
-  // Fetch email subjects and list names for the unique IDs
-  const emailIds = [...new Set([...campaignMap.values()].map((c) => c.email_id).filter(Boolean))];
-  const listIds = [...new Set([...campaignMap.values()].map((c) => c.list_id).filter(Boolean) as string[])];
+  // Fetch email subjects + list names for the campaigns we have.
+  const emailIds = [...new Set(campaignStats.map((c) => c.email_id))];
+  const listIds = [...new Set(campaignStats.map((c) => c.list_id).filter(Boolean) as string[])];
 
   const [{ data: emailRows }, { data: listRows }, { data: eventRows }] =
     await Promise.all([
       emailIds.length
         ? supabase.from("emails").select("id, subject").in("id", emailIds)
-        : Promise.resolve({ data: [] }),
+        : Promise.resolve({ data: [] as { id: string; subject: string }[] }),
       listIds.length
         ? supabase.from("lists").select("id, name").in("id", listIds)
-        : Promise.resolve({ data: [] }),
+        : Promise.resolve({ data: [] as { id: string; name: string }[] }),
+      // Per-campaign event counts — last 90 days only.
       supabase
         .from("provider_events")
         .select("email_id, event_type")
         .in("event_type", ["opened", "clicked", "bounced"])
-        .not("email_id", "is", null),
+        .not("email_id", "is", null)
+        .gte("received_at", new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()),
     ]);
 
   const emailSubjects = new Map((emailRows ?? []).map((e) => [e.id, e.subject]));
   const listNames = new Map((listRows ?? []).map((l) => [l.id, l.name]));
 
-  // Count events per email_id
   const eventsByEmail = new Map<string, { opens: number; clicks: number; bounces: number }>();
   for (const ev of eventRows ?? []) {
     if (!ev.email_id) continue;
@@ -133,24 +152,17 @@ export default async function AnalyticsPage() {
     eventsByEmail.set(ev.email_id, entry);
   }
 
-  const campaigns: CampaignRow[] = [...campaignMap.entries()].map(
-    ([label, data]) => {
-      const evts = eventsByEmail.get(data.email_id) ?? { opens: 0, clicks: 0, bounces: 0 };
-      return {
-        campaign_label: label,
-        email_id: data.email_id,
-        subject: emailSubjects.get(data.email_id) ?? null,
-        list_name: data.list_id ? (listNames.get(data.list_id) ?? null) : null,
-        sent: data.sent,
-        failed: data.failed,
-        opens: evts.opens,
-        clicks: evts.clicks,
-        bounces: evts.bounces,
-      };
-    }
-  );
-
-  const hasSnsEvents = recentEvents && recentEvents.length > 0;
+  const campaigns = campaignStats.map((c) => {
+    const evts = eventsByEmail.get(c.email_id) ?? { opens: 0, clicks: 0, bounces: 0 };
+    return {
+      ...c,
+      subject: emailSubjects.get(c.email_id) ?? null,
+      list_name: c.list_id ? (listNames.get(c.list_id) ?? null) : null,
+      opens: evts.opens,
+      clicks: evts.clicks,
+      bounces: evts.bounces,
+    };
+  });
 
   return (
     <div className="space-y-8">
@@ -159,8 +171,9 @@ export default async function AnalyticsPage() {
         <h2 className="text-2xl font-semibold text-slate-900">Analytics</h2>
         {!hasSnsEvents && (
           <p className="mt-1 text-sm text-amber-600">
-            Open/click/bounce tracking requires SES → SNS → <code className="text-xs bg-amber-50 px-1 rounded">/api/webhooks/ses</code> to be configured in AWS.
-            Delivery stats below are live.
+            Open/click/bounce tracking requires SES → SNS →{" "}
+            <code className="rounded bg-amber-50 px-1 text-xs">/api/webhooks/ses</code> to be
+            configured in AWS. Delivery stats below are live.
           </p>
         )}
       </header>
@@ -170,13 +183,23 @@ export default async function AnalyticsPage() {
         <StatCard
           label="Delivered"
           value={delivered.toLocaleString()}
-          sub={deliveryRate !== null ? `${deliveryRate}% delivery rate` : pending > 0 ? `${pending} pending` : "no sends yet"}
+          sub={
+            deliveryRate !== null
+              ? `${deliveryRate}% delivery rate`
+              : pending > 0
+              ? `${pending} pending`
+              : "no sends yet"
+          }
           color="green"
         />
         <StatCard
           label="Failed"
           value={failed > 0 ? failed.toLocaleString() : "0"}
-          sub={totalAttempted > 0 ? `${Math.round((failed / totalAttempted) * 100)}% of attempts` : "—"}
+          sub={
+            totalAttempted > 0
+              ? `${Math.round((failed / totalAttempted) * 100)}% of attempts`
+              : "—"
+          }
           color={failed > 0 ? "red" : "slate"}
         />
         <StatCard
@@ -193,9 +216,29 @@ export default async function AnalyticsPage() {
         />
       </div>
 
+      {/* ── Daily capacity ── */}
+      <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
+        <span className="font-medium">Daily send capacity:</span>{" "}
+        {DAILY_SEND_LIMIT.toLocaleString()} emails/day · {pending.toLocaleString()} pending in queue
+      </div>
+
       {/* ── Per-campaign table ── */}
       <section>
-        <h3 className="text-sm font-semibold text-slate-700 mb-3">Campaigns</h3>
+        <h3 className="mb-3 text-sm font-semibold text-slate-700">
+          Campaigns{" "}
+          <span className="font-normal text-slate-400">(most recent 100)</span>
+        </h3>
+
+        {viewMissing && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 mb-3">
+            <span className="font-medium">Showing last 90 days (fallback).</span>{" "}
+            Run{" "}
+            <code className="rounded bg-amber-100 px-1">
+              supabase/migrations/20260421_analytics_views.sql
+            </code>{" "}
+            for full history and better performance.
+          </div>
+        )}
         {campaigns.length === 0 ? (
           <div className="rounded-xl border border-dashed border-slate-300 p-6 text-sm text-slate-500">
             No campaigns sent yet.
@@ -217,14 +260,22 @@ export default async function AnalyticsPage() {
               <tbody className="divide-y divide-slate-100">
                 {campaigns.map((c) => (
                   <tr key={c.campaign_label} className="bg-white hover:bg-slate-50">
-                    <td className="px-4 py-3 font-medium text-slate-800 max-w-xs truncate">
-                      {c.subject ?? <span className="text-slate-400 italic">untitled</span>}
+                    <td className="max-w-xs truncate px-4 py-3 font-medium text-slate-800">
+                      {c.subject ?? (
+                        <span className="italic text-slate-400">untitled</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-slate-600">
                       {c.list_name ?? <span className="text-slate-400">—</span>}
                     </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">{c.sent.toLocaleString()}</td>
-                    <td className={`px-4 py-3 text-right tabular-nums ${c.failed > 0 ? "text-red-600" : "text-slate-400"}`}>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+                      {c.sent.toLocaleString()}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right tabular-nums ${
+                        c.failed > 0 ? "text-red-600" : "text-slate-400"
+                      }`}
+                    >
                       {c.failed > 0 ? c.failed.toLocaleString() : "—"}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
@@ -233,8 +284,16 @@ export default async function AnalyticsPage() {
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
                       {hasSnsEvents ? c.clicks.toLocaleString() : "—"}
                     </td>
-                    <td className={`px-4 py-3 text-right tabular-nums ${c.bounces > 0 ? "text-amber-600" : "text-slate-400"}`}>
-                      {hasSnsEvents ? (c.bounces > 0 ? c.bounces.toLocaleString() : "—") : "—"}
+                    <td
+                      className={`px-4 py-3 text-right tabular-nums ${
+                        c.bounces > 0 ? "text-amber-600" : "text-slate-400"
+                      }`}
+                    >
+                      {hasSnsEvents
+                        ? c.bounces > 0
+                          ? c.bounces.toLocaleString()
+                          : "—"
+                        : "—"}
                     </td>
                   </tr>
                 ))}
@@ -267,8 +326,8 @@ function StatCard({
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`text-2xl font-semibold mt-1 ${valueColors[color]}`}>{value}</p>
-      <p className="text-xs text-slate-500 mt-1">{sub}</p>
+      <p className={`mt-1 text-2xl font-semibold ${valueColors[color]}`}>{value}</p>
+      <p className="mt-1 text-xs text-slate-500">{sub}</p>
     </div>
   );
 }
