@@ -14,9 +14,20 @@
  */
 
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, DAILY_SEND_LIMIT, todayUTC } from "@/lib/dailyQuota";
+
+const MailQueuePayloadSchema = z.object({
+  from: z.string().min(1).max(320),
+  to: z.string().min(1).max(320),
+  subject: z.string().min(1).max(998),
+  html: z.string().min(1),
+  text: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  campaigns: z.array(z.string()).optional(),
+});
 
 const WORKER_BATCH_SIZE = 50;
 // Rows stuck in "processing" longer than this are assumed abandoned (worker crash / timeout).
@@ -122,15 +133,22 @@ export async function POST(request: Request) {
   let failed = 0;
 
   for (const item of items) {
-    const payload = item.payload as {
-      from: string;
-      to: string;
-      subject: string;
-      html: string;
-      text?: string;
-      tags?: string[];
-      campaigns?: string[];
-    };
+    const payloadParsed = MailQueuePayloadSchema.safeParse(item.payload);
+    if (!payloadParsed.success) {
+      console.error(`[queue worker] invalid payload for item ${item.id}:`, payloadParsed.error.issues);
+      await supabase
+        .from("mail_queue")
+        .update({
+          status: "dead",
+          last_error: `Invalid payload: ${payloadParsed.error.issues[0]?.message ?? "schema error"}`,
+          locked_at: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", item.id);
+      failed++;
+      continue;
+    }
+    const payload = payloadParsed.data;
 
     try {
       const result = await sendEmail({

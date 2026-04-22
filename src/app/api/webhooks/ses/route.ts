@@ -19,6 +19,7 @@
 import { createVerify } from "crypto";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { checkRateLimit } from "@/lib/rateLimit";
 
 // ── SNS message signature verification ────────────────────────────────────────
 // Cache signing certs in memory so we don't fetch the same PEM on every event.
@@ -83,11 +84,26 @@ const SES_EVENT_MAP: Record<string, string> = {
   "Rendering Failure": "rendering_failure",
 };
 
+const MAX_WEBHOOK_BODY_BYTES = 256_000; // 256 KB
+
 export async function POST(request: Request) {
+  // Rate limit: 300 SNS events per IP per minute (SNS can burst at campaign scale).
+  const ip =
+    request.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
+    request.headers.get("x-real-ip") ??
+    "unknown";
+  const { allowed } = checkRateLimit(`ses-webhook:${ip}`, 300, 60_000);
+  if (!allowed) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   let body: Record<string, unknown>;
 
   try {
     const text = await request.text();
+    if (text.length > MAX_WEBHOOK_BODY_BYTES) {
+      return NextResponse.json({ error: "Payload too large" }, { status: 413 });
+    }
     body = JSON.parse(text);
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
