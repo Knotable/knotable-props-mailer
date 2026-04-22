@@ -213,8 +213,17 @@ export async function POST(request: Request) {
   });
 }
 
-// GET: quota + queue status (no auth required — used by health banner)
-export async function GET() {
+// GET: quota + queue status — same CRON_SECRET auth as POST
+export async function GET(request: Request) {
+  const cronSecret = process.env.CRON_SECRET;
+  if (!cronSecret) {
+    return NextResponse.json({ error: "CRON_SECRET not configured" }, { status: 500 });
+  }
+  const authHeader = request.headers.get("authorization");
+  if (authHeader !== `Bearer ${cronSecret}`) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const today = todayUTC();
   const sentToday = await getDailySentCount(today);
   const remaining = Math.max(0, DAILY_SEND_LIMIT - sentToday);

@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { env } from "@/lib/env";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
 
-const ALLOWED_EMAIL = "a@sarva.com";
+const ALLOWED_EMAIL = process.env.ALLOWED_EMAIL ?? "a@sarva.com";
 
 export async function sendMagicLink(formData: FormData) {
   const email = String(formData.get("email")).toLowerCase().trim();

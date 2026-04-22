@@ -16,8 +16,61 @@
  * once, so retries after a 500 would otherwise create duplicate rows.
  */
 
+import { createVerify } from "crypto";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+
+// ── SNS message signature verification ────────────────────────────────────────
+// Cache signing certs in memory so we don't fetch the same PEM on every event.
+const certCache = new Map<string, string>();
+
+async function fetchSigningCert(certUrl: string): Promise<string> {
+  const cached = certCache.get(certUrl);
+  if (cached) return cached;
+
+  // Only accept HTTPS certs from SNS hostnames.
+  const u = new URL(certUrl);
+  if (u.protocol !== "https:" || !/^sns\.[a-z0-9-]+\.amazonaws\.com$/.test(u.hostname)) {
+    throw new Error("Untrusted SigningCertURL");
+  }
+
+  const res = await fetch(certUrl, { next: { revalidate: 3600 } });
+  if (!res.ok) throw new Error(`Failed to fetch signing cert: ${res.status}`);
+  const pem = await res.text();
+  certCache.set(certUrl, pem);
+  return pem;
+}
+
+// Build the canonical string-to-sign per AWS SNS spec.
+function buildStringToSign(msg: Record<string, unknown>): string {
+  const type = msg["Type"] as string;
+  const fields =
+    type === "Notification"
+      ? ["Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type"]
+      : ["Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type"];
+
+  return fields
+    .filter((k) => msg[k] !== undefined && msg[k] !== null)
+    .map((k) => `${k}\n${msg[k]}\n`)
+    .join("");
+}
+
+async function verifySnsSignature(body: Record<string, unknown>): Promise<boolean> {
+  try {
+    const certUrl = body["SigningCertURL"] as string | undefined;
+    const signature = body["Signature"] as string | undefined;
+    const sigVer = body["SignatureVersion"] as string | undefined;
+    if (!certUrl || !signature) return false;
+
+    const algorithm = sigVer === "2" ? "sha256WithRSAEncryption" : "sha1WithRSAEncryption";
+    const pem = await fetchSigningCert(certUrl);
+    const verifier = createVerify(algorithm);
+    verifier.update(buildStringToSign(body));
+    return verifier.verify(pem, Buffer.from(signature, "base64"));
+  } catch {
+    return false;
+  }
+}
 
 const SES_EVENT_MAP: Record<string, string> = {
   Send: "sent",
@@ -41,6 +94,14 @@ export async function POST(request: Request) {
   }
 
   const messageType = body["Type"] as string | undefined;
+
+  // ── SNS signature verification ─────────────────────────────────────────────
+  // Reject forged or tampered notifications before doing any DB work.
+  const sigValid = await verifySnsSignature(body);
+  if (!sigValid) {
+    console.warn("[ses-webhook] SNS signature verification failed");
+    return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+  }
 
   // ── SNS Subscription Confirmation ─────────────────────────────────────────
   if (messageType === "SubscriptionConfirmation") {

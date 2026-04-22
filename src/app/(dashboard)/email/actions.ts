@@ -28,11 +28,13 @@ type DraftPayload = {
   tags?: string;
 };
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const parseRecipients = (input: string) =>
   input
     .split(/[,\n]/)
     .map((r) => r.trim())
-    .filter(Boolean);
+    .filter((r) => EMAIL_RE.test(r));
 
 export async function saveDraftAction(formData: FormData) {
   const userId = await requireAuthUserId();
@@ -67,7 +69,8 @@ export async function saveDraftAction(formData: FormData) {
     const { error } = await supabase
       .from("emails")
       .update(emailFields)
-      .eq("id", id);
+      .eq("id", id)
+      .eq("author_id", userId);
     if (error) throw error;
     emailId = id;
 
@@ -188,11 +191,13 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   const listId = String(formData.get("listId"));
   const skipDuplicateCheck = formData.get("skipDuplicateCheck") === "true";
 
-  // Load the email draft (include scheduled_at so we can honor it).
+  // Load the email draft — also verify ownership so one user can't queue
+  // another user's draft (defense-in-depth; RLS covers the DB layer).
   const { data: email, error: emailError } = await supabase
     .from("emails")
     .select("from_address, subject, html, text, tags, campaigns, scheduled_at")
     .eq("id", emailId)
+    .eq("author_id", userId)
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
 
@@ -555,6 +560,15 @@ export async function cancelEmailAction(formData: FormData) {
   if (!id) throw new Error("Missing email id");
   const supabase = getSupabaseAdmin();
 
+  // Verify ownership before touching queue rows.
+  const { data: owned } = await supabase
+    .from("emails")
+    .select("id")
+    .eq("id", id)
+    .eq("author_id", userId)
+    .maybeSingle();
+  if (!owned) throw new Error("Email not found");
+
   await supabase
     .from("mail_queue")
     .delete()
@@ -584,6 +598,15 @@ export async function deleteEmailAction(formData: FormData) {
   const id = String(formData.get("id"));
   if (!id) throw new Error("Missing email id");
   const supabase = getSupabaseAdmin();
+
+  // Verify ownership before cascading deletes.
+  const { data: owned } = await supabase
+    .from("emails")
+    .select("id")
+    .eq("id", id)
+    .eq("author_id", userId)
+    .maybeSingle();
+  if (!owned) throw new Error("Email not found");
 
   await supabase.from("mail_queue").delete().eq("email_id", id);
   await supabase.from("email_recipients").delete().eq("email_id", id);
