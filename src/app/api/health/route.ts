@@ -296,8 +296,8 @@ export async function GET() {
     severity: "warning",
     ok: true, // assume ok — can't verify without AWS SDK
     message:
-      "Cannot verify automatically. Ensure the From address (amol@sarva.co) is verified in AWS SES.",
-    fix: 'AWS Console → SES → Verified identities → verify amol@sarva.co (or your domain). While in SES sandbox, also verify every recipient address.',
+      "Cannot verify automatically. Ensure the From address (a@sarva.co) is verified in AWS SES.",
+    fix: 'AWS Console → SES → Verified identities → verify a@sarva.co (or your domain). While in SES sandbox, also verify every recipient address.',
   });
 
   // ── Summary ───────────────────────────────────────────────────────────────

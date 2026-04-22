@@ -20,7 +20,7 @@ Next.js 15 + Supabase implementation of the Props email console. The legacy Mete
 - `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` – Supabase project settings › API
 - `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_JWT_SECRET` – used by Supabase migrations / server actions
 - `AWS_SES_SMTP_USERNAME`, `AWS_SES_SMTP_PASSWORD`, `AWS_SES_SMTP_ENDPOINT`, `AWS_SES_SMTP_PORT` – SMTP credentials for SES
-- `APP_BASE_URL` – e.g. `https://props-v2.vercel.app` for magic-link redirects
+- `APP_BASE_URL` – e.g. `https://props-v2.vercel.app` for app-generated links and internal callbacks
 
 ## Database
 SQL schema lives in `supabase/schema.sql`. Apply it to your Supabase instance, enable Row Level Security, and create policies restricting tables to the single admin role.
@@ -32,7 +32,7 @@ SQL schema lives in `supabase/schema.sql`. Apply it to your Supabase instance, e
 4. (Optional) Wire SES → SNS → Supabase to capture engagement metrics.
 
 ## Directory map
-- `src/app/(auth)` – passwordless login screen + magic-link handler
+- `src/app/(auth)` – passwordless login screen for email sign-in codes
 - `src/app/(dashboard)` – Composer, Schedule, Analytics, Lists, Users tabs
 - `src/lib` – env helper, Supabase factories, SES SMTP client
 - `supabase/schema.sql` – Postgres schema

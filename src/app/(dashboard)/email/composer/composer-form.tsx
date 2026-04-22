@@ -242,7 +242,7 @@ export function ComposerForm({ draft, lists }: Props) {
             <input
               name="from"
               required
-              defaultValue={draft?.from_address ?? "Amol Sarva <amol@sarva.co>"}
+              defaultValue={draft?.from_address ?? "Amol Sarva <a@sarva.co>"}
               className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>

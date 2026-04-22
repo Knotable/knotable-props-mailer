@@ -1,27 +1,63 @@
 'use server';
 
 import { redirect } from "next/navigation";
-import { env } from "@/lib/env";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
 
 const ALLOWED_EMAIL = process.env.ALLOWED_EMAIL ?? "a@sarva.co";
 
-export async function sendMagicLink(formData: FormData) {
-  const email = String(formData.get("email")).toLowerCase().trim();
+const normalizeEmail = (value: FormDataEntryValue | null) =>
+  String(value ?? "").trim().toLowerCase();
+
+export async function sendLoginCode(formData: FormData) {
+  const email = normalizeEmail(formData.get("email"));
+
+  if (!email) {
+    redirect("/login?error=missing-email");
+  }
 
   if (email !== ALLOWED_EMAIL) {
-    throw new Error("This tool is restricted to authorized users.");
+    redirect(`/login?email=${encodeURIComponent(email)}&error=unauthorized`);
   }
 
   const supabase = await createServerSupabaseClient();
   const { error } = await supabase.auth.signInWithOtp({
     email,
     options: {
-      emailRedirectTo: `${env.appBaseUrl}/loginWithToken`,
       shouldCreateUser: false,
     },
   });
-  if (error) throw error;
+
+  if (error) {
+    redirect(`/login?email=${encodeURIComponent(email)}&error=send-code`);
+  }
+
+  redirect(`/login?email=${encodeURIComponent(email)}&sent=1`);
+}
+
+export async function verifyLoginCode(formData: FormData) {
+  const email = normalizeEmail(formData.get("email"));
+  const token = String(formData.get("code") ?? "").trim();
+
+  if (!email || !token) {
+    redirect(`/login?email=${encodeURIComponent(email)}&error=missing-code`);
+  }
+
+  if (email !== ALLOWED_EMAIL) {
+    redirect(`/login?email=${encodeURIComponent(email)}&error=unauthorized`);
+  }
+
+  const supabase = await createServerSupabaseClient();
+  const { error } = await supabase.auth.verifyOtp({
+    email,
+    token,
+    type: "email",
+  });
+
+  if (error) {
+    redirect(`/login?email=${encodeURIComponent(email)}&sent=1&error=invalid-code`);
+  }
+
+  redirect("/email/composer");
 }
 
 export async function signOutAction() {
