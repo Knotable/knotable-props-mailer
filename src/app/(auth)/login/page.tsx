@@ -12,10 +12,13 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const email = pickParam(params.email).trim().toLowerCase();
   const sent = pickParam(params.sent) === "1";
   const error = pickParam(params.error);
+  const rateLimitMatch = error.match(/^rate:(\d+)$/);
 
   const errorMessage =
     error === "missing-email"
       ? "Enter your email address first."
+      : rateLimitMatch
+      ? `Too many sign-in attempts. Try again in ${rateLimitMatch[1]} seconds.`
       : error === "unauthorized"
       ? "This tool is restricted to the authorized email address."
       : error === "send-code"

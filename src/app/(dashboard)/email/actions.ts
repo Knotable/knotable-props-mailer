@@ -1,12 +1,44 @@
 'use server';
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
 import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
 import { logAudit } from "@/lib/logger";
 import type { Json } from "@/supabase/types";
+
+const SaveDraftSchema = z.object({
+  id: z.string().uuid().optional().nullable(),
+  from: z.string().min(1).max(320),
+  subject: z.string().min(1).max(998),
+  html: z.string().min(1).max(5_000_000),
+  recipients: z.string().max(200_000),
+  scheduledAt: z.string().max(32).optional().nullable(),
+  campaigns: z.string().max(2000).optional().nullable(),
+  tags: z.string().max(2000).optional().nullable(),
+});
+
+const QueueCampaignSchema = z.object({
+  emailId: z.string().uuid(),
+  listId: z.string().uuid(),
+  skipDuplicateCheck: z.string().optional(),
+});
+
+const SendTestSchema = z.object({
+  id: z.string().uuid().optional().nullable(),
+  from: z.string().min(1).max(320),
+  subject: z.string().min(1).max(998),
+  html: z.string().min(1).max(5_000_000),
+  recipients: z.string().min(1).max(200_000),
+  text: z.string().max(5_000_000).optional().nullable(),
+  tags: z.string().max(2000).optional().nullable(),
+  campaigns: z.string().max(2000).optional().nullable(),
+});
+
+const EmailIdSchema = z.object({ id: z.string().uuid() });
+const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
 
 // Throws if there is no authenticated session — middleware should have already
 // caught unauthenticated requests, but this is a second line of defence for
@@ -39,15 +71,27 @@ const parseRecipients = (input: string) =>
 export async function saveDraftAction(formData: FormData) {
   const userId = await requireAuthUserId();
 
-  const id = formData.get("id") as string | null;
+  const parsed = SaveDraftSchema.safeParse({
+    id: formData.get("id") || null,
+    from: formData.get("from"),
+    subject: formData.get("subject"),
+    html: formData.get("html"),
+    recipients: formData.get("recipients") ?? "",
+    scheduledAt: formData.get("scheduledAt") || null,
+    campaigns: formData.get("campaigns") || null,
+    tags: formData.get("tags") || null,
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
+
+  const id = parsed.data.id ?? null;
   const payload: DraftPayload = {
-    from: String(formData.get("from")),
-    subject: String(formData.get("subject")),
-    html: String(formData.get("html")),
-    recipients: String(formData.get("recipients")),
-    scheduledAt: formData.get("scheduledAt") as string | undefined,
-    campaigns: formData.get("campaigns") as string | undefined,
-    tags: formData.get("tags") as string | undefined,
+    from: parsed.data.from,
+    subject: parsed.data.subject,
+    html: parsed.data.html,
+    recipients: parsed.data.recipients,
+    scheduledAt: parsed.data.scheduledAt ?? undefined,
+    campaigns: parsed.data.campaigns ?? undefined,
+    tags: parsed.data.tags ?? undefined,
   };
 
   const supabase = getSupabaseAdmin();
@@ -186,10 +230,16 @@ export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm;
 export async function queueCampaignAction(formData: FormData): Promise<QueueCampaignResult> {
   const userId = await requireAuthUserId();
 
+  const parsed = QueueCampaignSchema.safeParse({
+    emailId: formData.get("emailId"),
+    listId: formData.get("listId"),
+    skipDuplicateCheck: formData.get("skipDuplicateCheck") ?? undefined,
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
+
   const supabase = getSupabaseAdmin();
-  const emailId = String(formData.get("emailId"));
-  const listId = String(formData.get("listId"));
-  const skipDuplicateCheck = formData.get("skipDuplicateCheck") === "true";
+  const { emailId, listId } = parsed.data;
+  const skipDuplicateCheck = parsed.data.skipDuplicateCheck === "true";
 
   // Load the email draft — also verify ownership so one user can't queue
   // another user's draft (defense-in-depth; RLS covers the DB layer).
@@ -398,16 +448,28 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
 export async function sendTestAction(formData: FormData) {
   const userId = await requireAuthUserId();
 
-  const recipients = parseRecipients(String(formData.get("recipients")));
-  if (!recipients.length) throw new Error("Need at least one recipient");
+  const parsed = SendTestSchema.safeParse({
+    id: formData.get("id") || null,
+    from: formData.get("from"),
+    subject: formData.get("subject"),
+    html: formData.get("html"),
+    recipients: formData.get("recipients"),
+    text: formData.get("text") || null,
+    tags: formData.get("tags") || null,
+    campaigns: formData.get("campaigns") || null,
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
 
-  const id = formData.get("id") as string | null;
-  const from = String(formData.get("from"));
-  const subject = String(formData.get("subject"));
-  const html = String(formData.get("html"));
-  const text = (formData.get("text") as string) || undefined;
-  const tags = (formData.get("tags") as string | null)?.split(",").map((t) => t.trim()).filter(Boolean);
-  const campaigns = (formData.get("campaigns") as string | null)?.split(",").map((c) => c.trim()).filter(Boolean);
+  const id = parsed.data.id ?? null;
+  const from = parsed.data.from;
+  const subject = parsed.data.subject;
+  const html = parsed.data.html;
+  const text = parsed.data.text ?? undefined;
+  const tags = parsed.data.tags?.split(",").map((t) => t.trim()).filter(Boolean);
+  const campaigns = parsed.data.campaigns?.split(",").map((c) => c.trim()).filter(Boolean);
+
+  const recipients = parseRecipients(parsed.data.recipients);
+  if (!recipients.length) throw new Error("Need at least one valid recipient email address");
 
   // Send individually so recipients never see each other.
   const results = await Promise.allSettled(
@@ -510,8 +572,9 @@ export async function triggerQueueAction(): Promise<{ processed: number; succeed
 export async function requeueDeadAction(formData: FormData) {
   const userId = await requireAuthUserId();
 
-  const emailId = String(formData.get("emailId"));
-  if (!emailId) throw new Error("Missing emailId");
+  const parsed = RequeueDeadSchema.safeParse({ emailId: formData.get("emailId") });
+  if (!parsed.success) throw new Error("Invalid emailId");
+  const { emailId } = parsed.data;
 
   const supabase = getSupabaseAdmin();
 
@@ -556,8 +619,9 @@ export async function requeueDeadAction(formData: FormData) {
 export async function cancelEmailAction(formData: FormData) {
   const userId = await requireAuthUserId();
 
-  const id = String(formData.get("id"));
-  if (!id) throw new Error("Missing email id");
+  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+  if (!parsed.success) throw new Error("Invalid email id");
+  const { id } = parsed.data;
   const supabase = getSupabaseAdmin();
 
   // Verify ownership before touching queue rows.
@@ -595,8 +659,9 @@ export async function cancelEmailAction(formData: FormData) {
 export async function deleteEmailAction(formData: FormData) {
   const userId = await requireAuthUserId();
 
-  const id = String(formData.get("id"));
-  if (!id) throw new Error("Missing email id");
+  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+  if (!parsed.success) throw new Error("Invalid email id");
+  const { id } = parsed.data;
   const supabase = getSupabaseAdmin();
 
   // Verify ownership before cascading deletes.

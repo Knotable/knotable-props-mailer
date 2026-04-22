@@ -1,6 +1,7 @@
 'use server';
 
 import { revalidatePath } from "next/cache";
+import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
 import { logAudit } from "@/lib/logger";
@@ -12,22 +13,37 @@ async function requireAuthUserId(): Promise<string> {
   return user.id;
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const parseEmails = (input: string) =>
   input
     .split(/[\n,]/)
     .map((v) => v.trim().toLowerCase())
-    .filter(Boolean);
+    .filter((v) => EMAIL_RE.test(v));
+
+const UpsertListSchema = z.object({
+  name: z.string().min(1).max(200),
+  address: z.string().min(1).max(200),
+  description: z.string().max(1000).optional().default(""),
+});
+
+const ImportMembersSchema = z.object({
+  listId: z.string().uuid(),
+  members: z.string().min(1).max(5_000_000),
+});
 
 export async function upsertListAction(formData: FormData) {
   const userId = await requireAuthUserId();
   const supabase = getSupabaseAdmin();
 
-  const name = String(formData.get("name")).trim().slice(0, 200);
-  const address = String(formData.get("address")).trim().toLowerCase().slice(0, 200);
-  const description = String(formData.get("description")).trim().slice(0, 1000);
+  const parsed = UpsertListSchema.safeParse({
+    name: String(formData.get("name")).trim(),
+    address: String(formData.get("address")).trim().toLowerCase(),
+    description: String(formData.get("description")).trim(),
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
 
-  if (!name) throw new Error("List name is required");
-  if (!address) throw new Error("List address is required");
+  const { name, address, description } = parsed.data;
 
   // If a list with this address already exists, verify the requesting user
   // owns it before allowing the update — prevents one user from hijacking
@@ -62,8 +78,14 @@ export async function importMembersAction(formData: FormData) {
   const userId = await requireAuthUserId();
   const supabase = getSupabaseAdmin();
 
-  const listId = String(formData.get("listId"));
-  const raw = String(formData.get("members"));
+  const parsed = ImportMembersSchema.safeParse({
+    listId: formData.get("listId"),
+    members: formData.get("members"),
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
+
+  const listId = parsed.data.listId;
+  const raw = parsed.data.members;
 
   // Verify the requesting user owns the target list.
   const { data: list } = await supabase
