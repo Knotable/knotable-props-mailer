@@ -272,14 +272,22 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     }
   }
 
-  // Load active list members.
-  const { data: members, error: membersError } = await supabase
-    .from("list_members")
-    .select("email")
-    .eq("list_id", listId)
-    .eq("status", "active");
-  if (membersError) throw membersError;
-  if (!members || members.length === 0) throw new Error("List has no active members");
+  // Load active list members — paginate to bypass PostgREST's 1000-row default cap.
+  const PAGE = 1000;
+  const members: { email: string }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data: memberPage, error: pageError } = await supabase
+      .from("list_members")
+      .select("email")
+      .eq("list_id", listId)
+      .eq("status", "active")
+      .range(from, from + PAGE - 1);
+    if (pageError) throw pageError;
+    if (!memberPage || memberPage.length === 0) break;
+    members.push(...memberPage);
+    if (memberPage.length < PAGE) break;
+  }
+  if (members.length === 0) throw new Error("List has no active members");
 
   // Determine the start date, respecting scheduled_at if it's in the future.
   const today = todayUTC();
