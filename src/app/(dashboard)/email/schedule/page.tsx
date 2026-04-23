@@ -67,13 +67,13 @@ export default async function SchedulePage() {
                     : "Send ASAP"}
                 </div>
 
-                {/* Right: Edit link + client-side Cancel/Delete buttons */}
+                {/* Right: Reuse link + client-side Cancel/Delete buttons */}
                 <div className="flex shrink-0 items-center gap-2">
                   <Link
-                    href={`/email/composer?id=${item.id}`}
+                    href={`/email/composer?cloneId=${item.id}`}
                     className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
                   >
-                    Edit
+                    Make new
                   </Link>
                   <ScheduleActions
                     id={item.id}
