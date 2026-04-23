@@ -28,7 +28,7 @@ SQL schema lives in `supabase/schema.sql`. Apply it to your Supabase instance, e
 ## Deploying to Vercel
 1. Create a new Vercel project pointing at the repo root (auto-detected as Next.js).
 2. Add the env vars above in the Vercel dashboard.
-3. Configure a Vercel Cron job (e.g. hourly) hitting `/api/email/queue` (endpoint to be added when scheduling worker is implemented) for sending queued mails.
+3. Deploy without any Vercel Cron jobs. Queued emails are reviewed and sent manually from the Queue page.
 4. (Optional) Wire SES → SNS → Supabase to capture engagement metrics.
 
 ## Directory map
@@ -40,6 +40,6 @@ SQL schema lives in `supabase/schema.sql`. Apply it to your Supabase instance, e
 
 ## Outstanding work
 - Wire Supabase auth session into layouts/middleware for route protection
-- Implement scheduled send worker + queue page actions
+- Expand queue review tooling and delivery safeguards
 - Capture SES SNS notifications and insert them into `provider_events`
 - Style tweaks to perfectly match legacy Props UI

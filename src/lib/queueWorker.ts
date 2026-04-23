@@ -84,7 +84,7 @@ async function reconcileEmailStatuses(emailIds: string[]) {
     if (counts.pending > 0 || counts.processing > 0) {
       status = "queued";
     } else if (counts.dead > 0) {
-      status = counts.succeeded > 0 ? "queued" : "failed";
+      status = "failed";
     } else if (counts.succeeded > 0) {
       status = "sent";
     }

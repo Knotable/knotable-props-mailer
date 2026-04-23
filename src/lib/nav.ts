@@ -13,7 +13,7 @@ export const dashboardNav: NavItem[] = [
   {
     label: "Schedule",
     href: "/email/schedule",
-    description: "Queue, pause, or cancel scheduled sends",
+    description: "Queue drafts, review them, and send each one manually",
   },
   {
     label: "Past Sends",

@@ -1,16 +1,15 @@
 import Link from "next/link";
 import { createServerAppClient } from "@/lib/authAccess";
-import { ScheduleActions, TriggerQueueButton } from "./schedule-actions";
+import { ScheduleActions } from "./schedule-actions";
 
 export default async function SchedulePage() {
   const supabase = await createServerAppClient();
 
-  // Show drafts and anything actively queued/sending. Exclude sent/failed/canceled.
   const { data: emails } = await supabase
     .from("emails")
-    .select("id, subject, scheduled_at, status")
+    .select("id, subject, status, updated_at")
     .in("status", ["draft", "queued", "sending"])
-    .order("created_at", { ascending: false })
+    .order("updated_at", { ascending: false })
     .limit(50);
 
   return (
@@ -18,24 +17,18 @@ export default async function SchedulePage() {
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <p className="text-xs uppercase tracking-wide text-slate-400">Queue</p>
-          <h2 className="text-2xl font-semibold text-slate-900">Drafts &amp; Scheduled</h2>
+          <h2 className="text-2xl font-semibold text-slate-900">Drafts &amp; Queued</h2>
           <p className="text-sm text-slate-500">
-            Drafts you&apos;re working on, plus emails queued to send.
+            Drafts you&apos;re working on, plus emails held for manual send.
           </p>
         </div>
-        {/* Manual queue trigger — works around the daily-only Hobby plan cron */}
-        <TriggerQueueButton />
       </header>
 
       <div className="divide-y rounded-lg border border-slate-200">
         {emails?.length ? (
           emails.map((item) => {
             const isDraft = item.status === "draft";
-            const isQueued = item.status === "queued" || item.status === "sending";
-
-            // Format date as ISO string on the server; the client component can
-            // display it however it likes — avoids hydration mismatches.
-            const scheduledIso = item.scheduled_at ?? null;
+            const updatedIso = item.updated_at ?? null;
 
             return (
               <div
@@ -51,41 +44,50 @@ export default async function SchedulePage() {
                         : "bg-blue-100 text-blue-700"
                     }`}
                   >
-                    {isDraft ? "Draft" : item.status === "sending" ? "Sending" : "Scheduled"}
+                    {isDraft ? "Draft" : item.status === "sending" ? "Sending" : "Queued"}
                   </span>
                   <p className="truncate text-sm font-medium text-slate-800">
                     {item.subject || "(no subject)"}
                   </p>
                 </div>
 
-                {/* Middle: send time — rendered as static text to avoid hydration issues */}
                 <div className="shrink-0 text-sm text-slate-500">
-                  {scheduledIso
-                    ? scheduledIso.replace("T", " ").slice(0, 16) + " UTC"
-                    : isDraft
-                    ? "Not scheduled"
-                    : "Send ASAP"}
+                  {isDraft
+                    ? updatedIso
+                      ? `Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
+                      : "Draft only"
+                    : "Queued for manual send"}
                 </div>
 
-                {/* Right: Reuse link + client-side Cancel/Delete buttons */}
                 <div className="flex shrink-0 items-center gap-2">
-                  <Link
-                    href={`/email/composer?cloneId=${item.id}`}
-                    className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                  >
-                    Make new
-                  </Link>
+                  {!isDraft && (
+                    <Link
+                      href={`/api/email/preview/${item.id}`}
+                      target="_blank"
+                      className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      Preview
+                    </Link>
+                  )}
+                  {isDraft && (
+                    <Link
+                      href={`/email/composer?id=${item.id}`}
+                      className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      Edit
+                    </Link>
+                  )}
                   <ScheduleActions
                     id={item.id}
                     subject={item.subject ?? ""}
-                    isQueued={isQueued}
+                    status={item.status}
                   />
                 </div>
               </div>
             );
           })
         ) : (
-          <p className="p-6 text-sm text-slate-500">No drafts or scheduled emails.</p>
+          <p className="p-6 text-sm text-slate-500">No drafts or queued emails.</p>
         )}
       </div>
     </div>

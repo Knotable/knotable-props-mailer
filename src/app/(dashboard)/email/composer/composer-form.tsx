@@ -117,17 +117,6 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     setAutosaveState("idle");
   };
 
-  const toDatetimeLocal = (d: Date) => {
-    const offsetMs = d.getTimezoneOffset() * 60_000;
-    return new Date(d.getTime() - offsetMs).toISOString().slice(0, 16);
-  };
-
-  const scheduledAtLocal = (() => {
-    if (!draft?.scheduled_at) return "";
-    const draftDate = new Date(draft.scheduled_at);
-    return Number.isNaN(draftDate.getTime()) ? "" : toDatetimeLocal(draftDate);
-  })();
-
   // ── Save Draft ─────────────────────────────────────────────────────────────
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -173,18 +162,18 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       if (res.ok) {
         setBanner({
           ok: true,
-          message: `Queued ${res.totalRecipients.toLocaleString()} emails to "${selectedList.name}"${res.daysNeeded > 1 ? ` across ${res.daysNeeded} days` : ""}.`,
+          message: `Queued ${res.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${res.daysNeeded > 1 ? ` (${res.daysNeeded} send-days at current quota)` : ""}.`,
         });
-        router.push("/email/sends");
+        router.push("/email/schedule");
       }
     } catch (err) {
-      setBanner({ ok: false, message: getActionErrorMessage(err, "Send failed.") });
+      setBanner({ ok: false, message: getActionErrorMessage(err, "Queue failed.") });
     } finally {
       setSending(false);
     }
   };
 
-  // ── Send ───────────────────────────────────────────────────────────────────
+  // ── Queue / Send ───────────────────────────────────────────────────────────
   const handleSend = async () => {
     if (!formRef.current) return;
     cancelAutosave();
@@ -202,12 +191,12 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
           localStorage.setItem(LAST_DRAFT_KEY, emailId);
           router.replace(`/email/composer?id=${emailId}`, { scroll: false });
         } catch (err) {
-          setBanner({ ok: false, message: getActionErrorMessage(err, "Unable to prepare this email for sending.") });
+          setBanner({ ok: false, message: getActionErrorMessage(err, "Unable to prepare this email for queueing.") });
           return;
         }
       }
       if (!emailId) {
-        setBanner({ ok: false, message: "Unable to create a draft for sending. Please try again." });
+        setBanner({ ok: false, message: "Unable to create a draft for queueing. Please try again." });
         return;
       }
       await runQueueCampaign(false, emailId);
@@ -229,7 +218,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     }
   };
 
-  // ── Send anyway (override duplicate warning) ───────────────────────────────
+  // ── Queue anyway (override duplicate warning) ──────────────────────────────
   const handleSendAnyway = () => runQueueCampaign(true);
 
   return (
@@ -249,23 +238,13 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       >
         {draftId && <input type="hidden" name="id" value={draftId} />}
 
-        {/* From + Scheduled */}
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-1">
           <label className="block text-sm font-medium text-slate-700">
             From
             <input
               name="from"
               required
               defaultValue={draft?.from_address ?? "Amol Sarva <a@sarva.co>"}
-              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
-            />
-          </label>
-          <label className="block text-sm font-medium text-slate-700">
-            Scheduled send (optional)
-            <input
-              name="scheduledAt"
-              type="datetime-local"
-              defaultValue={scheduledAtLocal}
               className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>
@@ -315,7 +294,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
               )}
               {selectedList && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Sends individually to every active member of this list.
+                  Queues individual sends for every active member of this list. You can review and send it later from the Queue page.
                 </p>
               )}
               {selectedList && (
@@ -429,12 +408,14 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
                 </li>
               )}
             </ul>
-            {dupWarning.sampleAddresses.length > 0 && (
+            {dupWarning.warningGroups.length > 0 && (
               <div>
-                <p className="text-xs font-medium text-amber-700 mb-1">Sample addresses:</p>
+                <p className="text-xs font-medium text-amber-700 mb-1">Recent overlap by day:</p>
                 <ul className="text-xs text-amber-700 space-y-0.5">
-                  {dupWarning.sampleAddresses.map((addr) => (
-                    <li key={addr} className="font-mono">{addr}</li>
+                  {dupWarning.warningGroups.slice(0, 4).map((group) => (
+                    <li key={group.key}>
+                      <span className="font-medium">{group.date}</span>: {group.recipientAddresses.length.toLocaleString()} recipient{group.recipientAddresses.length !== 1 ? "s" : ""}
+                    </li>
                   ))}
                 </ul>
               </div>
@@ -453,7 +434,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
                 disabled={sending}
                 className="rounded-md bg-amber-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
               >
-                {sending ? "Sending…" : "Send anyway"}
+                {sending ? "Queueing…" : "Queue anyway"}
               </button>
             </div>
           </div>
@@ -475,7 +456,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
             disabled={sending}
             className="rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
           >
-            {sending ? "Sending…" : "Send"}
+            {sending ? (selectedList ? "Queueing…" : "Sending…") : selectedList ? "Queue" : "Send"}
           </button>
 
           {/* Autosave indicator */}
