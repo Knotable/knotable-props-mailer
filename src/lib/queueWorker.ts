@@ -28,6 +28,10 @@ export type QueueWorkerResult = {
   message?: string;
 };
 
+type RunQueueWorkerOptions = {
+  emailId?: string;
+};
+
 async function writeMetrics(opts: { queueDepth: number; processed: number; failed: number }) {
   const supabase = getSupabaseAdmin();
   const { error } = await supabase
@@ -44,7 +48,60 @@ async function writeMetrics(opts: { queueDepth: number; processed: number; faile
   }
 }
 
-export async function runQueueWorker(): Promise<QueueWorkerResult> {
+async function reconcileEmailStatuses(emailIds: string[]) {
+  if (emailIds.length === 0) return;
+
+  const supabase = getSupabaseAdmin();
+  const uniqueIds = [...new Set(emailIds)];
+  const { data: rows, error } = await supabase
+    .from("mail_queue")
+    .select("email_id, status")
+    .in("email_id", uniqueIds);
+
+  if (error) {
+    console.error("[queue worker] reconcile status query failed", error);
+    return;
+  }
+
+  const byEmail = new Map<string, { pending: number; processing: number; dead: number; succeeded: number }>();
+  for (const id of uniqueIds) {
+    byEmail.set(id, { pending: 0, processing: 0, dead: 0, succeeded: 0 });
+  }
+
+  for (const row of rows ?? []) {
+    if (!row.email_id) continue;
+    const bucket = byEmail.get(row.email_id);
+    if (!bucket) continue;
+    if (row.status === "pending") bucket.pending += 1;
+    if (row.status === "processing") bucket.processing += 1;
+    if (row.status === "dead") bucket.dead += 1;
+    if (row.status === "succeeded") bucket.succeeded += 1;
+  }
+
+  for (const [emailId, counts] of byEmail) {
+    let status: "queued" | "sent" | "failed" | null = null;
+
+    if (counts.pending > 0 || counts.processing > 0) {
+      status = "queued";
+    } else if (counts.dead > 0) {
+      status = counts.succeeded > 0 ? "queued" : "failed";
+    } else if (counts.succeeded > 0) {
+      status = "sent";
+    }
+
+    if (!status) continue;
+    const { error: updateError } = await supabase
+      .from("emails")
+      .update({ status })
+      .eq("id", emailId);
+
+    if (updateError) {
+      console.error(`[queue worker] failed to update email ${emailId} status`, updateError);
+    }
+  }
+}
+
+export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promise<QueueWorkerResult> {
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const now = new Date();
@@ -86,11 +143,17 @@ export async function runQueueWorker(): Promise<QueueWorkerResult> {
 
   const limit = Math.min(remaining, WORKER_BATCH_SIZE);
 
-  const { data: items, error: fetchError } = await supabase
+  let fetchQuery = supabase
     .from("mail_queue")
     .select("id, email_id, payload, list_id")
     .eq("status", "pending")
-    .lte("available_at", now.toISOString())
+    .lte("available_at", now.toISOString());
+
+  if (options.emailId) {
+    fetchQuery = fetchQuery.eq("email_id", options.emailId);
+  }
+
+  const { data: items, error: fetchError } = await fetchQuery
     .order("available_at", { ascending: true })
     .limit(limit);
 
@@ -126,6 +189,9 @@ export async function runQueueWorker(): Promise<QueueWorkerResult> {
 
   let succeeded = 0;
   let failed = 0;
+  const touchedEmailIds = items
+    .map((item) => item.email_id)
+    .filter((emailId): emailId is string => Boolean(emailId));
 
   for (const item of items) {
     const payloadParsed = MailQueuePayloadSchema.safeParse(item.payload);
@@ -213,6 +279,8 @@ export async function runQueueWorker(): Promise<QueueWorkerResult> {
     processed: items.length,
     failed,
   });
+
+  await reconcileEmailStatuses(touchedEmailIds);
 
   return {
     ok: true,

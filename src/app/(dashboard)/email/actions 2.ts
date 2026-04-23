@@ -2,12 +2,11 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { getServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { createServerSupabaseClient } from "@/lib/supabaseServer";
 import { sendEmail } from "@/lib/emailProvider";
-import { DAILY_SEND_LIMIT, getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
+import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
 import { logAudit } from "@/lib/logger";
-import { runQueueWorker } from "@/lib/queueWorker";
 import type { Json } from "@/supabase/types";
 
 const SaveDraftSchema = z.object({
@@ -25,7 +24,6 @@ const QueueCampaignSchema = z.object({
   emailId: z.string().uuid(),
   listId: z.string().uuid(),
   skipDuplicateCheck: z.string().optional(),
-  excludeRecipients: z.string().optional(),
 });
 
 const SendTestSchema = z.object({
@@ -46,9 +44,10 @@ const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
 // caught unauthenticated requests, but this is a second line of defence for
 // direct server-action calls.
 async function requireAuthUserId(): Promise<string> {
-  const auth = await getServerAuthContext();
-  if (!auth?.userId) throw new Error("Unauthorized");
-  return auth.userId;
+  const supabase = await createServerSupabaseClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user?.id) throw new Error("Unauthorized");
+  return user.id;
 }
 
 type DraftPayload = {
@@ -62,31 +61,12 @@ type DraftPayload = {
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
 
 const parseRecipients = (input: string) =>
   input
     .split(/[,\n]/)
     .map((r) => r.trim())
     .filter((r) => EMAIL_RE.test(r));
-
-const normalizeScheduledAt = (value: string | undefined) => {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-
-  const date = new Date(trimmed);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
-};
-
-function toActionErrorMessage(err: unknown, fallback: string): string {
-  if (!err) return fallback;
-  if (typeof err === "string") return err;
-  if (err instanceof Error) return err.message || fallback;
-  if (typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
-    return (err as { message: string }).message;
-  }
-  return fallback;
-}
 
 export async function saveDraftAction(formData: FormData) {
   const userId = await requireAuthUserId();
@@ -122,7 +102,7 @@ export async function saveDraftAction(formData: FormData) {
     html: payload.html,
     text: payload.html.replace(/<[^>]+>/g, " "),
     status: "draft" as const,
-    scheduled_at: normalizeScheduledAt(payload.scheduledAt),
+    scheduled_at: payload.scheduledAt ? new Date(payload.scheduledAt).toISOString() : null,
     campaigns: payload.campaigns?.split(",").map((c) => c.trim()).filter(Boolean) ?? [],
     tags: payload.tags?.split(",").map((t) => t.trim()).filter(Boolean) ?? [],
   };
@@ -223,135 +203,14 @@ export type QueueCampaignOk = {
 export type QueueCampaignConfirm = {
   ok: false;
   requiresConfirmation: true;
+  // > 0  →  this exact email was already succeeded-sent to some of these people
   duplicateCount: number;
+  // > 0  →  *any* email was sent to this list in the last 30 days
   recentlySentCount: number;
-  warningGroups: {
-    key: string;
-    date: string;
-    recipientAddresses: string[];
-    exactRecipientAddresses: string[];
-    otherRecentRecipientAddresses: string[];
-  }[];
+  sampleAddresses: string[];  // up to 8 examples of duplicated addresses
   listName?: string;
 };
 export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm;
-
-const normalizeEmailAddress = (value: string | null | undefined) =>
-  value?.trim().toLowerCase() ?? "";
-
-type WarningAccumulator = {
-  key: string;
-  date: string;
-  recipientAddresses: Set<string>;
-  exactRecipientAddresses: Set<string>;
-  otherRecentRecipientAddresses: Set<string>;
-};
-
-async function loadActiveListMembers(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
-  listId: string,
-) {
-  const PAGE = 1000;
-  const members: { email: string }[] = [];
-
-  for (let from = 0; ; from += PAGE) {
-    const { data: memberPage, error: pageError } = await supabase
-      .from("list_members")
-      .select("email")
-      .eq("list_id", listId)
-      .eq("status", "active")
-      .range(from, from + PAGE - 1);
-
-    if (pageError) throw pageError;
-    if (!memberPage || memberPage.length === 0) break;
-
-    members.push(...memberPage);
-    if (memberPage.length < PAGE) break;
-  }
-
-  return members;
-}
-
-async function buildQueueWarningSummary(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
-  emailId: string,
-  listId: string,
-  activeMemberEmails: string[],
-) {
-  const memberSet = new Set(activeMemberEmails.map((email) => normalizeEmailAddress(email)));
-  const thirtyDaysAgoDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
-
-  const [{ data: exactRows }, { data: recentRows }] = await Promise.all([
-    supabase
-      .from("mail_queue")
-      .select("id, email_id, payload, send_date, created_at")
-      .eq("email_id", emailId)
-      .eq("list_id", listId)
-      .eq("status", "succeeded"),
-    supabase
-      .from("mail_queue")
-      .select("id, email_id, payload, send_date, created_at")
-      .eq("list_id", listId)
-      .eq("status", "succeeded")
-      .gte("send_date", thirtyDaysAgoDate),
-  ]);
-
-  const seenRowIds = new Set<string>();
-  const groups = new Map<string, WarningAccumulator>();
-  const duplicateRecipients = new Set<string>();
-  const recentRecipients = new Set<string>();
-
-  const addRow = (
-    row: { id: string; email_id: string | null; payload: Json; send_date: string | null; created_at: string | null },
-    source: "exact" | "recent",
-  ) => {
-    if (seenRowIds.has(row.id)) return;
-    seenRowIds.add(row.id);
-
-    const recipient = normalizeEmailAddress((row.payload as { to?: string } | null)?.to);
-    if (!recipient || !memberSet.has(recipient)) return;
-
-    const date = row.send_date ?? row.created_at?.slice(0, 10) ?? "unknown";
-    const existing = groups.get(date) ?? {
-      key: date,
-      date,
-      recipientAddresses: new Set<string>(),
-      exactRecipientAddresses: new Set<string>(),
-      otherRecentRecipientAddresses: new Set<string>(),
-    };
-
-    existing.recipientAddresses.add(recipient);
-
-    if (row.email_id === emailId) {
-      existing.exactRecipientAddresses.add(recipient);
-      duplicateRecipients.add(recipient);
-    } else if (source === "recent") {
-      existing.otherRecentRecipientAddresses.add(recipient);
-      recentRecipients.add(recipient);
-    }
-
-    groups.set(date, existing);
-  };
-
-  for (const row of exactRows ?? []) addRow(row, "exact");
-  for (const row of recentRows ?? []) addRow(row, "recent");
-
-  return {
-    duplicateCount: duplicateRecipients.size,
-    recentlySentCount: recentRecipients.size,
-    warningGroups: [...groups.values()]
-      .sort((a, b) => b.date.localeCompare(a.date))
-      .map((group) => ({
-        key: group.key,
-        date: group.date,
-        recipientAddresses: [...group.recipientAddresses].sort(),
-        exactRecipientAddresses: [...group.exactRecipientAddresses].sort(),
-        otherRecentRecipientAddresses: [...group.otherRecentRecipientAddresses].sort(),
-      })),
-  };
-}
 
 /**
  * Queue a campaign send to a mailing list, automatically splitting across
@@ -369,33 +228,18 @@ async function buildQueueWarningSummary(
  * Idempotent: throws if pending/processing rows already exist for this email.
  */
 export async function queueCampaignAction(formData: FormData): Promise<QueueCampaignResult> {
-  try {
-    const userId = await requireAuthUserId();
-    const parsed = QueueCampaignSchema.safeParse({
-      emailId: formData.get("emailId"),
-      listId: formData.get("listId"),
-      skipDuplicateCheck: formData.get("skipDuplicateCheck") ?? undefined,
-      excludeRecipients: formData.get("excludeRecipients") ?? undefined,
-    });
-    if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
+  const userId = await requireAuthUserId();
 
-    const supabase = getSupabaseAdmin();
-    const { emailId, listId } = parsed.data;
-    const skipDuplicateCheck = parsed.data.skipDuplicateCheck === "true";
-    const excludedRecipients = (() => {
-      if (!parsed.data.excludeRecipients) return new Set<string>();
-      try {
-        const parsedJson = JSON.parse(parsed.data.excludeRecipients) as unknown;
-        if (!Array.isArray(parsedJson)) return new Set<string>();
-        return new Set(
-          parsedJson
-            .map((value) => normalizeEmailAddress(typeof value === "string" ? value : ""))
-            .filter(Boolean),
-        );
-      } catch {
-        return new Set<string>();
-      }
-    })();
+  const parsed = QueueCampaignSchema.safeParse({
+    emailId: formData.get("emailId"),
+    listId: formData.get("listId"),
+    skipDuplicateCheck: formData.get("skipDuplicateCheck") ?? undefined,
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
+
+  const supabase = getSupabaseAdmin();
+  const { emailId, listId } = parsed.data;
+  const skipDuplicateCheck = parsed.data.skipDuplicateCheck === "true";
 
   // Load the email draft — also verify ownership so one user can't queue
   // another user's draft (defense-in-depth; RLS covers the DB layer).
@@ -421,19 +265,43 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     );
   }
 
-  const members = await loadActiveListMembers(supabase, listId);
-  if (members.length === 0) throw new Error("List has no active members");
-
   // ── Pre-flight duplicate / recent-contact check ─────────────────────────
   if (!skipDuplicateCheck) {
-    const warningSummary = await buildQueueWarningSummary(
-      supabase,
-      emailId,
-      listId,
-      members.map((member) => member.email),
-    );
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-    if (warningSummary.warningGroups.length > 0) {
+    // Check 1 (hard): same email already sent to someone on this list, ever.
+    const { count: duplicateCount } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("email_id", emailId)
+      .eq("list_id", listId)
+      .eq("status", "succeeded");
+
+    // Check 2 (soft): any email sent to this list in the last 30 days.
+    const { count: recentlySentCount } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("list_id", listId)
+      .eq("status", "succeeded")
+      .gte("created_at", thirtyDaysAgo);
+
+    if ((duplicateCount ?? 0) > 0 || (recentlySentCount ?? 0) > 0) {
+      // Fetch a sample of addresses that would be duplicated.
+      let sampleAddresses: string[] = [];
+      if ((duplicateCount ?? 0) > 0) {
+        const { data: sampleRows } = await supabase
+          .from("mail_queue")
+          .select("payload")
+          .eq("email_id", emailId)
+          .eq("list_id", listId)
+          .eq("status", "succeeded")
+          .limit(8);
+        sampleAddresses = (sampleRows ?? [])
+          .map((r) => (r.payload as { to?: string })?.to ?? "")
+          .filter(Boolean);
+      }
+
+      // Fetch the list name for the confirmation dialog.
       const { data: listRow } = await supabase
         .from("lists")
         .select("name")
@@ -445,45 +313,50 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
         action: "campaign.duplicate_check_triggered",
         entity: "emails",
         entityId: emailId,
-        payload: {
-          listId,
-          duplicateCount: warningSummary.duplicateCount,
-          recentlySentCount: warningSummary.recentlySentCount,
-          warningGroups: warningSummary.warningGroups.map((group) => ({
-            date: group.date,
-            recipients: group.recipientAddresses.length,
-            exactRecipients: group.exactRecipientAddresses.length,
-            otherRecentRecipients: group.otherRecentRecipientAddresses.length,
-          })),
-        },
+        payload: { listId, duplicateCount, recentlySentCount },
       }).catch(console.error);
 
       return {
         ok: false,
         requiresConfirmation: true,
-        duplicateCount: warningSummary.duplicateCount,
-        recentlySentCount: warningSummary.recentlySentCount,
-        warningGroups: warningSummary.warningGroups,
+        duplicateCount: duplicateCount ?? 0,
+        recentlySentCount: recentlySentCount ?? 0,
+        sampleAddresses,
         listName: listRow?.name,
       };
     }
   }
 
-  const membersToQueue = members.filter(
-    (member) => !excludedRecipients.has(normalizeEmailAddress(member.email)),
-  );
-
-  if (membersToQueue.length === 0) {
-    throw new Error("All recipients were excluded. Nothing to queue.");
+  // Load active list members — paginate to bypass PostgREST's 1000-row default cap.
+  const PAGE = 1000;
+  const members: { email: string }[] = [];
+  for (let from = 0; ; from += PAGE) {
+    const { data: memberPage, error: pageError } = await supabase
+      .from("list_members")
+      .select("email")
+      .eq("list_id", listId)
+      .eq("status", "active")
+      .range(from, from + PAGE - 1);
+    if (pageError) throw pageError;
+    if (!memberPage || memberPage.length === 0) break;
+    members.push(...memberPage);
+    if (memberPage.length < PAGE) break;
   }
+  if (members.length === 0) throw new Error("List has no active members");
 
+  // Determine the start date, respecting scheduled_at if it's in the future.
   const today = todayUTC();
-  const alreadySentToday = await getDailySentCount(today);
-  const schedule = buildSendSchedule(membersToQueue.length, alreadySentToday, today);
-  const campaignLabel = `${emailId}:${today}`;
+  const scheduledDate = email.scheduled_at
+    ? email.scheduled_at.slice(0, 10)
+    : null;
+  const startDate = scheduledDate && scheduledDate > today ? scheduledDate : today;
 
-  // Prebuild the queue, but keep everything on hold until the operator hits
-  // "Send Now" for this email.
+  // For a future start date today's already-sent count is irrelevant (0).
+  const alreadySentOnStartDate = startDate === today ? await getDailySentCount(today) : 0;
+  const schedule = buildSendSchedule(members.length, alreadySentOnStartDate, startDate);
+  const campaignLabel = `${emailId}:${startDate}`;
+
+  // Build mail_queue rows, assigning each recipient to the right calendar day.
   const queueRows: {
     email_id: string;
     list_id: string;
@@ -494,24 +367,45 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     campaign_label: string;
   }[] = [];
 
-  for (const member of membersToQueue) {
-    queueRows.push({
-      email_id: emailId,
-      list_id: listId,
-      payload: {
-        from: email.from_address,
-        to: member.email,
-        subject: email.subject,
-        html: email.html,
-        text: email.text ?? undefined,
-        tags: email.tags ?? [],
-        campaigns: email.campaigns ?? [],
-      },
-      status: "pending",
-      available_at: QUEUE_HOLD_AT,
-      send_date: null,
-      campaign_label: campaignLabel,
-    });
+  let memberIndex = 0;
+  for (const slot of schedule) {
+    let availableAt: string;
+
+    if (slot.date === today) {
+      // Today's batch: send now, but if a specific time was scheduled use that.
+      if (email.scheduled_at && email.scheduled_at > new Date().toISOString()) {
+        availableAt = email.scheduled_at;
+      } else {
+        availableAt = new Date().toISOString();
+      }
+    } else if (slot.date === scheduledDate && email.scheduled_at) {
+      // First day of a future campaign: honor the scheduled time.
+      availableAt = email.scheduled_at;
+    } else {
+      // Subsequent days: midnight + 5 min UTC.
+      availableAt = `${slot.date}T00:05:00.000Z`;
+    }
+
+    for (let i = 0; i < slot.count; i++) {
+      const member = members[memberIndex++];
+      queueRows.push({
+        email_id: emailId,
+        list_id: listId,
+        payload: {
+          from: email.from_address,
+          to: member.email,
+          subject: email.subject,
+          html: email.html,
+          text: email.text ?? undefined,
+          tags: email.tags ?? [],
+          campaigns: email.campaigns ?? [],
+        },
+        status: "pending",
+        available_at: availableAt,
+        send_date: null,
+        campaign_label: campaignLabel,
+      });
+    }
   }
 
   // Upsert in batches of 500 to stay within Supabase payload limits.
@@ -535,23 +429,20 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     entityId: emailId,
     payload: {
       listId,
-      totalRecipients: membersToQueue.length,
+      totalRecipients: members.length,
       daysNeeded: schedule.length,
-      startDate: today,
-      mode: "queued_for_manual_send",
+      startDate,
     },
   }).catch(console.error);
 
   revalidatePath("/email/schedule");
+
   return {
     ok: true as const,
-    totalRecipients: membersToQueue.length,
+    totalRecipients: members.length,
     daysNeeded: schedule.length,
     schedule: schedule.map((s) => ({ date: s.date, count: s.count })),
   };
-  } catch (err) {
-    throw new Error(toActionErrorMessage(err, "Unable to queue this campaign. Please verify the list and try again."));
-  }
 }
 
 export async function sendTestAction(formData: FormData) {
@@ -645,7 +536,27 @@ export async function sendTestAction(formData: FormData) {
 // ── Manually trigger the queue worker ───────────────────────────────────────
 export async function triggerQueueAction(): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
   await requireAuthUserId();
-  const data = await runQueueWorker();
+
+  const base =
+    process.env.APP_BASE_URL ??
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
+  const secret = process.env.CRON_SECRET ?? "";
+
+  const res = await fetch(`${base}/api/email/queue`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
+    },
+    cache: "no-store",
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Queue worker returned ${res.status}: ${text}`);
+  }
+
+  const data = await res.json();
   revalidatePath("/email/schedule");
   revalidatePath("/email/sends");
   return {
@@ -654,126 +565,6 @@ export async function triggerQueueAction(): Promise<{ processed: number; succeed
     failed: data.failed ?? 0,
     message: data.message ?? `Processed ${data.processed ?? 0} items`,
   };
-}
-
-export async function sendQueuedEmailAction(formData: FormData) {
-  const userId = await requireAuthUserId();
-
-  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
-  if (!parsed.success) throw new Error("Invalid email id");
-
-  const { id } = parsed.data;
-  const supabase = getSupabaseAdmin();
-
-  const { data: owned } = await supabase
-    .from("emails")
-    .select("id, status")
-    .eq("id", id)
-    .eq("author_id", userId)
-    .maybeSingle();
-  if (!owned) throw new Error("Email not found");
-
-  const sentToday = await getDailySentCount();
-  const remainingToday = Math.max(0, DAILY_SEND_LIMIT - sentToday);
-  if (remainingToday === 0) {
-    throw new Error(`Daily cap of ${DAILY_SEND_LIMIT.toLocaleString()} reached. Nothing can be sent right now.`);
-  }
-
-  const { data: queuedRows, error: queuedError } = await supabase
-    .from("mail_queue")
-    .select("id")
-    .eq("email_id", id)
-    .eq("status", "pending")
-    .order("created_at", { ascending: true })
-    .limit(remainingToday);
-  if (queuedError) throw queuedError;
-  if (!queuedRows?.length) throw new Error("No queued recipients are ready for this email.");
-
-  const queueIds = queuedRows.map((row) => row.id);
-  const nowIso = new Date().toISOString();
-
-  const { error: releaseError } = await supabase
-    .from("mail_queue")
-    .update({ available_at: nowIso, updated_at: nowIso })
-    .in("id", queueIds);
-  if (releaseError) throw releaseError;
-
-  await supabase
-    .from("emails")
-    .update({ status: "sending" })
-    .eq("id", id);
-
-  const result = await runQueueWorker({ emailId: id });
-
-  const { count: remainingQueued } = await supabase
-    .from("mail_queue")
-    .select("id", { count: "exact", head: true })
-    .eq("email_id", id)
-    .in("status", ["pending", "processing"]);
-
-  logAudit({
-    userId,
-    action: "campaign.send_now",
-    entity: "emails",
-    entityId: id,
-    payload: {
-      released: queueIds.length,
-      processed: result.processed,
-      succeeded: result.succeeded,
-      failed: result.failed,
-      remainingQueued: remainingQueued ?? 0,
-    },
-  }).catch(console.error);
-
-  revalidatePath("/email/schedule");
-  revalidatePath("/email/sends");
-
-  return {
-    processed: result.processed,
-    succeeded: result.succeeded,
-    failed: result.failed,
-    remainingQueued: remainingQueued ?? 0,
-  };
-}
-
-export async function editQueuedEmailAction(formData: FormData) {
-  const userId = await requireAuthUserId();
-
-  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
-  if (!parsed.success) throw new Error("Invalid email id");
-  const { id } = parsed.data;
-  const supabase = getSupabaseAdmin();
-
-  const { data: owned } = await supabase
-    .from("emails")
-    .select("id")
-    .eq("id", id)
-    .eq("author_id", userId)
-    .maybeSingle();
-  if (!owned) throw new Error("Email not found");
-
-  await supabase
-    .from("mail_queue")
-    .delete()
-    .eq("email_id", id)
-    .in("status", ["pending", "processing"]);
-
-  const { error } = await supabase
-    .from("emails")
-    .update({ status: "draft", scheduled_at: null })
-    .eq("id", id);
-  if (error) throw error;
-
-  logAudit({
-    userId,
-    action: "email.edit_from_queue",
-    entity: "emails",
-    entityId: id,
-  }).catch(console.error);
-
-  revalidatePath("/email/schedule");
-  revalidatePath("/email/composer");
-  return { href: `/email/composer?id=${id}` };
 }
 
 // ── Requeue dead (permanently failed) items for one email ───────────────────
@@ -850,13 +641,13 @@ export async function cancelEmailAction(formData: FormData) {
 
   const { error } = await supabase
     .from("emails")
-    .update({ status: "draft", scheduled_at: null })
+    .update({ status: "canceled" })
     .eq("id", id);
   if (error) throw error;
 
   logAudit({
     userId,
-    action: "email.unqueued",
+    action: "email.canceled",
     entity: "emails",
     entityId: id,
   }).catch(console.error);
