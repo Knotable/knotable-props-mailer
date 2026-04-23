@@ -2,11 +2,13 @@ import { createServerAppClient } from "@/lib/authAccess";
 import { ComposerForm } from "./composer-form";
 
 type Props = {
-  searchParams: Promise<{ id?: string }>;
+  searchParams: Promise<{ id?: string; cloneId?: string }>;
 };
 
 export default async function ComposerPage({ searchParams }: Props) {
-  const { id } = await searchParams;
+  const { id, cloneId } = await searchParams;
+  const sourceId = cloneId ?? id;
+  const templateMode = Boolean(cloneId);
   const supabase = await createServerAppClient();
 
   // Fetch draft if editing
@@ -22,23 +24,23 @@ export default async function ComposerPage({ searchParams }: Props) {
     list_id: string | null;
   } | null = null;
 
-  if (id) {
+  if (sourceId) {
     const [{ data: emailRow }, { data: recipientRows }, { data: queueRow }] =
       await Promise.all([
         supabase
           .from("emails")
           .select("id, from_address, subject, html, scheduled_at, campaigns, tags")
-          .eq("id", id)
+          .eq("id", sourceId)
           .single(),
         supabase
           .from("email_recipients")
           .select("recipient_address")
-          .eq("email_id", id),
+          .eq("email_id", sourceId),
         // Check if this draft was already queued to a list
         supabase
           .from("mail_queue")
           .select("list_id")
-          .eq("email_id", id)
+          .eq("email_id", sourceId)
           .not("list_id", "is", null)
           .limit(1)
           .maybeSingle(),
@@ -63,6 +65,7 @@ export default async function ComposerPage({ searchParams }: Props) {
     <ComposerForm
       draft={draft}
       lists={lists ?? []}
+      templateMode={templateMode}
     />
   );
 }

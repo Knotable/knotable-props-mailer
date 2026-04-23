@@ -21,11 +21,11 @@ type Draft = {
   list_id: string | null;
 };
 
-type Props = { draft: Draft | null; lists: List[] };
+type Props = { draft: Draft | null; lists: List[]; templateMode?: boolean };
 
 type AutosaveState = "idle" | "pending" | "saving" | "saved" | "error";
 
-export function ComposerForm({ draft, lists }: Props) {
+export function ComposerForm({ draft, lists, templateMode = false }: Props) {
   const router = useRouter();
   const initialList = draft?.list_id
     ? (lists.find((l) => l.id === draft.list_id) ?? null)
@@ -36,7 +36,7 @@ export function ComposerForm({ draft, lists }: Props) {
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; message: string } | null>(null);
-  const [draftId, setDraftId] = useState<string | null>(draft?.id ?? null);
+  const [draftId, setDraftId] = useState<string | null>(templateMode ? null : (draft?.id ?? null));
   const [autosaveState, setAutosaveState] = useState<AutosaveState>("idle");
   // Duplicate-send confirmation state — set when the server returns requiresConfirmation:true.
   const [dupWarning, setDupWarning] = useState<QueueCampaignConfirm | null>(null);
@@ -51,13 +51,14 @@ export function ComposerForm({ draft, lists }: Props) {
 
   // Persist / restore last open draft across reloads
   useEffect(() => {
+    if (templateMode) return;
     if (draft?.id) {
       localStorage.setItem(LAST_DRAFT_KEY, draft.id);
     } else {
       const lastId = localStorage.getItem(LAST_DRAFT_KEY);
       if (lastId) router.replace(`/email/composer?id=${lastId}`);
     }
-  }, [draft?.id, router]);
+  }, [draft?.id, router, templateMode]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -151,14 +152,15 @@ export function ComposerForm({ draft, lists }: Props) {
   };
 
   // ── Core queue helper (used by both first-send and "send anyway") ─────────
-  const runQueueCampaign = async (skipDuplicateCheck: boolean) => {
-    if (!formRef.current || !selectedList || !draftId) return;
+  const runQueueCampaign = async (skipDuplicateCheck: boolean, emailIdOverride?: string) => {
+    const emailId = emailIdOverride ?? draftId;
+    if (!formRef.current || !selectedList || !emailId) return;
     cancelAutosave();
     setSending(true);
     setBanner(null);
     setDupWarning(null);
     const fd = new FormData(formRef.current);
-    fd.set("emailId", draftId);
+    fd.set("emailId", emailId);
     fd.set("listId", selectedList.id);
     if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
 
@@ -173,9 +175,10 @@ export function ComposerForm({ draft, lists }: Props) {
           ok: true,
           message: `Queued ${res.totalRecipients.toLocaleString()} emails to "${selectedList.name}"${res.daysNeeded > 1 ? ` across ${res.daysNeeded} days` : ""}.`,
         });
+        router.push("/email/sends");
       }
     } catch (err) {
-      setBanner({ ok: false, message: err instanceof Error ? err.message : "Send failed." });
+      setBanner({ ok: false, message: getActionErrorMessage(err, "Send failed.") });
     } finally {
       setSending(false);
     }
@@ -187,16 +190,29 @@ export function ComposerForm({ draft, lists }: Props) {
     cancelAutosave();
     setBanner(null);
     setDupWarning(null);
+    const fd = new FormData(formRef.current);
 
     if (selectedList) {
-      if (!draftId) {
-        setBanner({ ok: false, message: "Save the draft before sending to a list." });
+      let emailId = draftId;
+      if (!emailId) {
+        try {
+          const saveRes = await saveDraftAction(fd);
+          emailId = saveRes.id;
+          setDraftId(emailId);
+          localStorage.setItem(LAST_DRAFT_KEY, emailId);
+          router.replace(`/email/composer?id=${emailId}`, { scroll: false });
+        } catch (err) {
+          setBanner({ ok: false, message: getActionErrorMessage(err, "Unable to prepare this email for sending.") });
+          return;
+        }
+      }
+      if (!emailId) {
+        setBanner({ ok: false, message: "Unable to create a draft for sending. Please try again." });
         return;
       }
-      await runQueueCampaign(false);
+      await runQueueCampaign(false, emailId);
     } else {
       setSending(true);
-      const fd = new FormData(formRef.current);
       try {
         const res = await sendTestAction(fd);
         const n = res.sent;
@@ -204,8 +220,9 @@ export function ComposerForm({ draft, lists }: Props) {
           ok: true,
           message: `Sent to ${n} recipient${n !== 1 ? "s" : ""}.`,
         });
+        router.push("/email/sends");
       } catch (err) {
-        setBanner({ ok: false, message: err instanceof Error ? err.message : "Send failed." });
+        setBanner({ ok: false, message: getActionErrorMessage(err, "Send failed.") });
       } finally {
         setSending(false);
       }
@@ -219,7 +236,7 @@ export function ComposerForm({ draft, lists }: Props) {
     <div className="space-y-6">
       <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">
-          {draft ? "Editing Draft" : "Draft"}
+          {templateMode ? "From Existing Email" : draft ? "Editing Draft" : "Draft"}
         </p>
         <h2 className="text-2xl font-semibold text-slate-900">Compose Email</h2>
       </header>
@@ -480,4 +497,14 @@ export function ComposerForm({ draft, lists }: Props) {
       </form>
     </div>
   );
+}
+
+function getActionErrorMessage(err: unknown, fallback: string): string {
+  if (!(err instanceof Error)) return fallback;
+
+  if (err.message.includes("Server Components render")) {
+    return "The server returned an internal error while sending this email. Please try again. If it keeps failing, contact support with the current timestamp.";
+  }
+
+  return err.message || fallback;
 }

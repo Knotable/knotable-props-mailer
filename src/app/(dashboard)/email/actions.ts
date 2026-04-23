@@ -76,6 +76,16 @@ const normalizeScheduledAt = (value: string | undefined) => {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
+function toActionErrorMessage(err: unknown, fallback: string): string {
+  if (!err) return fallback;
+  if (typeof err === "string") return err;
+  if (err instanceof Error) return err.message || fallback;
+  if (typeof err === "object" && "message" in err && typeof (err as { message?: unknown }).message === "string") {
+    return (err as { message: string }).message;
+  }
+  return fallback;
+}
+
 export async function saveDraftAction(formData: FormData) {
   const userId = await requireAuthUserId();
 
@@ -236,18 +246,19 @@ export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm;
  * Idempotent: throws if pending/processing rows already exist for this email.
  */
 export async function queueCampaignAction(formData: FormData): Promise<QueueCampaignResult> {
-  const userId = await requireAuthUserId();
+  try {
+    const userId = await requireAuthUserId();
 
-  const parsed = QueueCampaignSchema.safeParse({
-    emailId: formData.get("emailId"),
-    listId: formData.get("listId"),
-    skipDuplicateCheck: formData.get("skipDuplicateCheck") ?? undefined,
-  });
-  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
+    const parsed = QueueCampaignSchema.safeParse({
+      emailId: formData.get("emailId"),
+      listId: formData.get("listId"),
+      skipDuplicateCheck: formData.get("skipDuplicateCheck") ?? undefined,
+    });
+    if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
 
-  const supabase = getSupabaseAdmin();
-  const { emailId, listId } = parsed.data;
-  const skipDuplicateCheck = parsed.data.skipDuplicateCheck === "true";
+    const supabase = getSupabaseAdmin();
+    const { emailId, listId } = parsed.data;
+    const skipDuplicateCheck = parsed.data.skipDuplicateCheck === "true";
 
   // Load the email draft — also verify ownership so one user can't queue
   // another user's draft (defense-in-depth; RLS covers the DB layer).
@@ -445,12 +456,15 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
 
   revalidatePath("/email/schedule");
 
-  return {
-    ok: true as const,
-    totalRecipients: members.length,
-    daysNeeded: schedule.length,
-    schedule: schedule.map((s) => ({ date: s.date, count: s.count })),
-  };
+    return {
+      ok: true as const,
+      totalRecipients: members.length,
+      daysNeeded: schedule.length,
+      schedule: schedule.map((s) => ({ date: s.date, count: s.count })),
+    };
+  } catch (err) {
+    throw new Error(toActionErrorMessage(err, "Unable to queue this campaign. Please verify the list and try again."));
+  }
 }
 
 export async function sendTestAction(formData: FormData) {
