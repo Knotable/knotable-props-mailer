@@ -1,9 +1,9 @@
 import Link from "next/link";
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { createServerAppClient } from "@/lib/authAccess";
 import { ScheduleActions, TriggerQueueButton } from "./schedule-actions";
 
 export default async function SchedulePage() {
-  const supabase = await createServerSupabaseClient();
+  const supabase = await createServerAppClient();
 
   // Show drafts and anything actively queued/sending. Exclude sent/failed/canceled.
   const { data: emails } = await supabase

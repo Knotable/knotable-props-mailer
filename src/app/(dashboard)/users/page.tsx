@@ -1,7 +1,7 @@
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { createServerAppClient } from "@/lib/authAccess";
 
 export default async function UsersPage() {
-  const supabase = await createServerSupabaseClient();
+  const supabase = await createServerAppClient();
   const { data: profiles } = await supabase.from("profiles").select("email, role, created_at");
 
   return (

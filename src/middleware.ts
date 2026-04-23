@@ -1,13 +1,16 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-
-const ALLOWED_EMAIL = process.env.ALLOWED_EMAIL ?? "a@sarva.co";
+import { ALLOWED_EMAIL, requestHasBypassAccess } from "@/lib/authAccess";
 
 export async function middleware(request: NextRequest) {
   const response = NextResponse.next({
     request: { headers: request.headers },
   });
+
+  if (requestHasBypassAccess(request)) {
+    return response;
+  }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;

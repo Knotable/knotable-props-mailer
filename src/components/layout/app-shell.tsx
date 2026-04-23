@@ -43,9 +43,9 @@ function LogoutButton() {
   );
 }
 
-type AppShellProps = PropsWithChildren<{ userEmail: string | null }>;
+type AppShellProps = PropsWithChildren<{ userEmail: string | null; isBypass?: boolean }>;
 
-export const AppShell = ({ children, userEmail }: AppShellProps) => {
+export const AppShell = ({ children, userEmail, isBypass = false }: AppShellProps) => {
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="border-b bg-white">
@@ -58,7 +58,10 @@ export const AppShell = ({ children, userEmail }: AppShellProps) => {
             {userEmail ? (
               <>
                 <p>Signed in as</p>
-                <p className="font-medium text-slate-700">{userEmail}</p>
+                <p className="font-medium text-slate-700">
+                  {userEmail}
+                  {isBypass ? " (bypass)" : ""}
+                </p>
                 <LogoutButton />
               </>
             ) : (

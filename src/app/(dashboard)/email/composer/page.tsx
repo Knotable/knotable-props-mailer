@@ -1,4 +1,4 @@
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { createServerAppClient } from "@/lib/authAccess";
 import { ComposerForm } from "./composer-form";
 
 type Props = {
@@ -7,7 +7,7 @@ type Props = {
 
 export default async function ComposerPage({ searchParams }: Props) {
   const { id } = await searchParams;
-  const supabase = await createServerSupabaseClient();
+  const supabase = await createServerAppClient();
 
   // Fetch draft if editing
   let draft: {

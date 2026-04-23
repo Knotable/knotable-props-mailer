@@ -1,4 +1,4 @@
-import { sendLoginCode, verifyLoginCode } from "./actions";
+import { bypassLogin, sendLoginCode, verifyLoginCode } from "./actions";
 
 type LoginPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -12,6 +12,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const email = pickParam(params.email).trim().toLowerCase();
   const sent = pickParam(params.sent) === "1";
   const error = pickParam(params.error);
+  const trace = pickParam(params.trace);
   const rateLimitMatch = error.match(/^rate:(\d+)$/);
 
   const errorMessage =
@@ -27,6 +28,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       ? "Paste the code from the email to finish signing in."
       : error === "invalid-code"
       ? "That code didn’t work. Request a fresh one and try again."
+      : error === "bypass-failed"
+      ? "Bypass password didn’t match."
       : error === "token" || error === "use-code"
       ? "Magic links are no longer supported here. Request a sign-in code instead."
       : null;
@@ -51,7 +54,12 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         {sent ? (
           <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
             Sign-in code sent to <span className="font-medium">{email}</span>.
+            {trace ? <p className="mt-1 text-xs text-emerald-800/80">Trace: {trace}</p> : null}
           </div>
+        ) : null}
+
+        {!sent && trace && errorMessage ? (
+          <p className="text-xs text-slate-400">Trace: {trace}</p>
         ) : null}
 
         <form action={sendLoginCode} className="space-y-4">
@@ -89,6 +97,28 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             Verify code
           </button>
         </form>
+
+        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4">
+          <p className="text-sm font-semibold text-slate-900">Bypass</p>
+          <p className="mt-1 text-xs text-slate-500">
+            Emergency fallback if Supabase auth is rate-limiting or failing.
+          </p>
+          <form action={bypassLogin} className="mt-3 space-y-3">
+            <label className="block text-sm font-medium text-slate-700">
+              Password
+              <input
+                name="password"
+                type="password"
+                required
+                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2"
+                placeholder="Enter bypass password"
+              />
+            </label>
+            <button className="w-full rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900">
+              Enter with bypass
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );

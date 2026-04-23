@@ -2,11 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { getServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
 import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
 import { logAudit } from "@/lib/logger";
+import { runQueueWorker } from "@/lib/queueWorker";
 import type { Json } from "@/supabase/types";
 
 const SaveDraftSchema = z.object({
@@ -44,10 +45,9 @@ const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
 // caught unauthenticated requests, but this is a second line of defence for
 // direct server-action calls.
 async function requireAuthUserId(): Promise<string> {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user?.id) throw new Error("Unauthorized");
-  return user.id;
+  const auth = await getServerAuthContext();
+  if (!auth?.userId) throw new Error("Unauthorized");
+  return auth.userId;
 }
 
 type DraftPayload = {
@@ -67,6 +67,14 @@ const parseRecipients = (input: string) =>
     .split(/[,\n]/)
     .map((r) => r.trim())
     .filter((r) => EMAIL_RE.test(r));
+
+const normalizeScheduledAt = (value: string | undefined) => {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  const date = new Date(trimmed);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+};
 
 export async function saveDraftAction(formData: FormData) {
   const userId = await requireAuthUserId();
@@ -102,7 +110,7 @@ export async function saveDraftAction(formData: FormData) {
     html: payload.html,
     text: payload.html.replace(/<[^>]+>/g, " "),
     status: "draft" as const,
-    scheduled_at: payload.scheduledAt ? new Date(payload.scheduledAt).toISOString() : null,
+    scheduled_at: normalizeScheduledAt(payload.scheduledAt),
     campaigns: payload.campaigns?.split(",").map((c) => c.trim()).filter(Boolean) ?? [],
     tags: payload.tags?.split(",").map((t) => t.trim()).filter(Boolean) ?? [],
   };
@@ -536,27 +544,7 @@ export async function sendTestAction(formData: FormData) {
 // ── Manually trigger the queue worker ───────────────────────────────────────
 export async function triggerQueueAction(): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
   await requireAuthUserId();
-
-  const base =
-    process.env.APP_BASE_URL ??
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
-  const secret = process.env.CRON_SECRET ?? "";
-
-  const res = await fetch(`${base}/api/email/queue`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(secret ? { Authorization: `Bearer ${secret}` } : {}),
-    },
-    cache: "no-store",
-  });
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Queue worker returned ${res.status}: ${text}`);
-  }
-
-  const data = await res.json();
+  const data = await runQueueWorker();
   revalidatePath("/email/schedule");
   revalidatePath("/email/sends");
   return {

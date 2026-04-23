@@ -1,4 +1,4 @@
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { createServerAppClient } from "@/lib/authAccess";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -62,7 +62,7 @@ export default async function ListDetailPage({
   const page = Math.max(1, parseInt(pageStr ?? "1", 10));
   const offset = (page - 1) * PAGE_SIZE;
 
-  const supabase = await createServerSupabaseClient();
+  const supabase = await createServerAppClient();
 
   // Fetch list details + total member count
   const { data: list } = await supabase

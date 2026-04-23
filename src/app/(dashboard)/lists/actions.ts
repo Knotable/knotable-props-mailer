@@ -2,15 +2,14 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
+import { getServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
 import { logAudit } from "@/lib/logger";
 
 async function requireAuthUserId(): Promise<string> {
-  const supabase = await createServerSupabaseClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user?.id) throw new Error("Unauthorized");
-  return user.id;
+  const auth = await getServerAuthContext();
+  if (!auth?.userId) throw new Error("Unauthorized");
+  return auth.userId;
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

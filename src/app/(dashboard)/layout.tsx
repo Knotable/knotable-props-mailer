@@ -2,23 +2,23 @@ import { ReactNode } from "react";
 import { AppShell } from "@/components/layout/app-shell";
 import { DashboardErrorBoundary } from "@/components/layout/error-boundary";
 import { HealthBanner } from "@/components/health-banner";
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { getServerAuthContext } from "@/lib/authAccess";
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
-  // Get the real signed-in user from the session cookie.
   let userEmail: string | null = null;
+  let isBypass = false;
   try {
-    const supabase = await createServerSupabaseClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    userEmail = user?.email ?? null;
+    const auth = await getServerAuthContext();
+    userEmail = auth?.email ?? null;
+    isBypass = auth?.isBypass ?? false;
   } catch {
-    // Auth failure shouldn't break the whole layout.
+    // Auth lookup failure shouldn't break the whole layout.
   }
 
   return (
     <DashboardErrorBoundary>
       <HealthBanner />
-      <AppShell userEmail={userEmail}>{children}</AppShell>
+      <AppShell userEmail={userEmail} isBypass={isBypass}>{children}</AppShell>
     </DashboardErrorBoundary>
   );
 }

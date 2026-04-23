@@ -1,9 +1,9 @@
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { createServerAppClient } from "@/lib/authAccess";
 import { importMembersAction, upsertListAction } from "./actions";
 import Link from "next/link";
 
 export default async function ListsPage() {
-  const supabase = await createServerSupabaseClient();
+  const supabase = await createServerAppClient();
   const { data: lists } = await supabase
     .from("lists")
     .select("id, name, address, description, updated_at, list_members(count)")

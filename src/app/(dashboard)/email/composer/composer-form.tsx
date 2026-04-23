@@ -122,12 +122,9 @@ export function ComposerForm({ draft, lists }: Props) {
   };
 
   const scheduledAtLocal = (() => {
-    const now = new Date();
-    now.setSeconds(0, 0);
-    const nowStr = toDatetimeLocal(now);
-    if (!draft?.scheduled_at) return nowStr;
-    const draftStr = toDatetimeLocal(new Date(draft.scheduled_at));
-    return draftStr > nowStr ? draftStr : nowStr;
+    if (!draft?.scheduled_at) return "";
+    const draftDate = new Date(draft.scheduled_at);
+    return Number.isNaN(draftDate.getTime()) ? "" : toDatetimeLocal(draftDate);
   })();
 
   // ── Save Draft ─────────────────────────────────────────────────────────────

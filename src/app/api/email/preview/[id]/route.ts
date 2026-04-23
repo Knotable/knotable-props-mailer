@@ -8,7 +8,7 @@
  */
 
 import { NextResponse } from "next/server";
-import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { createServerAppClient } from "@/lib/authAccess";
 
 export async function GET(
   request: Request,
@@ -18,7 +18,7 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get("mode"); // "source" | null
 
-  const supabase = await createServerSupabaseClient();
+  const supabase = await createServerAppClient();
 
   const { data: email, error } = await supabase
     .from("emails")
