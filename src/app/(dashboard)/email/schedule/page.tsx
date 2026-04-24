@@ -33,33 +33,34 @@ export default async function SchedulePage() {
             return (
               <div
                 key={item.id}
-                className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"
+                className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
               >
-                {/* Left: subject + status badge */}
-                <div className="flex min-w-0 items-center gap-3">
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
-                      isDraft
-                        ? "bg-slate-100 text-slate-600"
-                        : "bg-blue-100 text-blue-700"
-                    }`}
-                  >
-                    {isDraft ? "Draft" : item.status === "sending" ? "Sending" : "Queued"}
-                  </span>
-                  <p className="truncate text-sm font-medium text-slate-800">
-                    {item.subject || "(no subject)"}
-                  </p>
+                <div className="min-w-0 space-y-2">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+                        isDraft
+                          ? "bg-slate-100 text-slate-600"
+                          : "bg-blue-100 text-blue-700"
+                      }`}
+                    >
+                      {isDraft ? "Draft" : item.status === "sending" ? "Sending" : "Queued"}
+                    </span>
+                    <p className="min-w-0 truncate text-sm font-medium text-slate-800 sm:text-base">
+                      {item.subject || "(no subject)"}
+                    </p>
+                  </div>
+
+                  <div className="text-sm text-slate-500">
+                    {isDraft
+                      ? updatedIso
+                        ? `Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
+                        : "Draft only"
+                      : "Queued for manual send"}
+                  </div>
                 </div>
 
-                <div className="shrink-0 text-sm text-slate-500">
-                  {isDraft
-                    ? updatedIso
-                      ? `Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
-                      : "Draft only"
-                    : "Queued for manual send"}
-                </div>
-
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2 lg:justify-self-end">
                   {!isDraft && (
                     <Link
                       href={`/api/email/preview/${item.id}`}
