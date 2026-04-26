@@ -85,13 +85,31 @@ export async function sendLoginCode(formData: FormData) {
   });
 
   if (error) {
+    // Supabase returns 429 with a message like "For security purposes, you can only
+    // request this after 26 seconds." — surface that as a rate-limit error so the
+    // user sees a countdown rather than a generic "couldn't send" message.
+    const retrySecondsMatch = error.message?.match(/after\s+(\d+)\s+second/i);
+    const retrySeconds = retrySecondsMatch ? parseInt(retrySecondsMatch[1], 10) : null;
+    const isRateLimit = error.status === 429 || retrySeconds !== null;
+
     await logAuthTrace(correlationId, "Login code send failed", {
       email,
       ip,
       userAgent,
       errorCode: error.status,
       errorMessage: error.message,
+      isRateLimit,
+      retrySeconds,
     });
+
+    if (isRateLimit) {
+      redirect(
+        `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=${encodeURIComponent(
+          `rate:${retrySeconds ?? 60}`,
+        )}`,
+      );
+    }
+
     redirect(
       `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=send-code`,
     );
