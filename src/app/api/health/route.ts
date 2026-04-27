@@ -253,16 +253,15 @@ export async function GET() {
     }),
   );
 
-  // ── 4. Cron frequency ─────────────────────────────────────────────────────
-  // No automatic cron is configured — queue processing is manual via the
-  // "Process Queue Now" button on the Drafts & Queued page.
+  // ── 4. Queue processing ───────────────────────────────────────────────────
+  // Queue is processed manually via the "⚡ Process Queue Now" button — no
+  // automatic cron is used. This is intentional, so always mark ok.
   checks.push({
     id: "cron_frequency",
-    label: "Queue worker frequency",
+    label: "Queue processing",
     severity: "warning",
-    ok: false,
-    message: 'No automatic cron configured. Use the "⚡ Process Queue Now" button on the Drafts & Queued page to flush pending sends manually.',
-    fix: 'Go to /email/schedule and click "⚡ Process Queue Now" whenever you have queued emails to send.\nFor automatic processing: set up an external cron at cron-job.org to POST https://knotable-props-mailer.vercel.app/api/email/queue with header Authorization: Bearer <CRON_SECRET>.',
+    ok: true,
+    message: 'Queue is processed manually via "⚡ Process Queue Now" on the Drafts & Queued page.',
   });
 
   // ── 5. SNS webhook events ─────────────────────────────────────────────────

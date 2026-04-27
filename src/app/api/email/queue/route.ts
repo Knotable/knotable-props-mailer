@@ -1,8 +1,8 @@
 /**
  * POST /api/email/queue
  *
- * Queue worker — called by Vercel Cron daily at midnight UTC (vercel.json).
- * Can also be triggered manually via triggerQueueAction on the Schedule page.
+ * Queue worker — triggered manually via triggerQueueAction on the Schedule page
+ * ("⚡ Process Queue Now" button). No automatic cron is used.
  *
  * Each invocation:
  *   1. Reclaims stuck "processing" rows (worker crash / timeout recovery).
