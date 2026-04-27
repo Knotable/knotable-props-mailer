@@ -24,6 +24,7 @@ type Draft = {
 type Props = { draft: Draft | null; lists: List[]; templateMode?: boolean };
 
 type AutosaveState = "idle" | "pending" | "saving" | "saved" | "error";
+type WarningGroup = QueueCampaignConfirm["warningGroups"][number];
 
 export function ComposerForm({ draft, lists, templateMode = false }: Props) {
   const router = useRouter();
@@ -410,14 +411,57 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
             </ul>
             {dupWarning.warningGroups.length > 0 && (
               <div>
-                <p className="text-xs font-medium text-amber-700 mb-1">Recent overlap by day:</p>
-                <ul className="text-xs text-amber-700 space-y-0.5">
-                  {dupWarning.warningGroups.slice(0, 4).map((group) => (
-                    <li key={group.key}>
-                      <span className="font-medium">{group.date}</span>: {group.recipientAddresses.length.toLocaleString()} recipient{group.recipientAddresses.length !== 1 ? "s" : ""}
-                    </li>
+                <p className="mb-2 text-xs font-medium text-amber-700">
+                  Review each send cluster to see when it went out and who already received it:
+                </p>
+                <div className="space-y-2">
+                  {dupWarning.warningGroups.map((group) => (
+                    <details
+                      key={group.key}
+                      className="overflow-hidden rounded-md border border-amber-200 bg-white"
+                    >
+                      <summary className="cursor-pointer list-none px-3 py-2 hover:bg-amber-100/60">
+                        <div className="flex flex-col gap-1 pr-6 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <p className="font-medium text-amber-950">
+                              {formatWarningTimestamp(group.receivedAt, group.date)}
+                            </p>
+                            <p className="text-xs text-amber-800">
+                              {group.subject || (group.exactRecipientAddresses.length > 0 ? "This email" : "Another email")}
+                            </p>
+                          </div>
+                          <div className="text-xs text-amber-800 sm:text-right">
+                            <p>
+                              {group.recipientAddresses.length.toLocaleString()} overlapping recipient
+                              {group.recipientAddresses.length !== 1 ? "s" : ""}
+                            </p>
+                            <p>
+                              {describeRecipientBucket(group)}
+                            </p>
+                          </div>
+                        </div>
+                      </summary>
+                      <div className="border-t border-amber-200 px-3 py-3 text-xs text-amber-900">
+                        {group.exactRecipientAddresses.length > 0 && (
+                          <div className="space-y-1">
+                            <p className="font-medium">Received this exact email</p>
+                            <p className="break-words leading-5">
+                              {group.exactRecipientAddresses.join(", ")}
+                            </p>
+                          </div>
+                        )}
+                        {group.otherRecentRecipientAddresses.length > 0 && (
+                          <div className={group.exactRecipientAddresses.length > 0 ? "mt-3 space-y-1" : "space-y-1"}>
+                            <p className="font-medium">Received another email recently</p>
+                            <p className="break-words leading-5">
+                              {group.otherRecentRecipientAddresses.join(", ")}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </details>
                   ))}
-                </ul>
+                </div>
               </div>
             )}
             <div className="flex gap-2 pt-1">
@@ -488,4 +532,42 @@ function getActionErrorMessage(err: unknown, fallback: string): string {
   }
 
   return err.message || fallback;
+}
+
+function formatWarningTimestamp(receivedAt: string | null, fallbackDate: string): string {
+  if (!receivedAt) return fallbackDate;
+
+  try {
+    return new Date(receivedAt).toLocaleString("en-GB", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return fallbackDate;
+  }
+}
+
+function describeRecipientBucket(group: WarningGroup): string {
+  const parts: string[] = [];
+
+  if (group.exactRecipientAddresses.length > 0) {
+    parts.push(
+      `${group.exactRecipientAddresses.length.toLocaleString()} exact duplicate${
+        group.exactRecipientAddresses.length !== 1 ? "s" : ""
+      }`,
+    );
+  }
+
+  if (group.otherRecentRecipientAddresses.length > 0) {
+    parts.push(
+      `${group.otherRecentRecipientAddresses.length.toLocaleString()} recent${
+        group.otherRecentRecipientAddresses.length !== 1 ? "s" : ""
+      }`,
+    );
+  }
+
+  return parts.join(" · ");
 }

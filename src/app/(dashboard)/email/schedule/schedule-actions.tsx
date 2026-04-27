@@ -3,7 +3,6 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  cancelEmailAction,
   deleteEmailAction,
   editQueuedEmailAction,
   sendQueuedEmailAction,
@@ -103,15 +102,6 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
     });
   };
 
-  const handleRemove = () => {
-    runAction(async () => {
-      const fd = new FormData();
-      fd.set("id", id);
-      await cancelEmailAction(fd);
-      setResult({ ok: true, message: "Returned to drafts." });
-    });
-  };
-
   const handleDelete = () => {
     if (!confirm(`Delete "${subject || "this draft"}"?`)) return;
     runAction(async () => {
@@ -141,13 +131,6 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
               className="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
             >
               {working ? "Working..." : "Send Now"}
-            </button>
-            <button
-              onClick={handleRemove}
-              disabled={working}
-              className="rounded-md border border-orange-200 px-3 py-1 text-xs font-medium text-orange-600 hover:bg-orange-50 disabled:opacity-50"
-            >
-              {working ? "Working..." : "Remove"}
             </button>
           </>
         )}

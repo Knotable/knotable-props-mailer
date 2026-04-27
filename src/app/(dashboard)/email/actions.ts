@@ -227,7 +227,10 @@ export type QueueCampaignConfirm = {
   recentlySentCount: number;
   warningGroups: {
     key: string;
+    emailId: string | null;
+    subject: string | null;
     date: string;
+    receivedAt: string | null;
     recipientAddresses: string[];
     exactRecipientAddresses: string[];
     otherRecentRecipientAddresses: string[];
@@ -241,7 +244,10 @@ const normalizeEmailAddress = (value: string | null | undefined) =>
 
 type WarningAccumulator = {
   key: string;
+  emailId: string | null;
+  subject: string | null;
   date: string;
+  receivedAt: string | null;
   recipientAddresses: Set<string>;
   exactRecipientAddresses: Set<string>;
   otherRecentRecipientAddresses: Set<string>;
@@ -286,17 +292,35 @@ async function buildQueueWarningSummary(
   const [{ data: exactRows }, { data: recentRows }] = await Promise.all([
     supabase
       .from("mail_queue")
-      .select("id, email_id, payload, send_date, created_at")
+      .select("id, email_id, campaign_label, payload, send_date, created_at, updated_at")
       .eq("email_id", emailId)
       .eq("list_id", listId)
       .eq("status", "succeeded"),
     supabase
       .from("mail_queue")
-      .select("id, email_id, payload, send_date, created_at")
+      .select("id, email_id, campaign_label, payload, send_date, created_at, updated_at")
       .eq("list_id", listId)
       .eq("status", "succeeded")
       .gte("send_date", thirtyDaysAgoDate),
   ]);
+
+  const relatedEmailIds = [...new Set(
+    [...(exactRows ?? []), ...(recentRows ?? [])]
+      .map((row) => row.email_id)
+      .filter((value): value is string => Boolean(value)),
+  )];
+
+  const emailSubjects = new Map<string, string | null>();
+  if (relatedEmailIds.length > 0) {
+    const { data: emailRows } = await supabase
+      .from("emails")
+      .select("id, subject")
+      .in("id", relatedEmailIds);
+
+    for (const row of emailRows ?? []) {
+      emailSubjects.set(row.id, row.subject ?? null);
+    }
+  }
 
   const seenRowIds = new Set<string>();
   const groups = new Map<string, WarningAccumulator>();
@@ -304,7 +328,15 @@ async function buildQueueWarningSummary(
   const recentRecipients = new Set<string>();
 
   const addRow = (
-    row: { id: string; email_id: string | null; payload: Json; send_date: string | null; created_at: string | null },
+    row: {
+      id: string;
+      email_id: string | null;
+      campaign_label: string | null;
+      payload: Json;
+      send_date: string | null;
+      created_at: string | null;
+      updated_at: string | null;
+    },
     source: "exact" | "recent",
   ) => {
     if (seenRowIds.has(row.id)) return;
@@ -313,14 +345,27 @@ async function buildQueueWarningSummary(
     const recipient = normalizeEmailAddress((row.payload as { to?: string } | null)?.to);
     if (!recipient || !memberSet.has(recipient)) return;
 
+    const receivedAt = row.updated_at ?? row.created_at;
     const date = row.send_date ?? row.created_at?.slice(0, 10) ?? "unknown";
-    const existing = groups.get(date) ?? {
-      key: date,
+    const clusterKey = [
+      row.email_id ?? "unknown-email",
+      row.send_date ?? "unknown-date",
+      row.campaign_label ?? "no-campaign",
+    ].join(":");
+    const existing = groups.get(clusterKey) ?? {
+      key: clusterKey,
+      emailId: row.email_id,
+      subject: row.email_id ? (emailSubjects.get(row.email_id) ?? null) : null,
       date,
+      receivedAt,
       recipientAddresses: new Set<string>(),
       exactRecipientAddresses: new Set<string>(),
       otherRecentRecipientAddresses: new Set<string>(),
     };
+
+    if (receivedAt && (!existing.receivedAt || receivedAt < existing.receivedAt)) {
+      existing.receivedAt = receivedAt;
+    }
 
     existing.recipientAddresses.add(recipient);
 
@@ -345,7 +390,10 @@ async function buildQueueWarningSummary(
       .sort((a, b) => b.date.localeCompare(a.date))
       .map((group) => ({
         key: group.key,
+        emailId: group.emailId,
+        subject: group.subject,
         date: group.date,
+        receivedAt: group.receivedAt,
         recipientAddresses: [...group.recipientAddresses].sort(),
         exactRecipientAddresses: [...group.exactRecipientAddresses].sort(),
         otherRecentRecipientAddresses: [...group.otherRecentRecipientAddresses].sort(),
