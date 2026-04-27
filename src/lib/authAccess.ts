@@ -112,10 +112,16 @@ export async function createServerAppClient() {
         return cookieStore.get(name)?.value;
       },
       set(name, value, options) {
-        cookieStore.set({ name, value, ...options });
+        // Throws when called from a Server Component (not a Server Action /
+        // Route Handler) — swallow it; middleware handles token refresh.
+        try {
+          cookieStore.set({ name, value, ...options });
+        } catch { /* Server Component context — ignore */ }
       },
       remove(name, options) {
-        cookieStore.set({ name, value: "", ...options });
+        try {
+          cookieStore.set({ name, value: "", ...options });
+        } catch { /* Server Component context — ignore */ }
       },
     },
   });
@@ -138,10 +144,14 @@ export async function getServerAuthContext(): Promise<ServerAuthContext> {
         return cookieStore.get(name)?.value;
       },
       set(name, value, options) {
-        cookieStore.set({ name, value, ...options });
+        try {
+          cookieStore.set({ name, value, ...options });
+        } catch { /* Server Component context — ignore */ }
       },
       remove(name, options) {
-        cookieStore.set({ name, value: "", ...options });
+        try {
+          cookieStore.set({ name, value: "", ...options });
+        } catch { /* Server Component context — ignore */ }
       },
     },
   });
