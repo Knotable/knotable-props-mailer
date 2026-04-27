@@ -51,6 +51,28 @@ async function requireAuthUserId(): Promise<string> {
   return auth.userId;
 }
 
+// Returns the full auth context (including isBypass flag).
+async function requireAuthContext() {
+  const auth = await getServerAuthContext();
+  if (!auth?.userId) throw new Error("Unauthorized");
+  return auth;
+}
+
+// Verifies email ownership. In bypass mode we skip the author_id filter
+// because the bypass itself proves identity — the author_id may differ if
+// the profile was recreated after the email was drafted.
+async function assertEmailOwned(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+  userId: string,
+  isBypass: boolean,
+): Promise<boolean> {
+  const query = supabase.from("emails").select("id").eq("id", emailId);
+  if (!isBypass) query.eq("author_id", userId);
+  const { data } = await query.maybeSingle();
+  return !!data;
+}
+
 type DraftPayload = {
   from: string;
   subject: string;
@@ -712,7 +734,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
   error?: string;
 }> {
   try {
-    const userId = await requireAuthUserId();
+    const auth = await requireAuthContext();
 
     const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
     if (!parsed.success) return { error: "Invalid email id" };
@@ -720,13 +742,10 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     const { id } = parsed.data;
     const supabase = getSupabaseAdmin();
 
-    const { data: owned } = await supabase
-      .from("emails")
-      .select("id, status")
-      .eq("id", id)
-      .eq("author_id", userId)
-      .maybeSingle();
-    if (!owned) return { error: "Email not found" };
+    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
+      return { error: "Email not found" };
+    }
+    const userId = auth.userId;
 
     const sentToday = await getDailySentCount();
     const remainingToday = Math.max(0, DAILY_SEND_LIMIT - sentToday);
@@ -798,20 +817,17 @@ export async function editQueuedEmailAction(
   formData: FormData,
 ): Promise<{ href?: string; error?: string }> {
   try {
-    const userId = await requireAuthUserId();
+    const auth = await requireAuthContext();
 
     const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
     if (!parsed.success) return { error: "Invalid email id" };
     const { id } = parsed.data;
     const supabase = getSupabaseAdmin();
 
-    const { data: owned } = await supabase
-      .from("emails")
-      .select("id")
-      .eq("id", id)
-      .eq("author_id", userId)
-      .maybeSingle();
-    if (!owned) return { error: "Email not found" };
+    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
+      return { error: "Email not found" };
+    }
+    const userId = auth.userId;
 
     await supabase
       .from("mail_queue")
@@ -891,7 +907,7 @@ export async function requeueDeadAction(formData: FormData) {
 // ── Cancel a queued email ────────────────────────────────────────────────────
 export async function cancelEmailAction(formData: FormData): Promise<{ error?: string }> {
   try {
-    const userId = await requireAuthUserId();
+    const auth = await requireAuthContext();
 
     const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
     if (!parsed.success) return { error: "Invalid email id" };
@@ -899,13 +915,10 @@ export async function cancelEmailAction(formData: FormData): Promise<{ error?: s
     const supabase = getSupabaseAdmin();
 
     // Verify ownership before touching queue rows.
-    const { data: owned } = await supabase
-      .from("emails")
-      .select("id")
-      .eq("id", id)
-      .eq("author_id", userId)
-      .maybeSingle();
-    if (!owned) return { error: "Email not found" };
+    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
+      return { error: "Email not found" };
+    }
+    const userId = auth.userId;
 
     await supabase
       .from("mail_queue")
@@ -936,7 +949,7 @@ export async function cancelEmailAction(formData: FormData): Promise<{ error?: s
 // ── Delete a draft or canceled email ────────────────────────────────────────
 export async function deleteEmailAction(formData: FormData): Promise<{ error?: string }> {
   try {
-    const userId = await requireAuthUserId();
+    const auth = await requireAuthContext();
 
     const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
     if (!parsed.success) return { error: "Invalid email id" };
@@ -944,13 +957,10 @@ export async function deleteEmailAction(formData: FormData): Promise<{ error?: s
     const supabase = getSupabaseAdmin();
 
     // Verify ownership before cascading deletes.
-    const { data: owned } = await supabase
-      .from("emails")
-      .select("id")
-      .eq("id", id)
-      .eq("author_id", userId)
-      .maybeSingle();
-    if (!owned) return { error: "Email not found" };
+    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
+      return { error: "Email not found" };
+    }
+    const userId = auth.userId;
 
     await supabase.from("mail_queue").delete().eq("email_id", id);
     await supabase.from("email_recipients").delete().eq("email_id", id);
