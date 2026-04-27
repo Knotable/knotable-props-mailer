@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createServerAppClient } from "@/lib/authAccess";
-import { ScheduleActions } from "./schedule-actions";
+import { ScheduleActions, ProcessQueueButton } from "./schedule-actions";
 
 export default async function SchedulePage() {
   const supabase = await createServerAppClient();
@@ -22,6 +22,7 @@ export default async function SchedulePage() {
             Drafts you&apos;re working on, plus emails held for manual send.
           </p>
         </div>
+        <ProcessQueueButton />
       </header>
 
       <div className="divide-y rounded-lg border border-slate-200">

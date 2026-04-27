@@ -254,15 +254,15 @@ export async function GET() {
   );
 
   // ── 4. Cron frequency ─────────────────────────────────────────────────────
-  // Vercel Hobby plan only allows daily crons. This is a known limitation.
+  // No automatic cron is configured — queue processing is manual via the
+  // "Process Queue Now" button on the Drafts & Queued page.
   checks.push({
     id: "cron_frequency",
     label: "Queue worker frequency",
     severity: "warning",
-    ok: false, // always warn — daily cron is never ideal
-    message:
-      'Queue worker cron runs once daily at midnight UTC (vercel.json schedule: "0 0 * * *"). Emails queued as "Send ASAP" will sit pending until midnight.',
-    fix: 'Use the "Trigger Queue Now" button on the Drafts & Scheduled page to process pending sends manually.\nOn Vercel Pro: change vercel.json cron schedule to "*/5 * * * *" for every-5-minute processing.\nAlternative: set up an external cron at cron-job.org to POST https://knotable-props-mailer.vercel.app/api/email/queue with header Authorization: Bearer <CRON_SECRET>.',
+    ok: false,
+    message: 'No automatic cron configured. Use the "⚡ Process Queue Now" button on the Drafts & Queued page to flush pending sends manually.',
+    fix: 'Go to /email/schedule and click "⚡ Process Queue Now" whenever you have queued emails to send.\nFor automatic processing: set up an external cron at cron-job.org to POST https://knotable-props-mailer.vercel.app/api/email/queue with header Authorization: Bearer <CRON_SECRET>.',
   });
 
   // ── 5. SNS webhook events ─────────────────────────────────────────────────
@@ -282,7 +282,19 @@ export async function GET() {
         : "No SNS events received yet. Opens, clicks, and bounces will show '—' in Analytics.",
       fix: hasSns
         ? undefined
-        : "AWS Console:\n1. SES → Configuration Sets → Create a config set (e.g. \"knotable-tracking\")\n2. Add destination: SNS\n3. Create an SNS topic → add HTTPS subscription pointing to https://knotable-props-mailer.vercel.app/api/webhooks/ses\n4. Confirm the subscription (Supabase logs will show the confirmation request)\n5. In SES, set the configuration set as default on your verified identity",
+        : [
+            "AWS Console — one-time setup:",
+            "1. SES → Configuration Sets → Create set, name it e.g. \"knotable-tracking\"",
+            "2. Inside the config set → Event destinations → Add destination → SNS",
+            "   Select event types: Send, Delivery, Bounce, Complaint, Open, Click",
+            "3. Create (or reuse) an SNS topic in the same region as SES",
+            "4. SNS → Topics → your topic → Create subscription",
+            "   Protocol: HTTPS",
+            "   Endpoint: https://knotable-props-mailer.vercel.app/api/webhooks/ses",
+            "5. The webhook auto-confirms the subscription — check Vercel logs to verify",
+            "6. SES → Verified identities → your domain/address → Edit → Default config set → select \"knotable-tracking\"",
+            "Once wired up, this warning clears automatically after the first event arrives.",
+          ].join("\n"),
     });
   } catch {
     // provider_events table might not exist — already caught above
