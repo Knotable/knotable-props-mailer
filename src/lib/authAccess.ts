@@ -106,22 +106,25 @@ export async function createServerAppClient() {
     throw new Error("Missing Supabase env vars");
   }
 
+  const safeSetCookie = (name: string, value: string, options?: Record<string, unknown>) => {
+    // Next.js App Router only allows cookie writes in Server Actions and Route
+    // Handlers. During Server Component re-renders triggered by revalidation,
+    // Supabase may try to refresh auth cookies, which must be ignored here.
+    try {
+      cookieStore.set({ name, value, ...options });
+    } catch {}
+  };
+
   return createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       get(name) {
         return cookieStore.get(name)?.value;
       },
       set(name, value, options) {
-        // Throws when called from a Server Component (not a Server Action /
-        // Route Handler) — swallow it; middleware handles token refresh.
-        try {
-          cookieStore.set({ name, value, ...options });
-        } catch { /* Server Component context — ignore */ }
+        safeSetCookie(name, value, options);
       },
       remove(name, options) {
-        try {
-          cookieStore.set({ name, value: "", ...options });
-        } catch { /* Server Component context — ignore */ }
+        safeSetCookie(name, "", options);
       },
     },
   });
@@ -138,20 +141,22 @@ export async function getServerAuthContext(): Promise<ServerAuthContext> {
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !supabaseAnonKey) return null;
 
+  const safeSetCookie = (name: string, value: string, options?: Record<string, unknown>) => {
+    try {
+      cookieStore.set({ name, value, ...options });
+    } catch {}
+  };
+
   const supabase = createServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       get(name) {
         return cookieStore.get(name)?.value;
       },
       set(name, value, options) {
-        try {
-          cookieStore.set({ name, value, ...options });
-        } catch { /* Server Component context — ignore */ }
+        safeSetCookie(name, value, options);
       },
       remove(name, options) {
-        try {
-          cookieStore.set({ name, value: "", ...options });
-        } catch { /* Server Component context — ignore */ }
+        safeSetCookie(name, "", options);
       },
     },
   });
