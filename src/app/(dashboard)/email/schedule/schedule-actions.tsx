@@ -83,7 +83,8 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
       const fd = new FormData();
       fd.set("id", id);
       const res = await editQueuedEmailAction(fd);
-      router.push(res.href);
+      if (res.error) throw new Error(res.error);
+      router.push(res.href!);
     });
   };
 
@@ -92,12 +93,13 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
       const fd = new FormData();
       fd.set("id", id);
       const res = await sendQueuedEmailAction(fd);
+      if (res.error) throw new Error(res.error);
       setResult({
         ok: true,
         message:
-          res.remainingQueued > 0
+          (res.remainingQueued ?? 0) > 0
             ? `Sent ${res.succeeded}, ${res.remainingQueued} still queued.`
-            : `Sent ${res.succeeded}${res.failed > 0 ? `, ${res.failed} failed` : ""}.`,
+            : `Sent ${res.succeeded}${(res.failed ?? 0) > 0 ? `, ${res.failed} failed` : ""}.`,
       });
     });
   };
@@ -107,7 +109,8 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
     runAction(async () => {
       const fd = new FormData();
       fd.set("id", id);
-      await deleteEmailAction(fd);
+      const res = await deleteEmailAction(fd);
+      if (res.error) throw new Error(res.error);
     });
   };
 

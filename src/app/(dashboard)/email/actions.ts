@@ -704,124 +704,140 @@ export async function triggerQueueAction(): Promise<{ processed: number; succeed
   };
 }
 
-export async function sendQueuedEmailAction(formData: FormData) {
-  const userId = await requireAuthUserId();
+export async function sendQueuedEmailAction(formData: FormData): Promise<{
+  processed?: number;
+  succeeded?: number;
+  failed?: number;
+  remainingQueued?: number;
+  error?: string;
+}> {
+  try {
+    const userId = await requireAuthUserId();
 
-  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
-  if (!parsed.success) throw new Error("Invalid email id");
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
 
-  const { id } = parsed.data;
-  const supabase = getSupabaseAdmin();
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
 
-  const { data: owned } = await supabase
-    .from("emails")
-    .select("id, status")
-    .eq("id", id)
-    .eq("author_id", userId)
-    .maybeSingle();
-  if (!owned) throw new Error("Email not found");
+    const { data: owned } = await supabase
+      .from("emails")
+      .select("id, status")
+      .eq("id", id)
+      .eq("author_id", userId)
+      .maybeSingle();
+    if (!owned) return { error: "Email not found" };
 
-  const sentToday = await getDailySentCount();
-  const remainingToday = Math.max(0, DAILY_SEND_LIMIT - sentToday);
-  if (remainingToday === 0) {
-    throw new Error(`Daily cap of ${DAILY_SEND_LIMIT.toLocaleString()} reached. Nothing can be sent right now.`);
-  }
+    const sentToday = await getDailySentCount();
+    const remainingToday = Math.max(0, DAILY_SEND_LIMIT - sentToday);
+    if (remainingToday === 0) {
+      return { error: `Daily cap of ${DAILY_SEND_LIMIT.toLocaleString()} reached. Nothing can be sent right now.` };
+    }
 
-  const { data: queuedRows, error: queuedError } = await supabase
-    .from("mail_queue")
-    .select("id")
-    .eq("email_id", id)
-    .eq("status", "pending")
-    .order("created_at", { ascending: true })
-    .limit(remainingToday);
-  if (queuedError) throw queuedError;
-  if (!queuedRows?.length) throw new Error("No queued recipients are ready for this email.");
+    const { data: queuedRows, error: queuedError } = await supabase
+      .from("mail_queue")
+      .select("id")
+      .eq("email_id", id)
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .limit(remainingToday);
+    if (queuedError) return { error: queuedError.message };
+    if (!queuedRows?.length) return { error: "No queued recipients are ready for this email." };
 
-  const queueIds = queuedRows.map((row) => row.id);
-  const nowIso = new Date().toISOString();
+    const queueIds = queuedRows.map((row) => row.id);
+    const nowIso = new Date().toISOString();
 
-  const { error: releaseError } = await supabase
-    .from("mail_queue")
-    .update({ available_at: nowIso, updated_at: nowIso })
-    .in("id", queueIds);
-  if (releaseError) throw releaseError;
+    const { error: releaseError } = await supabase
+      .from("mail_queue")
+      .update({ available_at: nowIso, updated_at: nowIso })
+      .in("id", queueIds);
+    if (releaseError) return { error: releaseError.message };
 
-  await supabase
-    .from("emails")
-    .update({ status: "sending" })
-    .eq("id", id);
+    await supabase
+      .from("emails")
+      .update({ status: "sending" })
+      .eq("id", id);
 
-  const result = await runQueueWorker({ emailId: id });
+    const result = await runQueueWorker({ emailId: id });
 
-  const { count: remainingQueued } = await supabase
-    .from("mail_queue")
-    .select("id", { count: "exact", head: true })
-    .eq("email_id", id)
-    .in("status", ["pending", "processing"]);
+    const { count: remainingQueued } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("email_id", id)
+      .in("status", ["pending", "processing"]);
 
-  logAudit({
-    userId,
-    action: "campaign.send_now",
-    entity: "emails",
-    entityId: id,
-    payload: {
-      released: queueIds.length,
+    logAudit({
+      userId,
+      action: "campaign.send_now",
+      entity: "emails",
+      entityId: id,
+      payload: {
+        released: queueIds.length,
+        processed: result.processed,
+        succeeded: result.succeeded,
+        failed: result.failed,
+        remainingQueued: remainingQueued ?? 0,
+      },
+    }).catch(console.error);
+
+    revalidatePath("/email/schedule");
+    revalidatePath("/email/sends");
+
+    return {
       processed: result.processed,
       succeeded: result.succeeded,
       failed: result.failed,
       remainingQueued: remainingQueued ?? 0,
-    },
-  }).catch(console.error);
-
-  revalidatePath("/email/schedule");
-  revalidatePath("/email/sends");
-
-  return {
-    processed: result.processed,
-    succeeded: result.succeeded,
-    failed: result.failed,
-    remainingQueued: remainingQueued ?? 0,
-  };
+    };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to send email" };
+  }
 }
 
-export async function editQueuedEmailAction(formData: FormData) {
-  const userId = await requireAuthUserId();
+export async function editQueuedEmailAction(
+  formData: FormData,
+): Promise<{ href?: string; error?: string }> {
+  try {
+    const userId = await requireAuthUserId();
 
-  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
-  if (!parsed.success) throw new Error("Invalid email id");
-  const { id } = parsed.data;
-  const supabase = getSupabaseAdmin();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
 
-  const { data: owned } = await supabase
-    .from("emails")
-    .select("id")
-    .eq("id", id)
-    .eq("author_id", userId)
-    .maybeSingle();
-  if (!owned) throw new Error("Email not found");
+    const { data: owned } = await supabase
+      .from("emails")
+      .select("id")
+      .eq("id", id)
+      .eq("author_id", userId)
+      .maybeSingle();
+    if (!owned) return { error: "Email not found" };
 
-  await supabase
-    .from("mail_queue")
-    .delete()
-    .eq("email_id", id)
-    .in("status", ["pending", "processing"]);
+    await supabase
+      .from("mail_queue")
+      .delete()
+      .eq("email_id", id)
+      .in("status", ["pending", "processing"]);
 
-  const { error } = await supabase
-    .from("emails")
-    .update({ status: "draft", scheduled_at: null })
-    .eq("id", id);
-  if (error) throw error;
+    const { error } = await supabase
+      .from("emails")
+      .update({ status: "draft", scheduled_at: null })
+      .eq("id", id);
+    if (error) return { error: error.message };
 
-  logAudit({
-    userId,
-    action: "email.edit_from_queue",
-    entity: "emails",
-    entityId: id,
-  }).catch(console.error);
+    logAudit({
+      userId,
+      action: "email.edit_from_queue",
+      entity: "emails",
+      entityId: id,
+    }).catch(console.error);
 
-  revalidatePath("/email/schedule");
-  revalidatePath("/email/composer");
-  return { href: `/email/composer?id=${id}` };
+    revalidatePath("/email/schedule");
+    revalidatePath("/email/composer");
+    return { href: `/email/composer?id=${id}` };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to edit email" };
+  }
 }
 
 // ── Requeue dead (permanently failed) items for one email ───────────────────
@@ -873,75 +889,85 @@ export async function requeueDeadAction(formData: FormData) {
 }
 
 // ── Cancel a queued email ────────────────────────────────────────────────────
-export async function cancelEmailAction(formData: FormData) {
-  const userId = await requireAuthUserId();
+export async function cancelEmailAction(formData: FormData): Promise<{ error?: string }> {
+  try {
+    const userId = await requireAuthUserId();
 
-  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
-  if (!parsed.success) throw new Error("Invalid email id");
-  const { id } = parsed.data;
-  const supabase = getSupabaseAdmin();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
 
-  // Verify ownership before touching queue rows.
-  const { data: owned } = await supabase
-    .from("emails")
-    .select("id")
-    .eq("id", id)
-    .eq("author_id", userId)
-    .maybeSingle();
-  if (!owned) throw new Error("Email not found");
+    // Verify ownership before touching queue rows.
+    const { data: owned } = await supabase
+      .from("emails")
+      .select("id")
+      .eq("id", id)
+      .eq("author_id", userId)
+      .maybeSingle();
+    if (!owned) return { error: "Email not found" };
 
-  await supabase
-    .from("mail_queue")
-    .delete()
-    .eq("email_id", id)
-    .in("status", ["pending", "processing"]);
+    await supabase
+      .from("mail_queue")
+      .delete()
+      .eq("email_id", id)
+      .in("status", ["pending", "processing"]);
 
-  const { error } = await supabase
-    .from("emails")
-    .update({ status: "draft", scheduled_at: null })
-    .eq("id", id);
-  if (error) throw error;
+    const { error } = await supabase
+      .from("emails")
+      .update({ status: "draft", scheduled_at: null })
+      .eq("id", id);
+    if (error) return { error: error.message };
 
-  logAudit({
-    userId,
-    action: "email.unqueued",
-    entity: "emails",
-    entityId: id,
-  }).catch(console.error);
+    logAudit({
+      userId,
+      action: "email.unqueued",
+      entity: "emails",
+      entityId: id,
+    }).catch(console.error);
 
-  revalidatePath("/email/schedule");
+    revalidatePath("/email/schedule");
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to cancel email" };
+  }
 }
 
 // ── Delete a draft or canceled email ────────────────────────────────────────
-export async function deleteEmailAction(formData: FormData) {
-  const userId = await requireAuthUserId();
+export async function deleteEmailAction(formData: FormData): Promise<{ error?: string }> {
+  try {
+    const userId = await requireAuthUserId();
 
-  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
-  if (!parsed.success) throw new Error("Invalid email id");
-  const { id } = parsed.data;
-  const supabase = getSupabaseAdmin();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
 
-  // Verify ownership before cascading deletes.
-  const { data: owned } = await supabase
-    .from("emails")
-    .select("id")
-    .eq("id", id)
-    .eq("author_id", userId)
-    .maybeSingle();
-  if (!owned) throw new Error("Email not found");
+    // Verify ownership before cascading deletes.
+    const { data: owned } = await supabase
+      .from("emails")
+      .select("id")
+      .eq("id", id)
+      .eq("author_id", userId)
+      .maybeSingle();
+    if (!owned) return { error: "Email not found" };
 
-  await supabase.from("mail_queue").delete().eq("email_id", id);
-  await supabase.from("email_recipients").delete().eq("email_id", id);
+    await supabase.from("mail_queue").delete().eq("email_id", id);
+    await supabase.from("email_recipients").delete().eq("email_id", id);
 
-  const { error } = await supabase.from("emails").delete().eq("id", id);
-  if (error) throw error;
+    const { error } = await supabase.from("emails").delete().eq("id", id);
+    if (error) return { error: error.message };
 
-  logAudit({
-    userId,
-    action: "email.deleted",
-    entity: "emails",
-    entityId: id,
-  }).catch(console.error);
+    logAudit({
+      userId,
+      action: "email.deleted",
+      entity: "emails",
+      entityId: id,
+    }).catch(console.error);
 
-  revalidatePath("/email/schedule");
+    revalidatePath("/email/schedule");
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Failed to delete email" };
+  }
 }
