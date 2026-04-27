@@ -3,20 +3,51 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
 import { DAILY_SEND_LIMIT, getDailySentCount, todayUTC } from "@/lib/dailyQuota";
 
+/**
+ * Extract the SMTP numeric response code from a nodemailer error.
+ *
+ * nodemailer attaches `responseCode` (number) and/or `response` (string
+ * like "550 5.1.1 The email account does not exist") to SMTP errors.
+ * We fall back to scanning the message string for a leading 3-digit code.
+ */
 function smtpResponseCode(error: unknown): number | null {
   if (!error || typeof error !== "object") return null;
   const err = error as Record<string, unknown>;
-  if (typeof err.responseCode === "number") return err.responseCode;
-
-  const response = typeof err.response === "string" ? err.response : null;
-  const message = typeof err.message === "string" ? err.message : null;
-  const match = response?.match(/^(\d{3})\b/) ?? message?.match(/\b(5\d{2}|4\d{2})\b/);
-  return match ? Number.parseInt(match[1], 10) : null;
+  if (typeof err["responseCode"] === "number") return err["responseCode"];
+  // nodemailer sometimes puts the code in `response`
+  const response = typeof err["response"] === "string" ? err["response"] : null;
+  if (response) {
+    const match = response.match(/^(\d{3})\b/);
+    if (match) return parseInt(match[1], 10);
+  }
+  // Last resort: scan the message itself
+  const msg = typeof err["message"] === "string" ? err["message"] : null;
+  if (msg) {
+    const match = msg.match(/\b(5\d{2}|4\d{2})\b/);
+    if (match) return parseInt(match[1], 10);
+  }
+  return null;
 }
 
+/**
+ * Returns true for SMTP 5xx codes that indicate a permanent, unrecoverable
+ * failure for this specific recipient — no point retrying.
+ *
+ * Common permanent SES codes:
+ *   550  Mailbox does not exist / policy rejection
+ *   551  User not local
+ *   552  Mailbox full (treat as permanent — SES uses this for suppressed addresses)
+ *   553  Mailbox name invalid
+ *   554  Transaction failed / message rejected (SES reputation block)
+ *
+ * We do NOT treat 421 / 450 / 451 / 452 (transient) as permanent.
+ */
 function isPermanentSmtpFailure(error: unknown): boolean {
   const code = smtpResponseCode(error);
-  return code !== null && code >= 550 && code <= 554;
+  if (code === null) return false;
+  // 550–554 are universally permanent; 552 is debatable but SES uses it for
+  // suppression list hits which we should treat as permanent.
+  return code >= 550 && code <= 554;
 }
 
 const MailQueuePayloadSchema = z.object({
@@ -114,14 +145,18 @@ async function reconcileEmailStatuses(emailIds: string[]) {
     let status: "queued" | "sent" | "failed" | null = null;
 
     if (counts.pending > 0 || counts.processing > 0) {
+      // Still work in flight — keep as queued regardless of other statuses.
       status = "queued";
     } else if (counts.succeeded > 0) {
       // The campaign drained. Permanent recipient failures remain visible on
       // mail_queue rows, but they should not make the whole campaign look stuck.
       status = "sent";
     } else if (counts.failed > 0 || counts.dead > 0) {
+      // Nothing was accepted by SES and all remaining rows are terminal.
       status = "failed";
     }
+    // If only canceled rows remain (pure cancel before any sends), skip —
+    // cancelEmailAction already set emails.status = 'draft'.
 
     if (!status) continue;
     const { error: updateError } = await supabase
@@ -338,17 +373,20 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
       );
 
       if (permanent) {
+        // Dead-letter immediately — retrying a permanent SMTP failure wastes
+        // quota and contributes to SES reputation degradation.
         await supabase
           .from("mail_queue")
           .update({
             status: "dead",
-            attempts: 999,
+            attempts: 999, // sentinel: indicates permanent failure, not retry exhaustion
             last_error: `Permanent SMTP ${code}: ${message}`,
             locked_at: null,
             updated_at: new Date().toISOString(),
           })
           .eq("id", item.id);
       } else {
+        // Transient failure — exponential backoff up to max_attempts.
         const { data: current } = await supabase
           .from("mail_queue")
           .select("attempts, max_attempts")
