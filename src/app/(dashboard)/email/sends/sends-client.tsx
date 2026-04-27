@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, useRef } from "react";
 import { requeueDeadAction } from "../actions";
 
 type SendItem = {
@@ -12,7 +12,7 @@ type SendItem = {
   failed: number;
   pending: number;
   first_sent: string | null;
-  lists: { id: string; name: string; address: string }[];
+  lists: { id: string; name: string; address: string; memberEmails?: string[] }[];
   created_at: string | null;
 };
 
@@ -85,12 +85,11 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                 {send.lists.length > 0 && (
                   <div className="flex flex-wrap gap-1 mt-1">
                     {send.lists.map((l) => (
-                      <span
+                      <RecipientTooltip
                         key={l.id}
-                        className="inline-block text-xs bg-slate-100 text-slate-600 rounded px-2 py-0.5"
-                      >
-                        {l.name}
-                      </span>
+                        name={l.name}
+                        memberEmails={l.memberEmails}
+                      />
                     ))}
                   </div>
                 )}
@@ -263,12 +262,51 @@ function TabButton({
 
 function formatDate(dateStr: string): string {
   try {
-    return new Date(dateStr).toLocaleDateString("en-US", {
+    return new Date(dateStr).toLocaleString("en-US", {
       month: "short",
       day: "numeric",
       year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
     });
   } catch {
     return dateStr;
   }
+}
+
+function RecipientTooltip({
+  name,
+  memberEmails,
+}: {
+  name: string;
+  memberEmails?: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  return (
+    <span
+      ref={ref}
+      className="relative inline-block"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <span className="inline-block text-xs bg-slate-100 text-slate-600 rounded px-2 py-0.5 cursor-default hover:bg-slate-200 transition-colors">
+        {name}
+      </span>
+      {open && memberEmails && memberEmails.length > 0 && (
+        <span className="absolute z-50 left-0 top-full mt-1 w-72 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-xl p-3 text-left flex flex-col gap-0.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">
+            {memberEmails.length} recipient{memberEmails.length !== 1 ? "s" : ""}
+          </span>
+          {memberEmails.map((email) => (
+            <span key={email} className="text-xs text-slate-700 truncate">
+              {email}
+            </span>
+          ))}
+        </span>
+      )}
+    </span>
+  );
 }

@@ -11,7 +11,7 @@ export const dashboardNav: NavItem[] = [
     description: "Write and preview emails before sending",
   },
   {
-    label: "Schedule",
+    label: "Drafts / Queue",
     href: "/email/schedule",
     description: "Queue drafts, review them, and send each one manually",
   },

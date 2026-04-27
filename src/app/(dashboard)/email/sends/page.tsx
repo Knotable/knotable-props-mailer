@@ -116,7 +116,7 @@ export default async function PastSendsPage({
     ...new Set(rows.flatMap((r) => r.list_ids ?? []).filter(Boolean)),
   ];
 
-  const [{ data: emails }, { data: lists }] = await Promise.all([
+  const [{ data: emails }, { data: lists }, { data: listMembers }] = await Promise.all([
     supabase
       .from("emails")
       .select("id, subject, from_address, html, status, created_at")
@@ -124,16 +124,39 @@ export default async function PastSendsPage({
     listIds.length
       ? supabase.from("lists").select("id, name, address").in("id", listIds)
       : Promise.resolve({ data: [] as { id: string; name: string; address: string }[] }),
+    listIds.length
+      ? supabase
+          .from("list_members")
+          .select("list_id, email")
+          .in("list_id", listIds)
+          .eq("status", "active")
+          .order("email", { ascending: true })
+      : Promise.resolve({ data: [] as { list_id: string; email: string }[] }),
   ]);
 
   const emailDetails = new Map((emails ?? []).map((e) => [e.id, e]));
-  const listDetails = new Map((lists ?? []).map((l) => [l.id, l]));
+
+  // Build a map of list_id → sorted member emails
+  const membersByList = new Map<string, string[]>();
+  for (const m of listMembers ?? []) {
+    if (!m.list_id) continue;
+    const arr = membersByList.get(m.list_id) ?? [];
+    arr.push(m.email);
+    membersByList.set(m.list_id, arr);
+  }
+
+  const listDetails = new Map(
+    (lists ?? []).map((l) => [
+      l.id,
+      { ...l, memberEmails: membersByList.get(l.id) ?? [] },
+    ])
+  );
 
   const sends = rows.map((row) => {
     const email = emailDetails.get(row.email_id);
     const sendLists = (row.list_ids ?? [])
       .map((lid) => listDetails.get(lid))
-      .filter(Boolean) as { id: string; name: string; address: string }[];
+      .filter(Boolean) as { id: string; name: string; address: string; memberEmails: string[] }[];
 
     return {
       email_id: row.email_id,

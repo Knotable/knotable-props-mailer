@@ -24,6 +24,12 @@ export default async function ComposerPage({ searchParams }: Props) {
     list_id: string | null;
   } | null = null;
 
+  // Fetch available lists for the picker (needed for list detection below too)
+  const { data: lists } = await supabase
+    .from("lists")
+    .select("id, name, address")
+    .order("name");
+
   if (sourceId) {
     const [{ data: emailRow }, { data: recipientRows }, { data: queueRow }] =
       await Promise.all([
@@ -47,19 +53,25 @@ export default async function ComposerPage({ searchParams }: Props) {
       ]);
 
     if (emailRow) {
+      const recipients = recipientRows?.map((r) => r.recipient_address) ?? [];
+
+      // Prefer the list_id from a queued row; fall back to matching a recipient
+      // address against known list addresses (handles drafts not yet queued).
+      let resolvedListId: string | null = (queueRow?.list_id as string | null) ?? null;
+      if (!resolvedListId && recipients.length === 1) {
+        const matchedList = lists?.find(
+          (l) => l.address.toLowerCase() === recipients[0].toLowerCase(),
+        );
+        if (matchedList) resolvedListId = matchedList.id;
+      }
+
       draft = {
         ...emailRow,
-        recipients: recipientRows?.map((r) => r.recipient_address) ?? [],
-        list_id: (queueRow?.list_id as string | null) ?? null,
+        recipients,
+        list_id: resolvedListId,
       };
     }
   }
-
-  // Fetch available lists for the picker
-  const { data: lists } = await supabase
-    .from("lists")
-    .select("id, name, address")
-    .order("name");
 
   return (
     <ComposerForm

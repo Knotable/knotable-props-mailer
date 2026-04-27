@@ -1,9 +1,14 @@
 import Link from "next/link";
 import { createServerAppClient } from "@/lib/authAccess";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ScheduleActions, ProcessQueueButton } from "./schedule-actions";
+import { RecipientBadges } from "./recipient-badges";
 
 export default async function SchedulePage() {
+  // Auth-gated client for the emails query (respects RLS)
   const supabase = await createServerAppClient();
+  // Admin client for joining tables that aren't in the auth schema types
+  const admin = getSupabaseAdmin();
 
   const { data: emails } = await supabase
     .from("emails")
@@ -11,6 +16,61 @@ export default async function SchedulePage() {
     .in("status", ["draft", "queued", "sending"])
     .order("updated_at", { ascending: false })
     .limit(50);
+
+  const emailIds = (emails ?? []).map((e) => e.id);
+
+  // Fetch the list associations for all queued/sending emails from mail_queue.
+  // Drafts won't have queue rows yet, so they'll just have no lists shown.
+  const { data: queueRows } = emailIds.length
+    ? await admin
+        .from("mail_queue")
+        .select("email_id, list_id")
+        .in("email_id", emailIds)
+        .not("list_id", "is", null)
+    : { data: [] as { email_id: string; list_id: string }[] };
+
+  // Unique list IDs across all emails
+  const listIds = [...new Set((queueRows ?? []).map((r) => r.list_id).filter(Boolean) as string[])];
+
+  const [{ data: lists }, { data: listMembers }] = await Promise.all([
+    listIds.length
+      ? admin.from("lists").select("id, name, address").in("id", listIds)
+      : Promise.resolve({ data: [] as { id: string; name: string; address: string }[] }),
+    listIds.length
+      ? admin
+          .from("list_members")
+          .select("list_id, email")
+          .in("list_id", listIds)
+          .eq("status", "active")
+          .order("email", { ascending: true })
+      : Promise.resolve({ data: [] as { list_id: string; email: string }[] }),
+  ]);
+
+  // Build list_id → {name, address, memberEmails}
+  const membersByList = new Map<string, string[]>();
+  for (const m of listMembers ?? []) {
+    if (!m.list_id) continue;
+    const arr = membersByList.get(m.list_id) ?? [];
+    arr.push(m.email);
+    membersByList.set(m.list_id, arr);
+  }
+  const listMap = new Map(
+    (lists ?? []).map((l) => [
+      l.id,
+      { id: l.id, name: l.name, address: l.address, memberEmails: membersByList.get(l.id) ?? [] },
+    ])
+  );
+
+  // Build email_id → lists[]
+  const listsByEmail = new Map<string, { id: string; name: string; address: string; memberEmails: string[] }[]>();
+  for (const row of queueRows ?? []) {
+    if (!row.email_id || !row.list_id) continue;
+    const list = listMap.get(row.list_id);
+    if (!list) continue;
+    const arr = listsByEmail.get(row.email_id) ?? [];
+    if (!arr.find((l) => l.id === list.id)) arr.push(list);
+    listsByEmail.set(row.email_id, arr);
+  }
 
   return (
     <div className="space-y-6">
@@ -30,6 +90,7 @@ export default async function SchedulePage() {
           emails.map((item) => {
             const isDraft = item.status === "draft";
             const updatedIso = item.updated_at ?? null;
+            const itemLists = listsByEmail.get(item.id) ?? [];
 
             return (
               <div
@@ -59,6 +120,10 @@ export default async function SchedulePage() {
                         : "Draft only"
                       : "Queued for manual send"}
                   </div>
+
+                  {itemLists.length > 0 && (
+                    <RecipientBadges lists={itemLists} />
+                  )}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 lg:justify-self-end">
