@@ -67,8 +67,11 @@ async function assertEmailOwned(
   userId: string,
   isBypass: boolean,
 ): Promise<boolean> {
-  const query = supabase.from("emails").select("id").eq("id", emailId);
-  if (!isBypass) query.eq("author_id", userId);
+  // In bypass mode we only check the email exists — author_id may differ if
+  // the profile was recreated after the email was drafted.
+  // Note: must reassign `query` for the conditional filter to take effect.
+  let query = supabase.from("emails").select("id").eq("id", emailId);
+  if (!isBypass) query = query.eq("author_id", userId);
   const { data } = await query.maybeSingle();
   return !!data;
 }
