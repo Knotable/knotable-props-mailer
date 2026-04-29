@@ -189,6 +189,22 @@ create table if not exists public.profiles (
   primary key (id)
 );
 
--- Row-Level Security placeholders (enable manually in Supabase)
--- alter table public.emails enable row level security;
--- create policy "Admins can do anything" on public.emails for all using (auth.uid() = author_id);
+-- Row-Level Security
+-- See supabase/migrations/20260429_ensure_rls_enabled.sql for full policy
+-- definitions.  These ALTER statements are repeated here so a fresh schema
+-- apply is never left with RLS disabled.
+
+ALTER TABLE public.emails          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.email_recipients ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.draft_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.error_logs      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.audit_logs      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mail_queue      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.queue_metrics   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.feature_flags   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.admin_audit     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.files           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.lists           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.list_members    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.provider_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles        ENABLE ROW LEVEL SECURITY;
