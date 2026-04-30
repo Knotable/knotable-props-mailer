@@ -86,11 +86,24 @@ async function resolveAllowedProfile() {
     .eq("email", ALLOWED_EMAIL)
     .maybeSingle();
 
-  if (error || !profile?.id) {
+  if (!error && profile?.id) {
+    return { userId: profile.id, email: profile.email };
+  }
+
+  // No profile row yet — upsert the hardcoded bypass user so bypass auth
+  // always works even before a Supabase auth user has been created.
+  const BYPASS_USER_ID = "00000000-0000-0000-0000-000000000001";
+  const { data: upserted, error: upsertError } = await supabase
+    .from("profiles")
+    .upsert({ id: BYPASS_USER_ID, email: ALLOWED_EMAIL, role: "admin" }, { onConflict: "id" })
+    .select("id, email")
+    .single();
+
+  if (upsertError || !upserted?.id) {
     throw new Error(`Allowed profile not found for ${ALLOWED_EMAIL}`);
   }
 
-  return { userId: profile.id, email: profile.email };
+  return { userId: upserted.id, email: upserted.email };
 }
 
 export async function createServerAppClient() {
