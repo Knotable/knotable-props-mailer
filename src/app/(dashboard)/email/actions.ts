@@ -125,6 +125,12 @@ const normalizeScheduledAt = (value: string | undefined) => {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 };
 
+function getStringMetadataValue(metadata: Json | null | undefined, key: string): string | null {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  const value = (metadata as Record<string, Json>)[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
 function toActionErrorMessage(err: unknown, fallback: string): string {
   if (!err) return fallback;
   if (typeof err === "string") return err;

@@ -5,6 +5,7 @@ import { z } from "zod";
 import { getServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { logAudit } from "@/lib/logger";
+import type { Json } from "@/supabase/types";
 
 async function requireAuthUserId(): Promise<string> {
   const auth = await getServerAuthContext();
@@ -15,35 +16,109 @@ async function requireAuthUserId(): Promise<string> {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const IMPORT_MEMBERS_CHUNK_SIZE = 500;
 
-function parseEmailImport(input: string) {
-  const tokens = input
-    .split(/[\n,]/)
-    .map((v) => v.trim().toLowerCase())
-    .filter(Boolean);
+function parseCsvLine(line: string): string[] {
+  const fields: string[] = [];
+  let current = "";
+  let inQuotes = false;
 
-  const seen = new Set<string>();
-  const emails: string[] = [];
-  let skippedInvalid = 0;
-  let skippedDuplicate = 0;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const next = line[i + 1];
 
-  for (const token of tokens) {
-    if (!EMAIL_RE.test(token)) {
-      skippedInvalid += 1;
-      continue;
+    if (char === '"' && inQuotes && next === '"') {
+      current += '"';
+      i++;
+    } else if (char === '"') {
+      inQuotes = !inQuotes;
+    } else if (char === "," && !inQuotes) {
+      fields.push(current);
+      current = "";
+    } else {
+      current += char;
     }
-    if (seen.has(token)) {
-      skippedDuplicate += 1;
-      continue;
-    }
-    seen.add(token);
-    emails.push(token);
   }
 
+  fields.push(current);
+  return fields.map((field) => field.trim());
+}
+
+function cleanImportedName(value: string, email: string): string | null {
+  const cleaned = value
+    .trim()
+    .replace(/["']+$/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s*\(via Google (?:Sheets|Slides|Docs)\)\s*/gi, "")
+    .replace(/\s*\([^)]*@[^)]*\)\s*/g, "")
+    .replace(/[\s*#]+$/g, "")
+    .trim();
+
+  if (!cleaned || cleaned.toLowerCase() === email.toLowerCase()) return null;
+  return cleaned;
+}
+
+function parseMemberRows(input: string) {
+  const submitted = input
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean).length;
+  const seen = new Set<string>();
+  let skippedInvalid = 0;
+  let skippedDuplicate = 0;
+  const members = input
+    .split(/\r?\n/)
+    .flatMap((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return [];
+
+      const fields = trimmed.includes("\t")
+        ? trimmed.split("\t").map((field) => field.trim())
+        : parseCsvLine(trimmed);
+
+      let emailField: string | undefined;
+      for (let i = fields.length - 1; i >= 0; i--) {
+        if (EMAIL_RE.test(fields[i].replace(/["']+$/g, "").toLowerCase())) {
+          emailField = fields[i];
+          break;
+        }
+      }
+      if (!emailField) {
+        return trimmed
+          .split(",")
+          .map((value) => value.trim().toLowerCase())
+          .map((email) => ({ email, metadata: {} as Json }));
+      }
+
+      const email = emailField.replace(/["']+$/g, "").toLowerCase();
+      const rank = fields[0] && /^\d+$/.test(fields[0]) ? Number(fields[0]) : null;
+      const rawName = fields.length >= 3 ? fields[1] : "";
+      const name = rawName ? cleanImportedName(rawName, email) : null;
+      const displayName = name && rank !== null ? `${name} (rank: ${rank})` : name;
+      const metadata: Record<string, Json> = {};
+
+      if (rank !== null) metadata.rank = rank;
+      if (name) metadata.name = name;
+      if (displayName) metadata.display_name = displayName;
+
+      return [{ email, metadata: metadata as Json }];
+    })
+    .flatMap((member) => {
+      if (!EMAIL_RE.test(member.email)) {
+        skippedInvalid += 1;
+        return [];
+      }
+      if (seen.has(member.email)) {
+        skippedDuplicate += 1;
+        return [];
+      }
+      seen.add(member.email);
+      return [member];
+    });
+
   return {
-    emails,
+    members,
     skippedInvalid,
     skippedDuplicate,
-    submitted: tokens.length,
+    submitted,
   };
 }
 
@@ -122,13 +197,18 @@ export async function importMembersAction(formData: FormData) {
     .maybeSingle();
   if (!list) throw new Error("List not found");
 
-  const { emails, skippedInvalid, skippedDuplicate, submitted } = parseEmailImport(raw);
-  if (!emails.length) throw new Error("No members provided");
+  const { members, skippedInvalid, skippedDuplicate, submitted } = parseMemberRows(raw);
+  if (!members.length) throw new Error("No members provided");
 
-  for (let i = 0; i < emails.length; i += IMPORT_MEMBERS_CHUNK_SIZE) {
-    const rows = emails
+  for (let i = 0; i < members.length; i += IMPORT_MEMBERS_CHUNK_SIZE) {
+    const rows = members
       .slice(i, i + IMPORT_MEMBERS_CHUNK_SIZE)
-      .map((email) => ({ list_id: listId, email, status: "active" }));
+      .map((member) => ({
+        list_id: listId,
+        email: member.email,
+        status: "active",
+        metadata: member.metadata,
+      }));
     const { error } = await supabase
       .from("list_members")
       .upsert(rows, { onConflict: "list_id,email" });
@@ -142,10 +222,10 @@ export async function importMembersAction(formData: FormData) {
     entityId: listId,
     payload: {
       submitted,
-      upserted: emails.length,
+      upserted: members.length,
       skippedInvalid,
       skippedDuplicate,
-      chunks: Math.ceil(emails.length / IMPORT_MEMBERS_CHUNK_SIZE),
+      chunks: Math.ceil(members.length / IMPORT_MEMBERS_CHUNK_SIZE),
     },
   }).catch(console.error);
 
@@ -153,7 +233,7 @@ export async function importMembersAction(formData: FormData) {
   revalidatePath(`/lists/${listId}`);
   return {
     submitted,
-    upserted: emails.length,
+    upserted: members.length,
     skippedInvalid,
     skippedDuplicate,
   };

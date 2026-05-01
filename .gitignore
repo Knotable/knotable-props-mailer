@@ -12,6 +12,10 @@ env.keys
 *.env.*
 !.env.example
 
+# Local private/contact data exports
+private/
+*.private.*
+
 # Build artifacts
 supabase/.schema-hash
 .vercel/
