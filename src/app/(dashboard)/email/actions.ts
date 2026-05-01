@@ -41,6 +41,7 @@ const SendTestSchema = z.object({
 
 const EmailIdSchema = z.object({ id: z.string().uuid() });
 const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
+const QUEUE_RELEASE_CHUNK_SIZE = 200;
 
 // Throws if there is no authenticated session — middleware should have already
 // caught unauthenticated requests, but this is a second line of defence for
@@ -769,11 +770,14 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     const queueIds = queuedRows.map((row) => row.id);
     const nowIso = new Date().toISOString();
 
-    const { error: releaseError } = await supabase
-      .from("mail_queue")
-      .update({ available_at: nowIso, updated_at: nowIso })
-      .in("id", queueIds);
-    if (releaseError) return { error: releaseError.message };
+    for (let i = 0; i < queueIds.length; i += QUEUE_RELEASE_CHUNK_SIZE) {
+      const chunk = queueIds.slice(i, i + QUEUE_RELEASE_CHUNK_SIZE);
+      const { error: releaseError } = await supabase
+        .from("mail_queue")
+        .update({ available_at: nowIso, updated_at: nowIso })
+        .in("id", chunk);
+      if (releaseError) return { error: releaseError.message };
+    }
 
     await supabase
       .from("emails")

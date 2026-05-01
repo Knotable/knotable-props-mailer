@@ -32,10 +32,20 @@ export default async function SchedulePage() {
   // Unique list IDs across all emails
   const listIds = [...new Set((queueRows ?? []).map((r) => r.list_id).filter(Boolean) as string[])];
 
-  const [{ data: lists }, { data: listMembers }] = await Promise.all([
+  const [{ data: lists }, listCounts, { data: sampleMembers }] = await Promise.all([
     listIds.length
       ? admin.from("lists").select("id, name, address").in("id", listIds)
       : Promise.resolve({ data: [] as { id: string; name: string; address: string }[] }),
+    Promise.all(
+      listIds.map(async (listId) => {
+        const { count } = await admin
+          .from("list_members")
+          .select("id", { count: "exact", head: true })
+          .eq("list_id", listId)
+          .eq("status", "active");
+        return [listId, count ?? 0] as const;
+      }),
+    ),
     listIds.length
       ? admin
           .from("list_members")
@@ -43,12 +53,14 @@ export default async function SchedulePage() {
           .in("list_id", listIds)
           .eq("status", "active")
           .order("email", { ascending: true })
+          .limit(50)
       : Promise.resolve({ data: [] as { list_id: string; email: string }[] }),
   ]);
 
-  // Build list_id → {name, address, memberEmails}
+  // Build list_id → {name, address, memberCount, sampleEmails}
+  const countByList = new Map(listCounts);
   const membersByList = new Map<string, string[]>();
-  for (const m of listMembers ?? []) {
+  for (const m of sampleMembers ?? []) {
     if (!m.list_id) continue;
     const arr = membersByList.get(m.list_id) ?? [];
     arr.push(m.email);
@@ -57,12 +69,18 @@ export default async function SchedulePage() {
   const listMap = new Map(
     (lists ?? []).map((l) => [
       l.id,
-      { id: l.id, name: l.name, address: l.address, memberEmails: membersByList.get(l.id) ?? [] },
+      {
+        id: l.id,
+        name: l.name,
+        address: l.address,
+        memberCount: countByList.get(l.id) ?? 0,
+        sampleEmails: membersByList.get(l.id) ?? [],
+      },
     ])
   );
 
   // Build email_id → lists[]
-  const listsByEmail = new Map<string, { id: string; name: string; address: string; memberEmails: string[] }[]>();
+  const listsByEmail = new Map<string, { id: string; name: string; address: string; memberCount: number; sampleEmails: string[] }[]>();
   for (const row of queueRows ?? []) {
     if (!row.email_id || !row.list_id) continue;
     const list = listMap.get(row.list_id);

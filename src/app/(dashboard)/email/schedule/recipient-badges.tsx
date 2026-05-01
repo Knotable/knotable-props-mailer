@@ -6,7 +6,8 @@ type ListInfo = {
   id: string;
   name: string;
   address: string;
-  memberEmails: string[];
+  memberCount: number;
+  sampleEmails: string[];
 };
 
 function RecipientBadge({ list }: { list: ListInfo }) {
@@ -22,20 +23,25 @@ function RecipientBadge({ list }: { list: ListInfo }) {
     >
       <span className="inline-block text-xs bg-slate-100 text-slate-600 rounded px-2 py-0.5 cursor-default hover:bg-slate-200 transition-colors">
         {list.name}
-        {list.memberEmails.length > 0 && (
-          <span className="ml-1 text-slate-400">({list.memberEmails.length})</span>
+        {list.memberCount > 0 && (
+          <span className="ml-1 text-slate-400">({list.memberCount})</span>
         )}
       </span>
-      {open && list.memberEmails.length > 0 && (
+      {open && list.memberCount > 0 && (
         <span className="absolute z-50 left-0 top-full mt-1 w-72 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-xl p-3 text-left flex flex-col gap-0.5">
           <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">
-            {list.memberEmails.length} recipient{list.memberEmails.length !== 1 ? "s" : ""}
+            {list.memberCount} recipient{list.memberCount !== 1 ? "s" : ""}
           </span>
-          {list.memberEmails.map((email) => (
+          {list.sampleEmails.map((email) => (
             <span key={email} className="text-xs text-slate-700 truncate">
               {email}
             </span>
           ))}
+          {list.memberCount > list.sampleEmails.length && (
+            <span className="text-xs text-slate-400">
+              +{list.memberCount - list.sampleEmails.length} more
+            </span>
+          )}
         </span>
       )}
     </span>
