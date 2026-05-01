@@ -61,8 +61,12 @@ const MailQueuePayloadSchema = z.object({
   campaigns: z.array(z.string()).optional(),
 });
 
+// 200 rows per invocation. With 5 nodemailer pool connections sending in
+// parallel (Promise.allSettled below), we sustain ~14 msgs/sec — the SES
+// SMTP rate limit. 200 items ÷ 14/sec ≈ 14 seconds, well within the 30s
+// monitor loop and Vercel's 30s hobby / 60s pro function timeout.
 const WORKER_BATCH_SIZE = 200;
-const WORKER_CONCURRENCY = 5;
+const WORKER_CONCURRENCY = 5; // must match emailProvider maxConnections
 const STUCK_PROCESSING_TTL_MS = 15 * 60 * 1000;
 
 export type QueueWorkerResult = {
@@ -316,6 +320,13 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
       .eq("id", itemId);
   }
 
+  /**
+   * Process one queue item: validate payload, send via SES, write result back.
+   * Returns "succeeded" | "failed" so the caller can tally counts.
+   *
+   * We fan these out with Promise.allSettled in WORKER_CONCURRENCY-sized
+   * windows below, saturating the nodemailer connection pool at ~14 msg/sec.
+   */
   async function processItem(item: (typeof items)[number]): Promise<"succeeded" | "failed"> {
     const payloadParsed = MailQueuePayloadSchema.safeParse(item.payload);
     if (!payloadParsed.success) {
@@ -351,6 +362,11 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
         throw new Error("sendMail returned no message ID — treat as unconfirmed");
       }
 
+      // TODO: ses_message_id column does not yet exist in mail_queue.
+      // Migration needed: ALTER TABLE mail_queue ADD COLUMN ses_message_id text;
+      //                   CREATE INDEX ON mail_queue(ses_message_id);
+      // Until then, Supabase silently ignores the unknown field.
+      // Once added, this links SES delivery/bounce webhooks back to queue rows.
       await supabase
         .from("mail_queue")
         .update({
@@ -415,11 +431,14 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
     }
   }
 
+  // Fan out sends in WORKER_CONCURRENCY-sized windows.
+  // This saturates the nodemailer pool (maxConnections=5) without overwhelming
+  // it, and lets us hit the 14 msg/sec SES SMTP rate limit.
   for (let i = 0; i < items.length; i += WORKER_CONCURRENCY) {
     const window = items.slice(i, i + WORKER_CONCURRENCY);
     const results = await Promise.allSettled(window.map(processItem));
-    for (const result of results) {
-      if (result.status === "fulfilled" && result.value === "succeeded") succeeded++;
+    for (const r of results) {
+      if (r.status === "fulfilled" && r.value === "succeeded") succeeded++;
       else failed++;
     }
   }

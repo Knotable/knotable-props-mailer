@@ -10,7 +10,7 @@ import {
   verifyBypassPassword,
 } from "@/lib/authAccess";
 import { logError } from "@/lib/logger";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkRateLimitSync as checkRateLimit } from "@/lib/rateLimit";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
 
 const normalizeEmail = (value: FormDataEntryValue | null) =>

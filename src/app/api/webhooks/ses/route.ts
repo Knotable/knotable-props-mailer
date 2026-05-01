@@ -91,7 +91,7 @@ export async function POST(request: Request) {
     request.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
     request.headers.get("x-real-ip") ??
     "unknown";
-  const { allowed } = checkRateLimit(`ses-webhook:${ip}`, 300, 60_000);
+  const { allowed } = await checkRateLimit(`ses-webhook:${ip}`, 300, 60_000);
   if (!allowed) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }

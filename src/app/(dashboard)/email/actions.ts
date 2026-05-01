@@ -11,6 +11,22 @@ import { logAudit } from "@/lib/logger";
 import { runQueueWorker } from "@/lib/queueWorker";
 import type { Json } from "@/supabase/types";
 
+/**
+ * Stable deduplication hash for a queue row.
+ * SHA-256(emailId:recipientEmail) — fits in a text column, unique per
+ * (campaign, recipient) pair so accidental re-inserts can be caught.
+ *
+ * TODO: add a UNIQUE constraint on mail_queue(dedupe_hash) via migration:
+ *   ALTER TABLE mail_queue ADD CONSTRAINT mail_queue_dedupe_hash_key UNIQUE (dedupe_hash);
+ * Until then, duplicate inserts won't be caught at the DB layer, but the
+ * pre-flight idempotency check (existingCount > 0) prevents the common case.
+ */
+function makeDedupeHash(emailId: string, recipientEmail: string): string {
+  return createHash("sha256")
+    .update(`${emailId}:${recipientEmail.toLowerCase().trim()}`)
+    .digest("hex");
+}
+
 const SaveDraftSchema = z.object({
   id: z.string().uuid().optional().nullable(),
   from: z.string().min(1).max(320),
@@ -341,12 +357,6 @@ function listMemberToName(metadata: Json | null | undefined) {
   return name || undefined;
 }
 
-function queueDedupeHash(emailId: string, recipientEmail: string) {
-  return createHash("sha256")
-    .update(`${emailId}:${normalizeEmailAddress(recipientEmail)}`)
-    .digest("hex");
-}
-
 async function buildQueueWarningSummary(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
@@ -642,7 +652,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       available_at: QUEUE_HOLD_AT,
       send_date: null,
       campaign_label: campaignLabel,
-      dedupe_hash: queueDedupeHash(emailId, member.email),
+      dedupe_hash: makeDedupeHash(emailId, member.email),
     });
   }
 

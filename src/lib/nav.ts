@@ -31,6 +31,11 @@ export const dashboardNav: NavItem[] = [
     description: "Track opens, clicks, and deliverability",
   },
   {
+    label: "Send Monitor",
+    href: "/email/monitor",
+    description: "Live queue drain — keep open during large sends",
+  },
+  {
     label: "Lists",
     href: "/lists",
     description: "Manage mailing lists and imports",

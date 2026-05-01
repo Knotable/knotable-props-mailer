@@ -1,3 +1,9 @@
+<!-- BEGIN:project-context -->
+# Start here
+
+Read `README-AI.md` in the repo root before doing any structural exploration. It contains the full project analysis — architecture, key files, tech stack, deployment flow, DB schema, and conventions. This avoids re-deriving what is already documented.
+<!-- END:project-context -->
+
 <!-- BEGIN:nextjs-agent-rules -->
 # This is NOT the Next.js you know
 

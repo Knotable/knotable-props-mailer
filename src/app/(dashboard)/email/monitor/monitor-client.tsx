@@ -99,13 +99,15 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => startTransition(async () => {
-              try {
-                await runOnce();
-              } catch (err) {
-                setError(err instanceof Error ? err.message : "Queue worker failed.");
-              }
-            })}
+            onClick={() =>
+              startTransition(async () => {
+                try {
+                  await runOnce();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "Queue worker failed.");
+                }
+              })
+            }
             disabled={pending}
             className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
@@ -155,18 +157,47 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
 
       <div className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600">
         <div className="grid gap-2 sm:grid-cols-2">
-          <p>Queue status: <span className="font-medium text-slate-900">{snapshot?.displayStatus ?? "all queue"}</span></p>
-          <p>Resolved: <span className="font-medium text-slate-900">{done.toLocaleString()} / {total.toLocaleString()} ({pct}%)</span></p>
-          <p>Sent today: <span className="font-medium text-slate-900">{(snapshot?.sentToday ?? 0).toLocaleString()}</span></p>
-          <p>Quota left today: <span className="font-medium text-slate-900">{(snapshot?.remainingToday ?? 0).toLocaleString()}</span></p>
-          <p>Email record: <span className="font-medium text-slate-900">{snapshot?.emailStatus ?? "all queue"}</span></p>
+          <p>
+            Queue status:{" "}
+            <span className="font-medium text-slate-900">{snapshot?.displayStatus ?? "all queue"}</span>
+          </p>
+          <p>
+            Resolved:{" "}
+            <span className="font-medium text-slate-900">
+              {done.toLocaleString()} / {total.toLocaleString()} ({pct}%)
+            </span>
+          </p>
+          <p>
+            Sent today:{" "}
+            <span className="font-medium text-slate-900">
+              {(snapshot?.sentToday ?? 0).toLocaleString()}
+            </span>
+          </p>
+          <p>
+            Quota left today:{" "}
+            <span className="font-medium text-slate-900">
+              {(snapshot?.remainingToday ?? 0).toLocaleString()}
+            </span>
+          </p>
+          <p>
+            Email record:{" "}
+            <span className="font-medium text-slate-900">{snapshot?.emailStatus ?? "all queue"}</span>
+          </p>
         </div>
       </div>
     </div>
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone: "green" | "amber" | "slate" | "blue" | "red" }) {
+function Metric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "green" | "amber" | "slate" | "blue" | "red";
+}) {
   const colors = {
     green: "text-green-700",
     amber: "text-amber-700",
