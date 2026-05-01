@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
-import { DAILY_SEND_LIMIT, getDailySentCount, todayUTC } from "@/lib/dailyQuota";
+import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
+import { getDailySendLimit } from "@/lib/appSettings";
 
 /**
  * Extract the SMTP numeric response code from a nodemailer error.
@@ -216,6 +217,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const now = new Date();
+  const dailySendLimit = await getDailySendLimit();
 
   const staleLockedBefore = new Date(now.getTime() - STUCK_PROCESSING_TTL_MS).toISOString();
   const { data: reclaimed } = await supabase
@@ -235,7 +237,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
   }
 
   const sentToday = await getDailySentCount(today);
-  const remaining = Math.max(0, DAILY_SEND_LIMIT - sentToday);
+  const remaining = Math.max(0, dailySendLimit - sentToday);
 
   if (remaining === 0) {
     await writeMetrics({ queueDepth: 0, processed: 0, failed: 0 });
@@ -247,8 +249,8 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
       reclaimed: reclaimedCount,
       sentToday,
       remaining,
-      dailyCap: DAILY_SEND_LIMIT,
-      message: `Daily cap of ${DAILY_SEND_LIMIT} reached. No sends this run.`,
+      dailyCap: dailySendLimit,
+      message: `Daily cap of ${dailySendLimit} reached. No sends this run.`,
     };
   }
 
@@ -289,7 +291,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
       reclaimed: reclaimedCount,
       sentToday,
       remaining,
-      dailyCap: DAILY_SEND_LIMIT,
+      dailyCap: dailySendLimit,
       message: "No pending items.",
     };
   }
@@ -464,6 +466,6 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
     reclaimed: reclaimedCount,
     sentToday: sentToday + succeeded,
     remaining: remaining - succeeded,
-    dailyCap: DAILY_SEND_LIMIT,
+    dailyCap: dailySendLimit,
   };
 }

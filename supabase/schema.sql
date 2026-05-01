@@ -166,6 +166,13 @@ create table if not exists public.list_members (
 create index if not exists list_members_list_idx on public.list_members(list_id);
 create unique index if not exists list_members_list_email_idx on public.list_members(list_id, email);
 
+create table if not exists public.app_settings (
+  key text primary key,
+  value jsonb not null default '{}',
+  description text,
+  updated_at timestamptz default now()
+);
+
 -- RLS policies placeholders
 -- alter table public.emails enable row level security;
 -- create policy "user owns draft" on public.emails for select using (auth.uid() = author_id);

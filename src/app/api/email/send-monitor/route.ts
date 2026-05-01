@@ -17,7 +17,8 @@
 
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { getDailySentCount, DAILY_SEND_LIMIT, todayUTC } from "@/lib/dailyQuota";
+import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
+import { getDailySendLimit } from "@/lib/appSettings";
 import { runQueueWorker } from "@/lib/queueWorker";
 
 function authCheck(request: Request): boolean {
@@ -34,7 +35,8 @@ export async function GET(request: Request) {
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const sentToday = await getDailySentCount(today);
-  const remaining = Math.max(0, DAILY_SEND_LIMIT - sentToday);
+  const dailySendLimit = await getDailySendLimit();
+  const remaining = Math.max(0, dailySendLimit - sentToday);
 
   // Active sends: rows that are in flight right now
   const [
@@ -73,7 +75,7 @@ export async function GET(request: Request) {
     ok: true,
     date: today,
     sentToday,
-    dailyCap: DAILY_SEND_LIMIT,
+    dailyCap: dailySendLimit,
     remaining,
     queue: {
       pending: pending ?? 0,

@@ -4,6 +4,7 @@ const smtpHost = process.env.AWS_SES_SMTP_ENDPOINT;
 const smtpUser = process.env.AWS_SES_SMTP_USERNAME;
 const smtpPass = process.env.AWS_SES_SMTP_PASSWORD;
 const smtpPort = Number(process.env.AWS_SES_SMTP_PORT ?? 587);
+const sesConfigurationSet = process.env.AWS_SES_CONFIGURATION_SET;
 
 // Module-level singleton with connection pooling.
 // Creating a new transporter per call means one TCP handshake per email;
@@ -48,6 +49,9 @@ export async function sendEmail(payload: SendEmailPayload) {
     subject: payload.subject,
     html: payload.html,
     text: payload.text,
+    headers: sesConfigurationSet
+      ? { "X-SES-CONFIGURATION-SET": sesConfigurationSet }
+      : undefined,
   });
 
   if (info.rejected && info.rejected.length > 0) {

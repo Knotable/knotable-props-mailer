@@ -1,13 +1,15 @@
 /**
  * Daily send-quota helpers.
  *
- * SES production quota: 50,000 emails / 24-hour period.
- * We cap at DAILY_SEND_LIMIT (45,000) to leave a safety buffer.
+ * Default SES production quota: 50,000 emails / 24-hour period.
+ * The app defaults to 45,000 to leave a safety buffer, but the active cap is
+ * editable in the analytics UI and stored in public.app_settings.
  */
 
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { DEFAULT_DAILY_SEND_LIMIT, getDailySendLimit } from "@/lib/appSettings";
 
-export const DAILY_SEND_LIMIT = 45_000;
+export const DAILY_SEND_LIMIT = DEFAULT_DAILY_SEND_LIMIT;
 
 /** Returns today's date string in UTC (YYYY-MM-DD). */
 export function todayUTC(): string {
@@ -34,7 +36,8 @@ export async function getDailySentCount(date: string = todayUTC()): Promise<numb
  */
 export async function getRemainingQuota(date: string = todayUTC()): Promise<number> {
   const sent = await getDailySentCount(date);
-  return Math.max(0, DAILY_SEND_LIMIT - sent);
+  const limit = await getDailySendLimit();
+  return Math.max(0, limit - sent);
 }
 
 /**
@@ -49,7 +52,8 @@ export async function getRemainingQuota(date: string = todayUTC()): Promise<numb
 export function buildSendSchedule(
   total: number,
   alreadySentToday: number,
-  startDate: string = todayUTC()
+  startDate: string = todayUTC(),
+  dailyLimit: number = DAILY_SEND_LIMIT,
 ): Array<{ date: string; count: number }> {
   const schedule: Array<{ date: string; count: number }> = [];
   let remaining = total;
@@ -57,17 +61,17 @@ export function buildSendSchedule(
   const date = new Date(startDate + "T00:00:00Z");
 
   // First day: respect whatever quota is left today.
-  const firstSlot = Math.min(remaining, Math.max(0, DAILY_SEND_LIMIT - alreadySentToday));
+  const firstSlot = Math.min(remaining, Math.max(0, dailyLimit - alreadySentToday));
   if (firstSlot > 0) {
     schedule.push({ date: startDate, count: firstSlot });
     remaining -= firstSlot;
   }
 
-  // Subsequent days: full DAILY_SEND_LIMIT each.
+  // Subsequent days: full dailyLimit each.
   while (remaining > 0) {
     date.setUTCDate(date.getUTCDate() + 1);
     const dayStr = date.toISOString().slice(0, 10);
-    const chunk = Math.min(remaining, DAILY_SEND_LIMIT);
+    const chunk = Math.min(remaining, dailyLimit);
     schedule.push({ date: dayStr, count: chunk });
     remaining -= chunk;
   }

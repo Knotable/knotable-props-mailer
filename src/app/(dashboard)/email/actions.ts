@@ -6,7 +6,8 @@ import { z } from "zod";
 import { getServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
-import { DAILY_SEND_LIMIT, getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
+import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
+import { getDailySendLimit } from "@/lib/appSettings";
 import { logAudit } from "@/lib/logger";
 import { runQueueWorker } from "@/lib/queueWorker";
 import type { Json } from "@/supabase/types";
@@ -628,7 +629,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   const today = todayUTC();
   const alreadySentToday = await getDailySentCount(today);
   const estimatedTotal = Math.max(0, totalActiveMembers - excludedRecipients.size);
-  const schedule = buildSendSchedule(estimatedTotal, alreadySentToday, today);
+  const dailySendLimit = await getDailySendLimit();
+  const schedule = buildSendSchedule(estimatedTotal, alreadySentToday, today, dailySendLimit);
   const campaignLabel = `${emailId}:${today}`;
 
   // Prebuild the queue, but keep everything on hold until the operator hits
@@ -888,6 +890,7 @@ export async function getQueueSnapshotAction(emailId?: string) {
   const terminalFailures = failed + dead;
   const total = pending + processing + succeeded + failed + dead + canceled;
   const resolved = succeeded + failed + dead + canceled;
+  const dailySendLimit = await getDailySendLimit();
   const isDrained = total > 0 && pending === 0 && processing === 0;
   const displayStatus =
     total === 0
@@ -919,9 +922,9 @@ export async function getQueueSnapshotAction(emailId?: string) {
     displayStatus,
     statusDetail,
     date: today,
-    dailyCap: DAILY_SEND_LIMIT,
+    dailyCap: dailySendLimit,
     sentToday,
-    remainingToday: Math.max(0, DAILY_SEND_LIMIT - sentToday),
+    remainingToday: Math.max(0, dailySendLimit - sentToday),
     total,
     resolved,
     terminalFailures,
@@ -960,9 +963,10 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     const userId = auth.userId;
 
     const sentToday = await getDailySentCount();
-    const remainingToday = Math.max(0, DAILY_SEND_LIMIT - sentToday);
+    const dailySendLimit = await getDailySendLimit();
+    const remainingToday = Math.max(0, dailySendLimit - sentToday);
     if (remainingToday === 0) {
-      return { error: `Daily cap of ${DAILY_SEND_LIMIT.toLocaleString()} reached. Nothing can be sent right now.` };
+      return { error: `Daily cap of ${dailySendLimit.toLocaleString()} reached. Nothing can be sent right now.` };
     }
 
     const nowIso = new Date().toISOString();

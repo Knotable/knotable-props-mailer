@@ -1,8 +1,24 @@
+/* eslint-disable react-hooks/purity */
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { DAILY_SEND_LIMIT } from "@/lib/dailyQuota";
+import { revalidatePath } from "next/cache";
+import { getServerAuthContext } from "@/lib/authAccess";
+import { getDailySendLimit, setDailySendLimit } from "@/lib/appSettings";
+
+async function updateDailySendLimitAction(formData: FormData) {
+  "use server";
+
+  const auth = await getServerAuthContext();
+  if (!auth?.userId) throw new Error("Unauthorized");
+
+  const raw = String(formData.get("dailySendLimit") ?? "").replace(/,/g, "").trim();
+  const nextLimit = Number(raw);
+  await setDailySendLimit(nextLimit);
+  revalidatePath("/email/analytics");
+}
 
 export default async function AnalyticsPage() {
   const supabase = getSupabaseAdmin();
+  const dailySendLimit = await getDailySendLimit();
 
   // ── Delivery totals — COUNT queries at DB level, not full table scans ────────
   const [
@@ -63,10 +79,10 @@ export default async function AnalyticsPage() {
     campaign_label: string;
     email_id: string;
     list_id: string | null;
-    sent: number;
-    failed: number;
-    pending: number;
-    started_at: string | null;
+      sent: number;
+      failed: number;
+      pending: number;
+      started_at: string | null;
   };
 
   let campaignStats: CampaignStat[] = [];
@@ -122,7 +138,7 @@ export default async function AnalyticsPage() {
   const emailIds = [...new Set(campaignStats.map((c) => c.email_id))];
   const listIds = [...new Set(campaignStats.map((c) => c.list_id).filter(Boolean) as string[])];
 
-  const [{ data: emailRows }, { data: listRows }, { data: eventRows }] =
+  const [{ data: emailRows }, { data: listRows }, { data: eventRows }, { data: queueRows }] =
     await Promise.all([
       emailIds.length
         ? supabase.from("emails").select("id, subject").in("id", emailIds)
@@ -137,6 +153,12 @@ export default async function AnalyticsPage() {
         .in("event_type", ["opened", "clicked", "bounced"])
         .not("email_id", "is", null)
         .gte("received_at", new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()),
+      emailIds.length
+        ? supabase
+            .from("mail_queue")
+            .select("email_id, status, ses_message_id")
+            .in("email_id", emailIds)
+        : Promise.resolve({ data: [] as { email_id: string; status: string; ses_message_id: string | null }[] }),
     ]);
 
   const emailSubjects = new Map((emailRows ?? []).map((e) => [e.id, e.subject]));
@@ -152,12 +174,23 @@ export default async function AnalyticsPage() {
     eventsByEmail.set(ev.email_id, entry);
   }
 
+  const sendConfirmationByEmail = new Map<string, { sent: number; amazonAccepted: number }>();
+  for (const row of queueRows ?? []) {
+    if (!row.email_id || row.status !== "succeeded") continue;
+    const entry = sendConfirmationByEmail.get(row.email_id) ?? { sent: 0, amazonAccepted: 0 };
+    entry.sent++;
+    if (row.ses_message_id) entry.amazonAccepted++;
+    sendConfirmationByEmail.set(row.email_id, entry);
+  }
+
   const campaigns = campaignStats.map((c) => {
     const evts = eventsByEmail.get(c.email_id) ?? { opens: 0, clicks: 0, bounces: 0 };
+    const confirmation = sendConfirmationByEmail.get(c.email_id) ?? { sent: c.sent, amazonAccepted: 0 };
     return {
       ...c,
       subject: emailSubjects.get(c.email_id) ?? null,
       list_name: c.list_id ? (listNames.get(c.list_id) ?? null) : null,
+      amazonAccepted: confirmation.amazonAccepted,
       opens: evts.opens,
       clicks: evts.clicks,
       bounces: evts.bounces,
@@ -171,9 +204,10 @@ export default async function AnalyticsPage() {
         <h2 className="text-2xl font-semibold text-slate-900">Analytics</h2>
         {!hasSnsEvents && (
           <p className="mt-1 text-sm text-amber-600">
-            Open/click/bounce tracking requires SES → SNS →{" "}
+            Bounce/complaint/delivery tracking requires SES → SNS →{" "}
             <code className="rounded bg-amber-50 px-1 text-xs">/api/webhooks/ses</code> to be
-            configured in AWS. Delivery stats below are live.
+            configured in AWS. Opens/clicks only work if SES event publishing is configured for
+            those event types through a configuration set.
           </p>
         )}
       </header>
@@ -196,7 +230,9 @@ export default async function AnalyticsPage() {
           label="Failed"
           value={failed > 0 ? failed.toLocaleString() : "0"}
           sub={
-            totalAttempted > 0
+            hasSnsEvents && bounces > 0
+              ? `${bounces.toLocaleString()} bounces reported`
+              : totalAttempted > 0
               ? `${Math.round((failed / totalAttempted) * 100)}% of attempts`
               : "—"
           }
@@ -218,8 +254,26 @@ export default async function AnalyticsPage() {
 
       {/* ── Daily capacity ── */}
       <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
-        <span className="font-medium">Daily send capacity:</span>{" "}
-        {DAILY_SEND_LIMIT.toLocaleString()} emails/day · {pending.toLocaleString()} pending in queue
+        <form action={updateDailySendLimitAction} className="flex flex-wrap items-end gap-3">
+          <label className="text-sm font-medium text-slate-700">
+            Daily send cap
+            <input
+              name="dailySendLimit"
+              type="number"
+              min={1}
+              max={1_000_000}
+              step={1}
+              defaultValue={dailySendLimit}
+              className="mt-1 w-40 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
+          </label>
+          <button className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
+            Save cap
+          </button>
+          <span className="pb-2 text-slate-500">
+            {dailySendLimit.toLocaleString()} emails/day · {pending.toLocaleString()} pending in queue
+          </span>
+        </form>
       </div>
 
       {/* ── Per-campaign table ── */}
@@ -269,7 +323,21 @@ export default async function AnalyticsPage() {
                       {c.list_name ?? <span className="text-slate-400">—</span>}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {c.sent.toLocaleString()}
+                      <span
+                        className="inline-flex items-center justify-end gap-1"
+                        title={
+                          c.sent > 0 && c.amazonAccepted === c.sent
+                            ? "Amazon SES accepted every sent row and returned message IDs."
+                            : `${c.amazonAccepted.toLocaleString()} of ${c.sent.toLocaleString()} sent rows have SES message IDs.`
+                        }
+                      >
+                        {c.sent > 0 && c.amazonAccepted === c.sent && (
+                          <span className="font-semibold text-green-600" aria-label="SES accepted">
+                            ✓
+                          </span>
+                        )}
+                        {c.sent.toLocaleString()}
+                      </span>
                     </td>
                     <td
                       className={`px-4 py-3 text-right tabular-nums ${

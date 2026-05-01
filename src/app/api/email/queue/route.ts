@@ -15,7 +15,8 @@
 
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { getDailySentCount, DAILY_SEND_LIMIT, todayUTC } from "@/lib/dailyQuota";
+import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
+import { getDailySendLimit } from "@/lib/appSettings";
 import { runQueueWorker } from "@/lib/queueWorker";
 
 export async function POST(request: Request) {
@@ -54,7 +55,8 @@ export async function GET(request: Request) {
 
   const today = todayUTC();
   const sentToday = await getDailySentCount(today);
-  const remaining = Math.max(0, DAILY_SEND_LIMIT - sentToday);
+  const dailySendLimit = await getDailySendLimit();
+  const remaining = Math.max(0, dailySendLimit - sentToday);
 
   const supabase = getSupabaseAdmin();
   const { count: pendingCount } = await supabase
@@ -65,7 +67,7 @@ export async function GET(request: Request) {
   return NextResponse.json({
     date: today,
     sentToday,
-    dailyCap: DAILY_SEND_LIMIT,
+    dailyCap: dailySendLimit,
     remaining,
     pendingInQueue: pendingCount ?? 0,
   });
