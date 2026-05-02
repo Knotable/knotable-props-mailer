@@ -13,12 +13,39 @@ async function requireAuthUserId(): Promise<string> {
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const IMPORT_MEMBERS_CHUNK_SIZE = 500;
 
-const parseEmails = (input: string) =>
-  input
+function parseEmailImport(input: string) {
+  const tokens = input
     .split(/[\n,]/)
     .map((v) => v.trim().toLowerCase())
-    .filter((v) => EMAIL_RE.test(v));
+    .filter(Boolean);
+
+  const seen = new Set<string>();
+  const emails: string[] = [];
+  let skippedInvalid = 0;
+  let skippedDuplicate = 0;
+
+  for (const token of tokens) {
+    if (!EMAIL_RE.test(token)) {
+      skippedInvalid += 1;
+      continue;
+    }
+    if (seen.has(token)) {
+      skippedDuplicate += 1;
+      continue;
+    }
+    seen.add(token);
+    emails.push(token);
+  }
+
+  return {
+    emails,
+    skippedInvalid,
+    skippedDuplicate,
+    submitted: tokens.length,
+  };
+}
 
 const UpsertListSchema = z.object({
   name: z.string().min(1).max(200),
@@ -28,7 +55,7 @@ const UpsertListSchema = z.object({
 
 const ImportMembersSchema = z.object({
   listId: z.string().uuid(),
-  members: z.string().min(1).max(5_000_000),
+  members: z.string().min(1).max(20_000_000),
 });
 
 export async function upsertListAction(formData: FormData) {
@@ -95,22 +122,39 @@ export async function importMembersAction(formData: FormData) {
     .maybeSingle();
   if (!list) throw new Error("List not found");
 
-  const emails = parseEmails(raw).slice(0, 10_000);
+  const { emails, skippedInvalid, skippedDuplicate, submitted } = parseEmailImport(raw);
   if (!emails.length) throw new Error("No members provided");
 
-  const rows = emails.map((email) => ({ list_id: listId, email, status: "active" }));
-  const { error } = await supabase
-    .from("list_members")
-    .upsert(rows, { onConflict: "list_id,email" });
-  if (error) throw error;
+  for (let i = 0; i < emails.length; i += IMPORT_MEMBERS_CHUNK_SIZE) {
+    const rows = emails
+      .slice(i, i + IMPORT_MEMBERS_CHUNK_SIZE)
+      .map((email) => ({ list_id: listId, email, status: "active" }));
+    const { error } = await supabase
+      .from("list_members")
+      .upsert(rows, { onConflict: "list_id,email" });
+    if (error) throw error;
+  }
 
   logAudit({
     userId,
     action: "list.import_members",
     entity: "lists",
     entityId: listId,
-    payload: { count: emails.length },
+    payload: {
+      submitted,
+      upserted: emails.length,
+      skippedInvalid,
+      skippedDuplicate,
+      chunks: Math.ceil(emails.length / IMPORT_MEMBERS_CHUNK_SIZE),
+    },
   }).catch(console.error);
 
   revalidatePath("/lists");
+  revalidatePath(`/lists/${listId}`);
+  return {
+    submitted,
+    upserted: emails.length,
+    skippedInvalid,
+    skippedDuplicate,
+  };
 }

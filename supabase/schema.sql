@@ -77,7 +77,7 @@ create table if not exists public.mail_queue (
   id uuid primary key default gen_random_uuid(),
   email_id uuid references public.emails on delete cascade,
   payload jsonb not null,
-  status text not null default 'pending' check (status in ('pending','processing','succeeded','failed','dead')),
+  status text not null default 'pending' check (status in ('pending','processing','succeeded','failed','dead','canceled')),
   attempts integer not null default 0,
   max_attempts integer not null default 5,
   dedupe_hash text,
@@ -97,6 +97,7 @@ create table if not exists public.mail_queue (
 create index if not exists mail_queue_status_idx on public.mail_queue(status, available_at);
 create index if not exists mail_queue_send_date_status_idx on public.mail_queue(send_date, status);
 create index if not exists mail_queue_campaign_label_idx on public.mail_queue(campaign_label);
+create unique index if not exists mail_queue_dedupe_hash_unique_idx on public.mail_queue(dedupe_hash);
 
 create table if not exists public.queue_metrics (
   id uuid primary key default gen_random_uuid(),

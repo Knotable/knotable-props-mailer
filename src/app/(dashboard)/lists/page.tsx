@@ -1,5 +1,6 @@
 import { createServerAppClient } from "@/lib/authAccess";
-import { importMembersAction, upsertListAction } from "./actions";
+import { upsertListAction } from "./actions";
+import { ImportMembersForm } from "./import-members-form";
 import Link from "next/link";
 
 export default async function ListsPage() {
@@ -67,14 +68,7 @@ export default async function ListsPage() {
                     </p>
                   </div>
                 </div>
-                <form action={importMembersAction} className="space-y-2 rounded-lg border border-dashed border-slate-300 p-3">
-                  <input type="hidden" name="listId" value={list.id} />
-                  <label className="text-sm font-medium text-slate-700">
-                    Paste members (CSV or newline)
-                    <textarea name="members" rows={3} placeholder="address@example.com" className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2" />
-                  </label>
-                  <button className="rounded-md border border-slate-200 px-3 py-1 text-xs">Import / Upsert</button>
-                </form>
+                <ImportMembersForm listId={list.id} />
               </div>
             );
           })

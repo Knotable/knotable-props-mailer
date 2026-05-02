@@ -118,6 +118,40 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     setAutosaveState("idle");
   };
 
+  // ── Preview ────────────────────────────────────────────────────────────────
+  const handlePreview = () => {
+    if (!formRef.current) return;
+    const fd = new FormData(formRef.current);
+    const html = fd.get("html") as string | null;
+    if (!html) return;
+    const win = window.open("", "_blank", "width=800,height=700,resizable=yes,scrollbars=yes");
+    if (!win) return;
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+  };
+
+  // ── Send Test ──────────────────────────────────────────────────────────────
+  const [sendingTest, setSendingTest] = useState(false);
+
+  const handleSendTest = async () => {
+    if (!formRef.current) return;
+    cancelAutosave();
+    setSendingTest(true);
+    setBanner(null);
+    try {
+      const fd = new FormData(formRef.current);
+      // Override recipients with the logged-in user's address.
+      fd.set("recipients", "a@sarva.co");
+      const res = await sendTestAction(fd);
+      setBanner({ ok: true, message: `Test sent to a@sarva.co (${res.sent} email${res.sent !== 1 ? "s" : ""}).` });
+    } catch (err) {
+      setBanner({ ok: false, message: getActionErrorMessage(err, "Test send failed.") });
+    } finally {
+      setSendingTest(false);
+    }
+  };
+
   // ── Save Draft ─────────────────────────────────────────────────────────────
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -142,8 +176,8 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
   };
 
   // ── Core queue helper (used by both first-send and "send anyway") ─────────
-  const runQueueCampaign = async (skipDuplicateCheck: boolean, emailIdOverride?: string) => {
-    const emailId = emailIdOverride ?? draftId;
+  const runQueueCampaign = async (skipDuplicateCheck: boolean, emailIdOverride?: string, excludeRecipients?: string[]) => {
+    let emailId = emailIdOverride ?? draftId;
     if (!formRef.current || !selectedList || !emailId) return;
     cancelAutosave();
     setSending(true);
@@ -151,6 +185,16 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     setDupWarning(null);
 
     try {
+      const saveFd = new FormData(formRef.current);
+      saveFd.set("id", emailId);
+      const saveRes = await saveDraftAction(saveFd);
+      emailId = saveRes.id;
+      if (saveRes.id !== draftId) {
+        setDraftId(saveRes.id);
+        localStorage.setItem(LAST_DRAFT_KEY, saveRes.id);
+        router.replace(`/email/composer?id=${saveRes.id}`, { scroll: false });
+      }
+
       let offset = 0;
       let lastOk: QueueCampaignOk | null = null;
 
@@ -160,6 +204,9 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
         fd.set("listId", selectedList.id);
         fd.set("offset", String(offset));
         if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
+        if (excludeRecipients && excludeRecipients.length > 0) {
+          fd.set("excludeRecipients", JSON.stringify(excludeRecipients));
+        }
 
         const res = await queueCampaignAction(fd);
         if (!res.ok) {
@@ -238,6 +285,18 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
 
   // ── Queue anyway (override duplicate warning) ──────────────────────────────
   const handleSendAnyway = () => runQueueCampaign(true);
+
+  // ── Queue without duplicates (exclude exact duplicate recipients) ──────────
+  const handleSendWithoutDuplicates = () => {
+    if (!dupWarning) return;
+    const exactDuplicates = dupWarning.warningGroups.flatMap((g) => g.exactRecipientAddresses);
+    runQueueCampaign(true, undefined, exactDuplicates);
+  };
+
+  const canQueueWithoutDuplicates =
+    !!dupWarning &&
+    dupWarning.duplicateCount > 0 &&
+    dupWarning.duplicateCount === dupWarning.sampledDuplicateCount;
 
   return (
     <div className="space-y-6">
@@ -429,7 +488,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
             {dupWarning.warningGroups.length > 0 && (
               <div>
                 <p className="mb-2 text-xs font-medium text-amber-700">
-                  Review each send cluster to see when it went out and who already received it:
+                  Review sampled send clusters to see when they went out and who already received them:
                 </p>
                 <div className="space-y-2">
                   {dupWarning.warningGroups.map((group) => (
@@ -481,7 +540,12 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
                 </div>
               </div>
             )}
-            <div className="flex gap-2 pt-1">
+            {dupWarning.duplicateCount > dupWarning.sampledDuplicateCount && (
+              <p className="text-xs text-amber-800">
+                Showing a bounded sample of {dupWarning.warningSampleLimit.toLocaleString()} rows; duplicate removal is disabled for this large warning set.
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2 pt-1">
               <button
                 type="button"
                 onClick={() => setDupWarning(null)}
@@ -489,13 +553,23 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
               >
                 Cancel
               </button>
+              {canQueueWithoutDuplicates && (
+                <button
+                  type="button"
+                  onClick={handleSendWithoutDuplicates}
+                  disabled={sending}
+                  className="rounded-md border border-amber-400 bg-amber-100 px-4 py-1.5 text-sm font-semibold text-amber-900 hover:bg-amber-200 disabled:opacity-50"
+                >
+                  {sending ? "Queueing…" : `Remove ${dupWarning.duplicateCount.toLocaleString()} duplicate${dupWarning.duplicateCount !== 1 ? "s" : ""} & queue`}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={handleSendAnyway}
                 disabled={sending}
                 className="rounded-md bg-amber-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
               >
-                {sending ? "Queueing…" : "Queue anyway"}
+                {sending ? "Queueing…" : "Send anyway"}
               </button>
             </div>
           </div>
@@ -509,6 +583,23 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
             className="rounded-md bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
           >
             {saving ? "Saving…" : "Save Draft"}
+          </button>
+
+          <button
+            type="button"
+            onClick={handlePreview}
+            className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Preview
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSendTest}
+            disabled={sendingTest}
+            className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            {sendingTest ? "Sending test…" : "Send Test"}
           </button>
 
           <button

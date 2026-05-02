@@ -46,6 +46,7 @@ const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
 const QUEUE_RELEASE_CHUNK_SIZE = 200;
 const QUEUE_RELEASE_SELECT_PAGE_SIZE = 1_000;
 const QUEUE_CREATE_PAGE_SIZE = 1_000;
+const QUEUE_WARNING_SAMPLE_LIMIT = 500;
 
 // Throws if there is no authenticated session — middleware should have already
 // caught unauthenticated requests, but this is a second line of defence for
@@ -259,6 +260,9 @@ export type QueueCampaignConfirm = {
   requiresConfirmation: true;
   duplicateCount: number;
   recentlySentCount: number;
+  sampledDuplicateCount: number;
+  sampledRecentlySentCount: number;
+  warningSampleLimit: number;
   warningGroups: {
     key: string;
     emailId: string | null;
@@ -308,7 +312,7 @@ async function loadActiveListMemberPage(
 ) {
   const { data, error } = await supabase
     .from("list_members")
-    .select("email")
+    .select("email, metadata")
     .eq("list_id", listId)
     .eq("status", "active")
     .order("email", { ascending: true })
@@ -316,6 +320,25 @@ async function loadActiveListMemberPage(
 
   if (error) throw error;
   return data ?? [];
+}
+
+function listMemberToName(metadata: Json | null | undefined) {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
+
+  const record = metadata as Record<string, unknown>;
+  for (const key of ["toName", "display_name", "displayName"]) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+
+  const name = typeof record.name === "string" ? record.name.trim() : "";
+  const rank =
+    typeof record.rank === "number" || typeof record.rank === "string"
+      ? String(record.rank).trim()
+      : "";
+
+  if (name && rank) return `${name} #${rank}`;
+  return name || undefined;
 }
 
 function queueDedupeHash(emailId: string, recipientEmail: string) {
@@ -333,19 +356,24 @@ async function buildQueueWarningSummary(
     .toISOString()
     .slice(0, 10);
 
-  const [{ data: exactRows }, { data: recentRows }] = await Promise.all([
+  const [{ data: exactRows, count: exactCount }, { data: recentRows, count: recentCount }] = await Promise.all([
     supabase
       .from("mail_queue")
-      .select("id, email_id, campaign_label, payload, send_date, created_at, updated_at")
+      .select("id, email_id, campaign_label, payload, send_date, created_at, updated_at", { count: "exact" })
       .eq("email_id", emailId)
       .eq("list_id", listId)
-      .eq("status", "succeeded"),
+      .eq("status", "succeeded")
+      .order("updated_at", { ascending: false })
+      .limit(QUEUE_WARNING_SAMPLE_LIMIT),
     supabase
       .from("mail_queue")
-      .select("id, email_id, campaign_label, payload, send_date, created_at, updated_at")
+      .select("id, email_id, campaign_label, payload, send_date, created_at, updated_at", { count: "exact" })
       .eq("list_id", listId)
       .eq("status", "succeeded")
-      .gte("send_date", thirtyDaysAgoDate),
+      .neq("email_id", emailId)
+      .gte("send_date", thirtyDaysAgoDate)
+      .order("send_date", { ascending: false })
+      .limit(QUEUE_WARNING_SAMPLE_LIMIT),
   ]);
 
   const relatedEmailIds = [...new Set(
@@ -428,8 +456,11 @@ async function buildQueueWarningSummary(
   for (const row of recentRows ?? []) addRow(row, "recent");
 
   return {
-    duplicateCount: duplicateRecipients.size,
-    recentlySentCount: recentRecipients.size,
+    duplicateCount: exactCount ?? duplicateRecipients.size,
+    recentlySentCount: recentCount ?? recentRecipients.size,
+    sampledDuplicateCount: duplicateRecipients.size,
+    sampledRecentlySentCount: recentRecipients.size,
+    warningSampleLimit: QUEUE_WARNING_SAMPLE_LIMIT,
     warningGroups: [...groups.values()]
       .sort((a, b) => b.date.localeCompare(a.date))
       .map((group) => ({
@@ -529,7 +560,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       listId,
     );
 
-    if (warningSummary.warningGroups.length > 0) {
+    if (warningSummary.duplicateCount > 0 || warningSummary.recentlySentCount > 0) {
       const { data: listRow } = await supabase
         .from("lists")
         .select("name")
@@ -559,6 +590,9 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
         requiresConfirmation: true,
         duplicateCount: warningSummary.duplicateCount,
         recentlySentCount: warningSummary.recentlySentCount,
+        sampledDuplicateCount: warningSummary.sampledDuplicateCount,
+        sampledRecentlySentCount: warningSummary.sampledRecentlySentCount,
+        warningSampleLimit: warningSummary.warningSampleLimit,
         warningGroups: warningSummary.warningGroups,
         listName: listRow?.name,
       };
@@ -599,6 +633,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       list_id: listId,
       payload: {
         to: member.email,
+        toName: listMemberToName(member.metadata),
         tags: email.tags ?? [],
         campaigns: email.campaigns ?? [],
       },
@@ -615,7 +650,10 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   for (let i = 0; i < queueRows.length; i += CHUNK) {
     const { error } = await supabase
       .from("mail_queue")
-      .insert(queueRows.slice(i, i + CHUNK));
+      .upsert(queueRows.slice(i, i + CHUNK), {
+        onConflict: "dedupe_hash",
+        ignoreDuplicates: true,
+      });
     if (error) throw error;
   }
 
@@ -976,9 +1014,13 @@ export async function editQueuedEmailAction(
     }
     const userId = auth.userId;
 
+    // Soft-cancel unsent rows so we preserve a record of who wasn't sent to.
+    // 'processing' rows are also canceled here — the stuck-lock reclaim won't
+    // touch canceled rows, so they won't resurface after the edit.
+    const nowIso = new Date().toISOString();
     await supabase
       .from("mail_queue")
-      .delete()
+      .update({ status: "canceled", locked_at: null, updated_at: nowIso })
       .eq("email_id", id)
       .in("status", ["pending", "processing"]);
 
@@ -1067,9 +1109,13 @@ export async function cancelEmailAction(formData: FormData): Promise<{ error?: s
     }
     const userId = auth.userId;
 
+    // Soft-cancel unsent rows so the record of who wasn't reached is preserved.
+    // A subsequent re-queue can use mail_queue WHERE status='canceled' to find
+    // exactly who needs to be retried.
+    const nowIso = new Date().toISOString();
     await supabase
       .from("mail_queue")
-      .delete()
+      .update({ status: "canceled", locked_at: null, updated_at: nowIso })
       .eq("email_id", id)
       .in("status", ["pending", "processing"]);
 
