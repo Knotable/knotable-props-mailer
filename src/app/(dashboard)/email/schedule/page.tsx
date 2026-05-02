@@ -154,6 +154,14 @@ export default async function SchedulePage() {
                       Preview
                     </Link>
                   )}
+                  {!isDraft && (
+                    <Link
+                      href={`/email/monitor?emailId=${item.id}`}
+                      className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      Monitor
+                    </Link>
+                  )}
                   {isDraft && (
                     <Link
                       href={`/email/composer?id=${item.id}`}

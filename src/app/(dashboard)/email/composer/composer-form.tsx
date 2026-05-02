@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { saveDraftAction, sendTestAction, queueCampaignAction, type QueueCampaignConfirm } from "../actions";
+import { saveDraftAction, sendTestAction, queueCampaignAction, type QueueCampaignConfirm, type QueueCampaignOk } from "../actions";
 
 const LAST_DRAFT_KEY = "composer.lastDraftId";
 const AUTOSAVE_DELAY_MS = 3_000;
@@ -149,24 +149,41 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     setSending(true);
     setBanner(null);
     setDupWarning(null);
-    const fd = new FormData(formRef.current);
-    fd.set("emailId", emailId);
-    fd.set("listId", selectedList.id);
-    if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
 
     try {
-      const res = await queueCampaignAction(fd);
-      if (!res.ok && res.requiresConfirmation) {
-        setDupWarning(res);
-        return;
-      }
-      if (res.ok) {
+      let offset = 0;
+      let lastOk: QueueCampaignOk | null = null;
+
+      for (;;) {
+        const fd = new FormData(formRef.current);
+        fd.set("emailId", emailId);
+        fd.set("listId", selectedList.id);
+        fd.set("offset", String(offset));
+        if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
+
+        const res = await queueCampaignAction(fd);
+        if (!res.ok) {
+          setDupWarning(res);
+          return;
+        }
+
+        lastOk = res;
         setBanner({
           ok: true,
-          message: `Queued ${res.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${res.daysNeeded > 1 ? ` (${res.daysNeeded} send-days at current quota)` : ""}.`,
+          message: `Queueing "${selectedList.name}": ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} prepared...`,
         });
-        router.push("/email/schedule");
+
+        if (!res.hasMore || !res.nextOffset) break;
+        offset = res.nextOffset;
       }
+
+      if (lastOk?.ok) {
+        setBanner({
+          ok: true,
+          message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
+        });
+      }
+      router.push("/email/schedule");
     } catch (err) {
       setBanner({ ok: false, message: getActionErrorMessage(err, "Queue failed.") });
     } finally {

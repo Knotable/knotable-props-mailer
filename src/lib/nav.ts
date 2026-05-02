@@ -21,6 +21,11 @@ export const dashboardNav: NavItem[] = [
     description: "View sent emails, delivery stats, and previews",
   },
   {
+    label: "Monitor",
+    href: "/email/monitor",
+    description: "Drain a large queued campaign safely",
+  },
+  {
     label: "Analytics",
     href: "/email/analytics",
     description: "Track opens, clicks, and deliverability",

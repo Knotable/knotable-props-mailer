@@ -1,5 +1,6 @@
 'use server';
 
+import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { getServerAuthContext } from "@/lib/authAccess";
@@ -26,6 +27,7 @@ const QueueCampaignSchema = z.object({
   listId: z.string().uuid(),
   skipDuplicateCheck: z.string().optional(),
   excludeRecipients: z.string().optional(),
+  offset: z.string().optional(),
 });
 
 const SendTestSchema = z.object({
@@ -42,6 +44,8 @@ const SendTestSchema = z.object({
 const EmailIdSchema = z.object({ id: z.string().uuid() });
 const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
 const QUEUE_RELEASE_CHUNK_SIZE = 200;
+const QUEUE_RELEASE_SELECT_PAGE_SIZE = 1_000;
+const QUEUE_CREATE_PAGE_SIZE = 1_000;
 
 // Throws if there is no authenticated session — middleware should have already
 // caught unauthenticated requests, but this is a second line of defence for
@@ -243,8 +247,12 @@ export async function saveDraftAction(formData: FormData) {
 export type QueueCampaignOk = {
   ok: true;
   totalRecipients: number;
+  queuedRecipients: number;
+  remainingRecipients: number;
   daysNeeded: number;
   schedule: { date: string; count: number }[];
+  nextOffset?: number;
+  hasMore?: boolean;
 };
 export type QueueCampaignConfirm = {
   ok: false;
@@ -279,38 +287,48 @@ type WarningAccumulator = {
   otherRecentRecipientAddresses: Set<string>;
 };
 
-async function loadActiveListMembers(
+async function countActiveListMembers(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   listId: string,
 ) {
-  const PAGE = 1000;
-  const members: { email: string }[] = [];
+  const { count, error } = await supabase
+    .from("list_members")
+    .select("id", { count: "exact", head: true })
+    .eq("list_id", listId)
+    .eq("status", "active");
 
-  for (let from = 0; ; from += PAGE) {
-    const { data: memberPage, error: pageError } = await supabase
-      .from("list_members")
-      .select("email")
-      .eq("list_id", listId)
-      .eq("status", "active")
-      .range(from, from + PAGE - 1);
+  if (error) throw error;
+  return count ?? 0;
+}
 
-    if (pageError) throw pageError;
-    if (!memberPage || memberPage.length === 0) break;
+async function loadActiveListMemberPage(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  listId: string,
+  offset: number,
+) {
+  const { data, error } = await supabase
+    .from("list_members")
+    .select("email")
+    .eq("list_id", listId)
+    .eq("status", "active")
+    .order("email", { ascending: true })
+    .range(offset, offset + QUEUE_CREATE_PAGE_SIZE - 1);
 
-    members.push(...memberPage);
-    if (memberPage.length < PAGE) break;
-  }
+  if (error) throw error;
+  return data ?? [];
+}
 
-  return members;
+function queueDedupeHash(emailId: string, recipientEmail: string) {
+  return createHash("sha256")
+    .update(`${emailId}:${normalizeEmailAddress(recipientEmail)}`)
+    .digest("hex");
 }
 
 async function buildQueueWarningSummary(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
   listId: string,
-  activeMemberEmails: string[],
 ) {
-  const memberSet = new Set(activeMemberEmails.map((email) => normalizeEmailAddress(email)));
   const thirtyDaysAgoDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
     .toISOString()
     .slice(0, 10);
@@ -369,7 +387,7 @@ async function buildQueueWarningSummary(
     seenRowIds.add(row.id);
 
     const recipient = normalizeEmailAddress((row.payload as { to?: string } | null)?.to);
-    if (!recipient || !memberSet.has(recipient)) return;
+    if (!recipient) return;
 
     const receivedAt = row.updated_at ?? row.created_at;
     const date = row.send_date ?? row.created_at?.slice(0, 10) ?? "unknown";
@@ -403,7 +421,7 @@ async function buildQueueWarningSummary(
       recentRecipients.add(recipient);
     }
 
-    groups.set(date, existing);
+    groups.set(clusterKey, existing);
   };
 
   for (const row of exactRows ?? []) addRow(row, "exact");
@@ -450,12 +468,14 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       listId: formData.get("listId"),
       skipDuplicateCheck: formData.get("skipDuplicateCheck") ?? undefined,
       excludeRecipients: formData.get("excludeRecipients") ?? undefined,
+      offset: formData.get("offset") ?? undefined,
     });
     if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
 
     const supabase = getSupabaseAdmin();
     const { emailId, listId } = parsed.data;
     const skipDuplicateCheck = parsed.data.skipDuplicateCheck === "true";
+    const offset = Math.max(0, Number.parseInt(parsed.data.offset ?? "0", 10) || 0);
     const excludedRecipients = (() => {
       if (!parsed.data.excludeRecipients) return new Set<string>();
       try {
@@ -481,30 +501,32 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
 
-  // Hard guard: can't queue if a run is already in flight.
-  const { count: existingCount } = await supabase
-    .from("mail_queue")
-    .select("id", { count: "exact", head: true })
-    .eq("email_id", emailId)
-    .in("status", ["pending", "processing"]);
+  // Hard guard on the first batch only: follow-up batches are the same
+  // intentional queue-build operation and must be allowed to append.
+  if (offset === 0) {
+    const { count: existingCount } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("email_id", emailId)
+      .in("status", ["pending", "processing"]);
 
-  if (existingCount && existingCount > 0) {
-    throw new Error(
-      `This email already has ${existingCount} pending queue item(s). ` +
-      "Cancel the existing campaign before re-queuing.",
-    );
+    if (existingCount && existingCount > 0) {
+      throw new Error(
+        `This email already has ${existingCount} pending queue item(s). ` +
+        "Cancel the existing campaign before re-queuing.",
+      );
+    }
   }
 
-  const members = await loadActiveListMembers(supabase, listId);
-  if (members.length === 0) throw new Error("List has no active members");
+  const totalActiveMembers = await countActiveListMembers(supabase, listId);
+  if (totalActiveMembers === 0) throw new Error("List has no active members");
 
   // ── Pre-flight duplicate / recent-contact check ─────────────────────────
-  if (!skipDuplicateCheck) {
+  if (!skipDuplicateCheck && offset === 0) {
     const warningSummary = await buildQueueWarningSummary(
       supabase,
       emailId,
       listId,
-      members.map((member) => member.email),
     );
 
     if (warningSummary.warningGroups.length > 0) {
@@ -543,7 +565,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     }
   }
 
-  const membersToQueue = members.filter(
+  const memberPage = await loadActiveListMemberPage(supabase, listId, offset);
+  const membersToQueue = memberPage.filter(
     (member) => !excludedRecipients.has(normalizeEmailAddress(member.email)),
   );
 
@@ -553,7 +576,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
 
   const today = todayUTC();
   const alreadySentToday = await getDailySentCount(today);
-  const schedule = buildSendSchedule(membersToQueue.length, alreadySentToday, today);
+  const estimatedTotal = Math.max(0, totalActiveMembers - excludedRecipients.size);
+  const schedule = buildSendSchedule(estimatedTotal, alreadySentToday, today);
   const campaignLabel = `${emailId}:${today}`;
 
   // Prebuild the queue, but keep everything on hold until the operator hits
@@ -566,6 +590,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     available_at: string;
     send_date: string | null;
     campaign_label: string;
+    dedupe_hash: string;
   }[] = [];
 
   for (const member of membersToQueue) {
@@ -573,11 +598,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       email_id: emailId,
       list_id: listId,
       payload: {
-        from: email.from_address,
         to: member.email,
-        subject: email.subject,
-        html: email.html,
-        text: email.text ?? undefined,
         tags: email.tags ?? [],
         campaigns: email.campaigns ?? [],
       },
@@ -585,6 +606,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       available_at: QUEUE_HOLD_AT,
       send_date: null,
       campaign_label: campaignLabel,
+      dedupe_hash: queueDedupeHash(emailId, member.email),
     });
   }
 
@@ -602,6 +624,11 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     .update({ status: "queued" })
     .eq("id", emailId);
 
+  const nextOffset = offset + memberPage.length;
+  const hasMore = memberPage.length === QUEUE_CREATE_PAGE_SIZE && nextOffset < totalActiveMembers;
+  const queuedRecipients = Math.min(nextOffset, totalActiveMembers);
+  const remainingRecipients = Math.max(0, totalActiveMembers - queuedRecipients);
+
   logAudit({
     userId,
     action: "campaign.queued",
@@ -609,7 +636,10 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     entityId: emailId,
     payload: {
       listId,
-      totalRecipients: membersToQueue.length,
+      totalRecipients: estimatedTotal,
+      queuedThisBatch: membersToQueue.length,
+      queuedRecipients,
+      remainingRecipients,
       daysNeeded: schedule.length,
       startDate: today,
       mode: "queued_for_manual_send",
@@ -619,9 +649,13 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   revalidatePath("/email/schedule");
   return {
     ok: true as const,
-    totalRecipients: membersToQueue.length,
+    totalRecipients: estimatedTotal,
+    queuedRecipients,
+    remainingRecipients,
     daysNeeded: schedule.length,
     schedule: schedule.map((s) => ({ date: s.date, count: s.count })),
+    nextOffset: hasMore ? nextOffset : undefined,
+    hasMore,
   };
   } catch (err) {
     throw new Error(toActionErrorMessage(err, "Unable to queue this campaign. Please verify the list and try again."));
@@ -717,9 +751,9 @@ export async function sendTestAction(formData: FormData) {
 }
 
 // ── Manually trigger the queue worker ───────────────────────────────────────
-export async function triggerQueueAction(): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
+export async function triggerQueueAction(emailId?: string): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
   await requireAuthUserId();
-  const data = await runQueueWorker();
+  const data = await runQueueWorker({ emailId });
   revalidatePath("/email/schedule");
   revalidatePath("/email/sends");
   return {
@@ -730,7 +764,93 @@ export async function triggerQueueAction(): Promise<{ processed: number; succeed
   };
 }
 
+export async function getQueueSnapshotAction(emailId?: string) {
+  await requireAuthUserId();
+  const supabase = getSupabaseAdmin();
+  const today = todayUTC();
+  const nowIso = new Date().toISOString();
+  const sentToday = await getDailySentCount(today);
+
+  const statusCount = async (status: string) => {
+    let query = supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("status", status);
+    if (emailId) query = query.eq("email_id", emailId);
+    const { count, error } = await query;
+    if (error) throw error;
+    return count ?? 0;
+  };
+
+  let pendingDueQuery = supabase
+    .from("mail_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "pending")
+    .lte("available_at", nowIso);
+  let pendingHeldQuery = supabase
+    .from("mail_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "pending")
+    .gt("available_at", nowIso);
+
+  if (emailId) {
+    pendingDueQuery = pendingDueQuery.eq("email_id", emailId);
+    pendingHeldQuery = pendingHeldQuery.eq("email_id", emailId);
+  }
+
+  const [
+    pending,
+    processing,
+    succeeded,
+    failed,
+    dead,
+    canceled,
+    { count: pendingDue },
+    { count: pendingHeld },
+  ] = await Promise.all([
+    statusCount("pending"),
+    statusCount("processing"),
+    statusCount("succeeded"),
+    statusCount("failed"),
+    statusCount("dead"),
+    statusCount("canceled"),
+    pendingDueQuery,
+    pendingHeldQuery,
+  ]);
+
+  let subject: string | null = null;
+  let emailStatus: string | null = null;
+  if (emailId) {
+    const { data } = await supabase
+      .from("emails")
+      .select("subject, status")
+      .eq("id", emailId)
+      .maybeSingle();
+    subject = data?.subject ?? null;
+    emailStatus = data?.status ?? null;
+  }
+
+  return {
+    emailId: emailId ?? null,
+    subject,
+    emailStatus,
+    date: today,
+    dailyCap: DAILY_SEND_LIMIT,
+    sentToday,
+    remainingToday: Math.max(0, DAILY_SEND_LIMIT - sentToday),
+    pending,
+    pendingDue: pendingDue ?? 0,
+    pendingHeld: pendingHeld ?? 0,
+    processing,
+    succeeded,
+    failed,
+    dead,
+    canceled,
+  };
+}
+
 export async function sendQueuedEmailAction(formData: FormData): Promise<{
+  released?: number;
   processed?: number;
   succeeded?: number;
   failed?: number;
@@ -757,26 +877,45 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       return { error: `Daily cap of ${DAILY_SEND_LIMIT.toLocaleString()} reached. Nothing can be sent right now.` };
     }
 
-    const { data: queuedRows, error: queuedError } = await supabase
+    const nowIso = new Date().toISOString();
+    const { count: dueBefore } = await supabase
       .from("mail_queue")
-      .select("id")
+      .select("id", { count: "exact", head: true })
       .eq("email_id", id)
       .eq("status", "pending")
-      .order("created_at", { ascending: true })
-      .limit(remainingToday);
-    if (queuedError) return { error: queuedError.message };
-    if (!queuedRows?.length) return { error: "No queued recipients are ready for this email." };
+      .lte("available_at", nowIso);
 
-    const queueIds = queuedRows.map((row) => row.id);
-    const nowIso = new Date().toISOString();
+    let releasedCount = 0;
 
-    for (let i = 0; i < queueIds.length; i += QUEUE_RELEASE_CHUNK_SIZE) {
-      const chunk = queueIds.slice(i, i + QUEUE_RELEASE_CHUNK_SIZE);
-      const { error: releaseError } = await supabase
+    while (releasedCount < remainingToday) {
+      const { data: queuedRows, error: queuedError } = await supabase
         .from("mail_queue")
-        .update({ available_at: nowIso, updated_at: nowIso })
-        .in("id", chunk);
-      if (releaseError) return { error: releaseError.message };
+        .select("id")
+        .eq("email_id", id)
+        .eq("status", "pending")
+        .gt("available_at", nowIso)
+        .order("created_at", { ascending: true })
+        .limit(Math.min(QUEUE_RELEASE_SELECT_PAGE_SIZE, remainingToday - releasedCount));
+      if (queuedError) return { error: queuedError.message };
+      if (!queuedRows?.length) break;
+
+      const queueIds = queuedRows.map((row) => row.id);
+
+      for (let i = 0; i < queueIds.length; i += QUEUE_RELEASE_CHUNK_SIZE) {
+        const chunk = queueIds.slice(i, i + QUEUE_RELEASE_CHUNK_SIZE);
+        const { error: releaseError } = await supabase
+          .from("mail_queue")
+          .update({ available_at: nowIso, updated_at: nowIso })
+          .in("id", chunk);
+        if (releaseError) return { error: releaseError.message };
+      }
+
+      releasedCount += queueIds.length;
+      if (queuedRows.length < QUEUE_RELEASE_SELECT_PAGE_SIZE) break;
+    }
+
+    if (releasedCount === 0 && (dueBefore ?? 0) === 0) {
+      return { error: "No queued recipients are ready for this email." };
     }
 
     await supabase
@@ -798,7 +937,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       entity: "emails",
       entityId: id,
       payload: {
-        released: queueIds.length,
+        released: releasedCount,
         processed: result.processed,
         succeeded: result.succeeded,
         failed: result.failed,
@@ -810,6 +949,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     revalidatePath("/email/sends");
 
     return {
+      released: releasedCount,
       processed: result.processed,
       succeeded: result.succeeded,
       failed: result.failed,

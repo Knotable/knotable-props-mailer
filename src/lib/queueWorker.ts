@@ -3,17 +3,35 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
 import { DAILY_SEND_LIMIT, getDailySentCount, todayUTC } from "@/lib/dailyQuota";
 
+function smtpResponseCode(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const err = error as Record<string, unknown>;
+  if (typeof err.responseCode === "number") return err.responseCode;
+
+  const response = typeof err.response === "string" ? err.response : null;
+  const message = typeof err.message === "string" ? err.message : null;
+  const match = response?.match(/^(\d{3})\b/) ?? message?.match(/\b(5\d{2}|4\d{2})\b/);
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+function isPermanentSmtpFailure(error: unknown): boolean {
+  const code = smtpResponseCode(error);
+  return code !== null && code >= 550 && code <= 554;
+}
+
 const MailQueuePayloadSchema = z.object({
-  from: z.string().min(1).max(320),
+  from: z.string().min(1).max(320).optional(),
   to: z.string().min(1).max(320),
-  subject: z.string().min(1).max(998),
-  html: z.string().min(1),
+  toName: z.string().min(1).max(320).optional(),
+  subject: z.string().min(1).max(998).optional(),
+  html: z.string().min(1).optional(),
   text: z.string().optional(),
   tags: z.array(z.string()).optional(),
   campaigns: z.array(z.string()).optional(),
 });
 
-const WORKER_BATCH_SIZE = 50;
+const WORKER_BATCH_SIZE = 200;
+const WORKER_CONCURRENCY = 5;
 const STUCK_PROCESSING_TTL_MS = 15 * 60 * 1000;
 
 export type QueueWorkerResult = {
@@ -30,6 +48,15 @@ export type QueueWorkerResult = {
 
 type RunQueueWorkerOptions = {
   emailId?: string;
+};
+
+type EmailTemplate = {
+  from_address: string;
+  subject: string;
+  html: string;
+  text: string | null;
+  tags: string[] | null;
+  campaigns: string[] | null;
 };
 
 async function writeMetrics(opts: { queueDepth: number; processed: number; failed: number }) {
@@ -63,9 +90,9 @@ async function reconcileEmailStatuses(emailIds: string[]) {
     return;
   }
 
-  const byEmail = new Map<string, { pending: number; processing: number; dead: number; succeeded: number }>();
+  const byEmail = new Map<string, { pending: number; processing: number; dead: number; succeeded: number; canceled: number }>();
   for (const id of uniqueIds) {
-    byEmail.set(id, { pending: 0, processing: 0, dead: 0, succeeded: 0 });
+    byEmail.set(id, { pending: 0, processing: 0, dead: 0, succeeded: 0, canceled: 0 });
   }
 
   for (const row of rows ?? []) {
@@ -76,18 +103,15 @@ async function reconcileEmailStatuses(emailIds: string[]) {
     if (row.status === "processing") bucket.processing += 1;
     if (row.status === "dead") bucket.dead += 1;
     if (row.status === "succeeded") bucket.succeeded += 1;
+    if (row.status === "canceled") bucket.canceled += 1;
   }
 
   for (const [emailId, counts] of byEmail) {
     let status: "queued" | "sent" | "failed" | null = null;
 
-    if (counts.pending > 0 || counts.processing > 0) {
-      status = "queued";
-    } else if (counts.dead > 0) {
-      status = "failed";
-    } else if (counts.succeeded > 0) {
-      status = "sent";
-    }
+    if (counts.pending > 0 || counts.processing > 0) status = "queued";
+    else if (counts.dead > 0) status = "failed";
+    else if (counts.succeeded > 0) status = "sent";
 
     if (!status) continue;
     const { error: updateError } = await supabase
@@ -99,6 +123,44 @@ async function reconcileEmailStatuses(emailIds: string[]) {
       console.error(`[queue worker] failed to update email ${emailId} status`, updateError);
     }
   }
+}
+
+function formatRecipientAddress(email: string, displayName: string | undefined): string {
+  const name = displayName
+    ?.replace(/[\r\n]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!name) return email;
+
+  const escapedName = name.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escapedName}" <${email}>`;
+}
+
+async function loadTemplates(emailIds: string[]) {
+  if (emailIds.length === 0) return new Map<string, EmailTemplate>();
+
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("emails")
+    .select("id, from_address, subject, html, text, tags, campaigns")
+    .in("id", [...new Set(emailIds)]);
+
+  if (error) throw new Error(error.message);
+
+  return new Map(
+    (data ?? []).map((row) => [
+      row.id,
+      {
+        from_address: row.from_address,
+        subject: row.subject,
+        html: row.html,
+        text: row.text ?? null,
+        tags: row.tags ?? [],
+        campaigns: row.campaigns ?? [],
+      },
+    ]),
+  );
 }
 
 export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promise<QueueWorkerResult> {
@@ -157,9 +219,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
     .order("available_at", { ascending: true })
     .limit(limit);
 
-  if (fetchError) {
-    throw new Error(fetchError.message);
-  }
+  if (fetchError) throw new Error(fetchError.message);
 
   if (!items || items.length === 0) {
     const { count: pendingCount } = await supabase
@@ -187,40 +247,55 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
     .update({ status: "processing", locked_at: now.toISOString() })
     .in("id", ids);
 
-  let succeeded = 0;
-  let failed = 0;
   const touchedEmailIds = items
     .map((item) => item.email_id)
     .filter((emailId): emailId is string => Boolean(emailId));
+  const templates = await loadTemplates(touchedEmailIds);
 
-  for (const item of items) {
+  let succeeded = 0;
+  let failed = 0;
+
+  async function markDead(itemId: string, message: string) {
+    await supabase
+      .from("mail_queue")
+      .update({
+        status: "dead",
+        last_error: message,
+        locked_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", itemId);
+  }
+
+  async function processItem(item: (typeof items)[number]): Promise<"succeeded" | "failed"> {
     const payloadParsed = MailQueuePayloadSchema.safeParse(item.payload);
     if (!payloadParsed.success) {
       console.error(`[queue worker] invalid payload for item ${item.id}:`, payloadParsed.error.issues);
-      await supabase
-        .from("mail_queue")
-        .update({
-          status: "dead",
-          last_error: `Invalid payload: ${payloadParsed.error.issues[0]?.message ?? "schema error"}`,
-          locked_at: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", item.id);
-      failed++;
-      continue;
+      await markDead(item.id, `Invalid payload: ${payloadParsed.error.issues[0]?.message ?? "schema error"}`);
+      return "failed";
     }
 
     const payload = payloadParsed.data;
+    const template = item.email_id ? templates.get(item.email_id) : undefined;
+    const from = payload.from ?? template?.from_address;
+    const subject = payload.subject ?? template?.subject;
+    const html = payload.html ?? template?.html;
+    const text = payload.text ?? template?.text ?? undefined;
+
+    if (!from || !subject || !html) {
+      await markDead(item.id, "Missing email template fields for queued item");
+      return "failed";
+    }
 
     try {
       const result = await sendEmail({
-        from: payload.from,
-        to: [payload.to],
-        subject: payload.subject,
-        html: payload.html,
-        text: payload.text,
-        tags: payload.tags,
-        campaigns: payload.campaigns,
+        from,
+        to: [formatRecipientAddress(payload.to, payload.toName)],
+        subject,
+        html,
+        text,
+        tags: payload.tags ?? template?.tags ?? undefined,
+        campaigns: payload.campaigns ?? template?.campaigns ?? undefined,
       });
 
       if (!result.sesMessageId) {
@@ -233,39 +308,67 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
           status: "succeeded",
           send_date: today,
           ses_message_id: result.sesMessageId,
+          locked_at: null,
           updated_at: new Date().toISOString(),
         })
         .eq("id", item.id);
 
-      succeeded++;
+      return "succeeded";
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[queue worker] send failed for ${item.id}:`, message);
+      const code = smtpResponseCode(error);
+      const permanent = isPermanentSmtpFailure(error);
+      console.error(
+        `[queue worker] send failed for ${item.id} (smtp=${code ?? "unknown"}, permanent=${permanent}):`,
+        message,
+      );
 
-      const { data: current } = await supabase
-        .from("mail_queue")
-        .select("attempts, max_attempts")
-        .eq("id", item.id)
-        .single();
+      if (permanent) {
+        await supabase
+          .from("mail_queue")
+          .update({
+            status: "dead",
+            attempts: 999,
+            last_error: `Permanent SMTP ${code}: ${message}`,
+            locked_at: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", item.id);
+      } else {
+        const { data: current } = await supabase
+          .from("mail_queue")
+          .select("attempts, max_attempts")
+          .eq("id", item.id)
+          .single();
 
-      const attempts = (current?.attempts ?? 0) + 1;
-      const isDead = attempts >= (current?.max_attempts ?? 5);
+        const attempts = (current?.attempts ?? 0) + 1;
+        const isDead = attempts >= (current?.max_attempts ?? 5);
 
-      await supabase
-        .from("mail_queue")
-        .update({
-          status: isDead ? "dead" : "pending",
-          attempts,
-          last_error: message,
-          locked_at: null,
-          available_at: isDead
-            ? new Date().toISOString()
-            : new Date(Date.now() + attempts * 10 * 60 * 1000).toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", item.id);
+        await supabase
+          .from("mail_queue")
+          .update({
+            status: isDead ? "dead" : "pending",
+            attempts,
+            last_error: message,
+            locked_at: null,
+            available_at: isDead
+              ? new Date().toISOString()
+              : new Date(Date.now() + attempts * 10 * 60 * 1000).toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", item.id);
+      }
 
-      failed++;
+      return "failed";
+    }
+  }
+
+  for (let i = 0; i < items.length; i += WORKER_CONCURRENCY) {
+    const window = items.slice(i, i + WORKER_CONCURRENCY);
+    const results = await Promise.allSettled(window.map(processItem));
+    for (const result of results) {
+      if (result.status === "fulfilled" && result.value === "succeeded") succeeded++;
+      else failed++;
     }
   }
 
