@@ -830,14 +830,47 @@ export async function getQueueSnapshotAction(emailId?: string) {
     emailStatus = data?.status ?? null;
   }
 
+  const terminalFailures = failed + dead;
+  const total = pending + processing + succeeded + failed + dead + canceled;
+  const resolved = succeeded + failed + dead + canceled;
+  const isDrained = total > 0 && pending === 0 && processing === 0;
+  const displayStatus =
+    total === 0
+      ? emailStatus ?? "No queue rows"
+      : pending > 0 || processing > 0
+        ? "Sending"
+        : succeeded > 0 && terminalFailures > 0
+          ? "Complete with permanent failures"
+          : succeeded > 0
+            ? "Complete"
+            : terminalFailures > 0
+              ? "Failed"
+              : canceled > 0
+                ? "Canceled"
+                : emailStatus ?? "Unknown";
+  const statusDetail =
+    total === 0
+      ? "No queue rows exist for this email."
+      : pending > 0 || processing > 0
+        ? `${pending + processing} recipient${pending + processing === 1 ? "" : "s"} still waiting or sending.`
+        : terminalFailures > 0
+          ? `${succeeded.toLocaleString()} accepted by SES; ${terminalFailures.toLocaleString()} recipient${terminalFailures === 1 ? "" : "s"} permanently failed.`
+          : `${succeeded.toLocaleString()} recipient${succeeded === 1 ? "" : "s"} accepted by SES.`;
+
   return {
     emailId: emailId ?? null,
     subject,
     emailStatus,
+    displayStatus,
+    statusDetail,
     date: today,
     dailyCap: DAILY_SEND_LIMIT,
     sentToday,
     remainingToday: Math.max(0, DAILY_SEND_LIMIT - sentToday),
+    total,
+    resolved,
+    terminalFailures,
+    isDrained,
     pending,
     pendingDue: pendingDue ?? 0,
     pendingHeld: pendingHeld ?? 0,

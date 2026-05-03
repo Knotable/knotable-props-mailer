@@ -54,7 +54,7 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
       startTransition(async () => {
         try {
           const next = await runOnce();
-          if (next.pendingDue === 0 && next.processing === 0) {
+          if (next.pending === 0 && next.processing === 0) {
             setAutoRun(false);
             return;
           }
@@ -73,15 +73,16 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
     };
   }, [autoRun, runOnce]);
 
-  const total =
-    (snapshot?.pending ?? 0) +
-    (snapshot?.processing ?? 0) +
-    (snapshot?.succeeded ?? 0) +
-    (snapshot?.failed ?? 0) +
-    (snapshot?.dead ?? 0) +
-    (snapshot?.canceled ?? 0);
-  const done = (snapshot?.succeeded ?? 0) + (snapshot?.failed ?? 0) + (snapshot?.dead ?? 0) + (snapshot?.canceled ?? 0);
+  const total = snapshot?.total ?? 0;
+  const done = snapshot?.resolved ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const terminalFailures = snapshot?.terminalFailures ?? 0;
+  const statusTone =
+    snapshot?.isDrained && terminalFailures === 0
+      ? "border-green-200 bg-green-50 text-green-800"
+      : snapshot?.isDrained
+        ? "border-amber-200 bg-amber-50 text-amber-900"
+        : "border-blue-200 bg-blue-50 text-blue-800";
 
   return (
     <div className="space-y-6">
@@ -133,26 +134,32 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
         </div>
       )}
 
+      <div className={`rounded-lg border px-4 py-3 ${statusTone}`}>
+        <p className="text-sm font-semibold">{snapshot?.displayStatus ?? "Loading queue status"}</p>
+        {snapshot?.statusDetail && <p className="mt-1 text-sm">{snapshot.statusDetail}</p>}
+      </div>
+
       <div className="space-y-3">
         <div className="h-3 overflow-hidden rounded-full bg-slate-100">
           <div className="h-full bg-green-600 transition-all" style={{ width: `${pct}%` }} />
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Metric label="Succeeded" value={snapshot?.succeeded ?? 0} tone="green" />
-          <Metric label="Due now" value={snapshot?.pendingDue ?? 0} tone="amber" />
+          <Metric label="Accepted by SES" value={snapshot?.succeeded ?? 0} tone="green" />
+          <Metric label="Pending now" value={snapshot?.pendingDue ?? 0} tone="amber" />
           <Metric label="Held" value={snapshot?.pendingHeld ?? 0} tone="slate" />
           <Metric label="Processing" value={snapshot?.processing ?? 0} tone="blue" />
-          <Metric label="Failed" value={snapshot?.failed ?? 0} tone="red" />
-          <Metric label="Dead" value={snapshot?.dead ?? 0} tone="red" />
+          <Metric label="Failed rows" value={snapshot?.failed ?? 0} tone="red" />
+          <Metric label="Permanent failures" value={snapshot?.dead ?? 0} tone="red" />
         </div>
       </div>
 
       <div className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600">
         <div className="grid gap-2 sm:grid-cols-2">
-          <p>Email status: <span className="font-medium text-slate-900">{snapshot?.emailStatus ?? "all queue"}</span></p>
-          <p>Progress: <span className="font-medium text-slate-900">{done.toLocaleString()} / {total.toLocaleString()} ({pct}%)</span></p>
+          <p>Queue status: <span className="font-medium text-slate-900">{snapshot?.displayStatus ?? "all queue"}</span></p>
+          <p>Resolved: <span className="font-medium text-slate-900">{done.toLocaleString()} / {total.toLocaleString()} ({pct}%)</span></p>
           <p>Sent today: <span className="font-medium text-slate-900">{(snapshot?.sentToday ?? 0).toLocaleString()}</span></p>
-          <p>Remaining today: <span className="font-medium text-slate-900">{(snapshot?.remainingToday ?? 0).toLocaleString()}</span></p>
+          <p>Quota left today: <span className="font-medium text-slate-900">{(snapshot?.remainingToday ?? 0).toLocaleString()}</span></p>
+          <p>Email record: <span className="font-medium text-slate-900">{snapshot?.emailStatus ?? "all queue"}</span></p>
         </div>
       </div>
     </div>

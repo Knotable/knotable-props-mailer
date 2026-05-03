@@ -90,9 +90,12 @@ async function reconcileEmailStatuses(emailIds: string[]) {
     return;
   }
 
-  const byEmail = new Map<string, { pending: number; processing: number; dead: number; succeeded: number; canceled: number }>();
+  const byEmail = new Map<
+    string,
+    { pending: number; processing: number; failed: number; dead: number; succeeded: number; canceled: number }
+  >();
   for (const id of uniqueIds) {
-    byEmail.set(id, { pending: 0, processing: 0, dead: 0, succeeded: 0, canceled: 0 });
+    byEmail.set(id, { pending: 0, processing: 0, failed: 0, dead: 0, succeeded: 0, canceled: 0 });
   }
 
   for (const row of rows ?? []) {
@@ -101,6 +104,7 @@ async function reconcileEmailStatuses(emailIds: string[]) {
     if (!bucket) continue;
     if (row.status === "pending") bucket.pending += 1;
     if (row.status === "processing") bucket.processing += 1;
+    if (row.status === "failed") bucket.failed += 1;
     if (row.status === "dead") bucket.dead += 1;
     if (row.status === "succeeded") bucket.succeeded += 1;
     if (row.status === "canceled") bucket.canceled += 1;
@@ -109,9 +113,15 @@ async function reconcileEmailStatuses(emailIds: string[]) {
   for (const [emailId, counts] of byEmail) {
     let status: "queued" | "sent" | "failed" | null = null;
 
-    if (counts.pending > 0 || counts.processing > 0) status = "queued";
-    else if (counts.dead > 0) status = "failed";
-    else if (counts.succeeded > 0) status = "sent";
+    if (counts.pending > 0 || counts.processing > 0) {
+      status = "queued";
+    } else if (counts.succeeded > 0) {
+      // The campaign drained. Permanent recipient failures remain visible on
+      // mail_queue rows, but they should not make the whole campaign look stuck.
+      status = "sent";
+    } else if (counts.failed > 0 || counts.dead > 0) {
+      status = "failed";
+    }
 
     if (!status) continue;
     const { error: updateError } = await supabase
@@ -222,6 +232,10 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
   if (fetchError) throw new Error(fetchError.message);
 
   if (!items || items.length === 0) {
+    if (options.emailId) {
+      await reconcileEmailStatuses([options.emailId]);
+    }
+
     const { count: pendingCount } = await supabase
       .from("mail_queue")
       .select("id", { count: "exact", head: true })
