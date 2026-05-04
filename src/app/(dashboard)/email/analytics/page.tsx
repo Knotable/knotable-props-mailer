@@ -1,8 +1,8 @@
-/* eslint-disable react-hooks/purity */
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { revalidatePath } from "next/cache";
 import { getServerAuthContext } from "@/lib/authAccess";
 import { getDailySendLimit, setDailySendLimit } from "@/lib/appSettings";
+import { isoDaysAgo } from "@/lib/dateWindows";
 
 async function updateDailySendLimitAction(formData: FormData) {
   "use server";
@@ -48,7 +48,7 @@ export default async function AnalyticsPage() {
     totalAttempted > 0 ? Math.round((delivered / totalAttempted) * 100) : null;
 
   // ── Engagement totals — last 30 days, event type only (no payload) ──────────
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const thirtyDaysAgo = isoDaysAgo(30);
 
   const { data: recentEvents } = await supabase
     .from("provider_events")
@@ -98,7 +98,7 @@ export default async function AnalyticsPage() {
     // View not yet created — fall back to a bounded scan of mail_queue
     // (last 90 days, max 5 000 rows) so historical data is still visible.
     viewMissing = true;
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const ninetyDaysAgo = isoDaysAgo(90);
     const { data: rawRows } = await supabase
       .from("mail_queue")
       .select("campaign_label, email_id, list_id, status, created_at")
@@ -152,7 +152,7 @@ export default async function AnalyticsPage() {
         .select("email_id, event_type")
         .in("event_type", ["opened", "clicked", "bounced"])
         .not("email_id", "is", null)
-        .gte("received_at", new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()),
+        .gte("received_at", isoDaysAgo(90)),
       emailIds.length
         ? supabase
             .from("mail_queue")

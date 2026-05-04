@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { isoDaysAgo } from "@/lib/dateWindows";
 import { SendsClient } from "./sends-client";
 
 const PAGE_SIZE = 20;
@@ -47,7 +48,7 @@ export default async function PastSendsPage({
 
   if (statsError) {
     viewMissing = true;
-    const ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const ninetyDaysAgo = isoDaysAgo(90);
     const { data: rawRows } = await supabase
       .from("mail_queue")
       .select("email_id, list_id, status, send_date, created_at")
@@ -91,7 +92,15 @@ export default async function PastSendsPage({
     const allRows = [...grouped.values()]
       .sort((a, b) => ((b._last_queued ?? "") > (a._last_queued ?? "") ? 1 : -1));
     total = allRows.length;
-    rows = allRows.slice(offset, offset + PAGE_SIZE).map(({ _last_queued: _lq, ...r }) => r) as StatRow[];
+    rows = allRows.slice(offset, offset + PAGE_SIZE).map((row) => ({
+      email_id: row.email_id,
+      list_ids: row.list_ids,
+      sent: row.sent,
+      failed: row.failed,
+      pending: row.pending,
+      first_sent: row.first_sent,
+      last_queued_at: row.last_queued_at,
+    }));
   } else {
     rows = (stats ?? []) as StatRow[];
     total = totalCount ?? 0;

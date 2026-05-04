@@ -86,7 +86,7 @@ export function HealthBanner() {
             <IssueGroup title="Warnings — degraded features" color="amber" items={warnings} />
           )}
           <p className="text-xs opacity-60">
-            Tell Claude: "Fix the health banner issues" and paste what you see above.
+            Tell Claude: &quot;Fix the health banner issues&quot; and paste what you see above.
           </p>
         </div>
       )}
