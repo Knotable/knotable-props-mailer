@@ -106,6 +106,21 @@ export async function GET() {
       fix: 'Vercel → Environment Variables → add AWS_SES_SMTP_PORT. Use 587 (STARTTLS) or 465 (TLS). Defaults to 587 if unset.',
     },
     {
+      key: "AWS_SES_CONFIGURATION_SET",
+      label: "SES configuration set",
+      severity: "warning",
+      fix: [
+        "Vercel → Environment Variables → add AWS_SES_CONFIGURATION_SET with the SES configuration set name that has an SNS event destination.",
+        "The app sends through SES SMTP, so it must add X-SES-CONFIGURATION-SET to each message unless the SES identity has a default configuration set.",
+      ].join("\n"),
+    },
+    {
+      key: "AWS_SES_SNS_TOPIC_ARN",
+      label: "SES SNS topic ARN",
+      severity: "warning",
+      fix: "Vercel → Environment Variables → add AWS_SES_SNS_TOPIC_ARN for the SNS topic that publishes SES events. This lets the webhook reject spoofed events from other topics.",
+    },
+    {
       key: "CRON_SECRET",
       label: "Cron secret",
       severity: "warning",
@@ -266,20 +281,36 @@ export async function GET() {
 
   // ── 5. SNS webhook events ─────────────────────────────────────────────────
   try {
-    const { count: snsCount } = await db
-      .from("provider_events")
-      .select("id", { count: "exact", head: true });
+    const [{ count: snsCount }, { data: latestSnsEvent }, { count: recentSnsCount }] = await Promise.all([
+      db
+        .from("provider_events")
+        .select("id", { count: "exact", head: true }),
+      db
+        .from("provider_events")
+        .select("received_at")
+        .order("received_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      db
+        .from("provider_events")
+        .select("id", { count: "exact", head: true })
+        .gte("received_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
+    ]);
 
+    const latestSnsReceivedAt = (latestSnsEvent as { received_at?: string } | null)?.received_at;
     const hasSns = (snsCount ?? 0) > 0;
+    const hasRecentSns = (recentSnsCount ?? 0) > 0;
     checks.push({
       id: "sns_events",
       label: "SES → SNS webhook",
       severity: "warning",
-      ok: hasSns,
-      message: hasSns
-        ? `SNS webhook active — ${snsCount} events received`
-        : "No SNS events received yet. Opens, clicks, and bounces will show '—' in Analytics.",
-      fix: hasSns
+      ok: hasRecentSns,
+      message: hasRecentSns
+        ? `SNS webhook active — ${recentSnsCount} event(s) received in the last 7 days`
+        : hasSns
+          ? `SNS webhook stale — ${snsCount} total event(s), latest at ${latestSnsReceivedAt ?? "unknown"}`
+          : "No SNS events received yet. Opens, clicks, and bounces will show '—' in Analytics.",
+      fix: hasRecentSns
         ? undefined
         : [
             "AWS Console — one-time setup:",
@@ -291,7 +322,8 @@ export async function GET() {
             "   Protocol: HTTPS",
             "   Endpoint: https://knotable-props-mailer.vercel.app/api/webhooks/ses",
             "5. The webhook auto-confirms the subscription — check Vercel logs to verify",
-            "6. SES → Verified identities → your domain/address → Edit → Default config set → select \"knotable-tracking\"",
+            "6. Vercel → Environment Variables → set AWS_SES_CONFIGURATION_SET to that configuration set name",
+            "7. Optional hardening: set AWS_SES_SNS_TOPIC_ARN to the SNS topic ARN",
             "Once wired up, this warning clears automatically after the first event arrives.",
           ].join("\n"),
     });

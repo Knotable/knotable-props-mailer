@@ -19,6 +19,7 @@
 import { createVerify } from "crypto";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { logError } from "@/lib/logger";
 import { checkRateLimit } from "@/lib/rateLimit";
 
 // ── SNS message signature verification ────────────────────────────────────────
@@ -52,8 +53,8 @@ function buildStringToSign(msg: Record<string, unknown>): string {
 
   return fields
     .filter((k) => msg[k] !== undefined && msg[k] !== null)
-    .map((k) => `${k}\n${msg[k]}\n`)
-    .join("");
+    .map((k) => `${k}\n${msg[k]}`)
+    .join("\n");
 }
 
 async function verifySnsSignature(body: Record<string, unknown>): Promise<boolean> {
@@ -70,6 +71,59 @@ async function verifySnsSignature(body: Record<string, unknown>): Promise<boolea
     return verifier.verify(pem, Buffer.from(signature, "base64"));
   } catch {
     return false;
+  }
+}
+
+function expectedSnsTopicArn(): string | null {
+  return process.env.AWS_SES_SNS_TOPIC_ARN?.trim() || null;
+}
+
+function isExpectedTopic(body: Record<string, unknown>): boolean {
+  const expected = expectedSnsTopicArn();
+  if (!expected) return true;
+  return body["TopicArn"] === expected;
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
+    : [];
+}
+
+function extractRecipient(sesEventType: string, sesEvent: Record<string, unknown>): string | null {
+  const mail = sesEvent["mail"] as Record<string, unknown> | undefined;
+  const destination = toStringArray(mail?.["destination"]);
+
+  if (sesEventType === "Delivery") {
+    const delivery = sesEvent["delivery"] as Record<string, unknown> | undefined;
+    return toStringArray(delivery?.["recipients"])[0] ?? destination[0] ?? null;
+  }
+
+  if (sesEventType === "Bounce") {
+    const bounce = sesEvent["bounce"] as Record<string, unknown> | undefined;
+    const recipients = bounce?.["bouncedRecipients"] as Array<Record<string, unknown>> | undefined;
+    return (recipients?.[0]?.["emailAddress"] as string | undefined) ?? destination[0] ?? null;
+  }
+
+  if (sesEventType === "Complaint") {
+    const complaint = sesEvent["complaint"] as Record<string, unknown> | undefined;
+    const recipients = complaint?.["complainedRecipients"] as Array<Record<string, unknown>> | undefined;
+    return (recipients?.[0]?.["emailAddress"] as string | undefined) ?? destination[0] ?? null;
+  }
+
+  const commonHeaders = mail?.["commonHeaders"] as Record<string, unknown> | undefined;
+  return toStringArray(commonHeaders?.["to"])[0] ?? destination[0] ?? null;
+}
+
+async function logWebhookFailure(message: string, payload: Record<string, unknown>) {
+  try {
+    await logError({
+      source: "ses-webhook",
+      message,
+      payload,
+    });
+  } catch (err) {
+    console.warn("[ses-webhook] failed to write error log", err);
   }
 }
 
@@ -115,7 +169,23 @@ export async function POST(request: Request) {
   const sigValid = await verifySnsSignature(body);
   if (!sigValid) {
     console.warn("[ses-webhook] SNS signature verification failed");
+    await logWebhookFailure("SNS signature verification failed", {
+      messageType,
+      topicArn: body["TopicArn"],
+      signingCertUrl: body["SigningCertURL"],
+      signatureVersion: body["SignatureVersion"],
+    });
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
+  }
+
+  if (!isExpectedTopic(body)) {
+    console.warn("[ses-webhook] unexpected SNS topic", body["TopicArn"]);
+    await logWebhookFailure("Unexpected SNS topic", {
+      messageType,
+      topicArn: body["TopicArn"],
+      expectedTopicArn: expectedSnsTopicArn(),
+    });
+    return NextResponse.json({ error: "Unexpected topic" }, { status: 403 });
   }
 
   // ── SNS Subscription Confirmation ─────────────────────────────────────────
@@ -139,10 +209,17 @@ export async function POST(request: Request) {
     }
 
     try {
-      await fetch(subscribeUrl);
+      const confirmResponse = await fetch(subscribeUrl);
+      if (!confirmResponse.ok) {
+        throw new Error(`SNS confirmation returned HTTP ${confirmResponse.status}`);
+      }
       console.info("[ses-webhook] SNS subscription confirmed");
     } catch (err) {
       console.error("[ses-webhook] Failed to confirm SNS subscription", err);
+      await logWebhookFailure("Subscription confirmation failed", {
+        error: err instanceof Error ? err.message : String(err),
+        topicArn: body["TopicArn"],
+      });
       return NextResponse.json({ error: "Subscription confirmation failed" }, { status: 500 });
     }
 
@@ -158,6 +235,11 @@ export async function POST(request: Request) {
   try {
     sesEvent = JSON.parse(body["Message"] as string);
   } catch {
+    await logWebhookFailure("Could not parse SNS Message as JSON", {
+      messageType,
+      topicArn: body["TopicArn"],
+      messageId: body["MessageId"],
+    });
     return NextResponse.json({ error: "Could not parse SNS Message as JSON" }, { status: 400 });
   }
 
@@ -169,25 +251,7 @@ export async function POST(request: Request) {
   const eventType = SES_EVENT_MAP[sesEventType] ?? sesEventType.toLowerCase();
   const mail = sesEvent["mail"] as Record<string, unknown> | undefined;
   const messageId = (mail?.["messageId"] as string | undefined) ?? null;
-
-  let recipient: string | null = null;
-  if (sesEventType === "Delivery") {
-    const delivery = sesEvent["delivery"] as Record<string, unknown> | undefined;
-    const recipients = delivery?.["recipients"] as string[] | undefined;
-    recipient = recipients?.[0] ?? null;
-  } else if (sesEventType === "Bounce") {
-    const bounce = sesEvent["bounce"] as Record<string, unknown> | undefined;
-    const recipients = bounce?.["bouncedRecipients"] as Array<Record<string, unknown>> | undefined;
-    recipient = (recipients?.[0]?.["emailAddress"] as string | undefined) ?? null;
-  } else if (sesEventType === "Complaint") {
-    const complaint = sesEvent["complaint"] as Record<string, unknown> | undefined;
-    const recipients = complaint?.["complainedRecipients"] as Array<Record<string, unknown>> | undefined;
-    recipient = (recipients?.[0]?.["emailAddress"] as string | undefined) ?? null;
-  } else if (sesEventType === "Open" || sesEventType === "Click" || sesEventType === "Send") {
-    const commonHeaders = mail?.["commonHeaders"] as Record<string, unknown> | undefined;
-    const to = commonHeaders?.["to"] as string[] | undefined;
-    recipient = to?.[0] ?? null;
-  }
+  const recipient = extractRecipient(sesEventType, sesEvent);
 
   const supabase = getSupabaseAdmin();
 
@@ -230,6 +294,13 @@ export async function POST(request: Request) {
 
   if (error) {
     console.error("[ses-webhook] Failed to insert provider_event", error);
+    await logWebhookFailure("Failed to insert provider_event", {
+      error: error.message,
+      eventType,
+      messageId,
+      recipient,
+      emailId,
+    });
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

@@ -12,6 +12,8 @@ The app sends email via **Amazon SES SMTP** (not the SES API). It uses nodemaile
 | `AWS_SES_SMTP_PORT` | `587` (STARTTLS) |
 | `AWS_SES_SMTP_USERNAME` | IAM SMTP username (starts with `AKIA...`) |
 | `AWS_SES_SMTP_PASSWORD` | IAM SMTP password (derived key, NOT the IAM secret key) |
+| `AWS_SES_CONFIGURATION_SET` | SES configuration set name used for event publishing |
+| `AWS_SES_SNS_TOPIC_ARN` | Optional SNS topic ARN accepted by `/api/webhooks/ses` |
 
 > **Important:** SES SMTP credentials are NOT the same as regular AWS Access Keys. They must be generated specifically from the SES SMTP settings page. Using a raw IAM Access Key ID / Secret Key pair will result in a `535 Authentication Credentials Invalid` error.
 
@@ -86,3 +88,27 @@ Common errors and fixes:
 | `Email address not verified` | Sender not verified in SES | Verify the From address identity in SES |
 | `Message rejected: Email address is not verified` | Sandbox mode + unverified recipient | Verify recipient or request production access |
 | `454 Throttling failure` | Sending too fast or over quota | Reduce rate or request production quota increase |
+
+## Delivery, bounce, and complaint tracking
+
+The app sends through the SES SMTP interface. SES only publishes per-message
+events for SMTP sends when the message uses a configuration set. The app adds
+that header automatically when `AWS_SES_CONFIGURATION_SET` is set:
+
+```text
+X-SES-CONFIGURATION-SET: knotable-tracking
+```
+
+Required production setup:
+
+1. SES → Configuration Sets → create or open the tracking configuration set.
+2. Event destinations → add an SNS destination for Send, Delivery, Bounce,
+   Complaint, Open, Click, Reject, Rendering Failure.
+3. SNS → Topics → subscribe `https://knotable-props-mailer.vercel.app/api/webhooks/ses`
+   with protocol HTTPS.
+4. Vercel → Environment Variables → set `AWS_SES_CONFIGURATION_SET` to the
+   configuration set name.
+5. Vercel → Environment Variables → set `AWS_SES_SNS_TOPIC_ARN` to the topic ARN
+   so the webhook only accepts events from that topic.
+6. Send a test email and check `/api/health`. The SES → SNS webhook check should
+   show a recent event.
