@@ -128,7 +128,7 @@ export interface Database {
           list_id: string | null;
           ses_message_id: string | null;
           payload: Json;
-          status: "pending" | "processing" | "succeeded" | "failed" | "dead";
+          status: "pending" | "processing" | "succeeded" | "failed" | "dead" | "canceled";
           attempts: number;
           max_attempts: number;
           dedupe_hash: string | null;
@@ -384,7 +384,34 @@ export interface Database {
         };
       };
     };
-    Functions: Record<string, never>;
+    Functions: {
+      claim_mail_queue_batch: {
+        Args: {
+          p_limit: number;
+          p_email_id?: string | null;
+          p_now?: string;
+        };
+        Returns: {
+          id: string;
+          email_id: string | null;
+          payload: Json;
+          list_id: string | null;
+        }[];
+      };
+      release_mail_queue_campaign: {
+        Args: {
+          p_email_id: string;
+          p_now: string;
+          p_daily_limit: number;
+          p_sent_today: number;
+        };
+        Returns: {
+          released: number;
+          due_now: number;
+          scheduled_future: number;
+        }[];
+      };
+    };
     Enums: Record<string, never>;
   };
 }

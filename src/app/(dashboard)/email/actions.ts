@@ -15,12 +15,8 @@ import type { Json } from "@/supabase/types";
 /**
  * Stable deduplication hash for a queue row.
  * SHA-256(emailId:recipientEmail) — fits in a text column, unique per
- * (campaign, recipient) pair so accidental re-inserts can be caught.
- *
- * TODO: add a UNIQUE constraint on mail_queue(dedupe_hash) via migration:
- *   ALTER TABLE mail_queue ADD CONSTRAINT mail_queue_dedupe_hash_key UNIQUE (dedupe_hash);
- * Until then, duplicate inserts won't be caught at the DB layer, but the
- * pre-flight idempotency check (existingCount > 0) prevents the common case.
+ * (campaign, recipient) pair. The DB enforces uniqueness with
+ * mail_queue_dedupe_hash_unique_idx, so queue creation can be safely retried.
  */
 function makeDedupeHash(emailId: string, recipientEmail: string): string {
   return createHash("sha256")
@@ -60,8 +56,6 @@ const SendTestSchema = z.object({
 
 const EmailIdSchema = z.object({ id: z.string().uuid() });
 const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
-const QUEUE_RELEASE_CHUNK_SIZE = 200;
-const QUEUE_RELEASE_SELECT_PAGE_SIZE = 1_000;
 const QUEUE_CREATE_PAGE_SIZE = 1_000;
 const QUEUE_WARNING_SAMPLE_LIMIT = 500;
 
@@ -543,8 +537,9 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
 
-  // Hard guard on the first batch only: follow-up batches are the same
-  // intentional queue-build operation and must be allowed to append.
+  // Resume-safe queueing: retries may start again at offset 0 after a tab or
+  // network failure. The dedupe_hash upsert below makes repeated pages
+  // idempotent, so do not block when partially queued rows already exist.
   if (offset === 0) {
     const { count: existingCount } = await supabase
       .from("mail_queue")
@@ -554,10 +549,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       .in("status", ["pending", "processing"]);
 
     if (existingCount && existingCount > 0) {
-      throw new Error(
-        `This email already has ${existingCount} pending queue item(s) for this list. ` +
-        "Cancel the existing list campaign before re-queuing.",
-      );
+      console.info(`[queue] resuming ${existingCount} existing pending row(s) for email ${emailId} list ${listId}`);
     }
   }
 
@@ -936,6 +928,8 @@ export async function getQueueSnapshotAction(emailId?: string) {
 
 export async function sendQueuedEmailAction(formData: FormData): Promise<{
   released?: number;
+  dueNow?: number;
+  scheduledFuture?: number;
   processed?: number;
   succeeded?: number;
   failed?: number;
@@ -971,36 +965,32 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       .eq("status", "pending")
       .lte("available_at", nowIso);
 
-    let releasedCount = 0;
-
-    while (releasedCount < remainingToday) {
-      const { data: queuedRows, error: queuedError } = await supabase
-        .from("mail_queue")
-        .select("id")
-        .eq("email_id", id)
-        .eq("status", "pending")
-        .gt("available_at", nowIso)
-        .order("created_at", { ascending: true })
-        .limit(Math.min(QUEUE_RELEASE_SELECT_PAGE_SIZE, remainingToday - releasedCount));
-      if (queuedError) return { error: queuedError.message };
-      if (!queuedRows?.length) break;
-
-      const queueIds = queuedRows.map((row) => row.id);
-
-      for (let i = 0; i < queueIds.length; i += QUEUE_RELEASE_CHUNK_SIZE) {
-        const chunk = queueIds.slice(i, i + QUEUE_RELEASE_CHUNK_SIZE);
-        const { error: releaseError } = await supabase
-          .from("mail_queue")
-          .update({ available_at: nowIso, updated_at: nowIso })
-          .in("id", chunk);
-        if (releaseError) return { error: releaseError.message };
+    const { data: releaseRows, error: releaseError } = await (
+      supabase as unknown as {
+        rpc(
+          fn: "release_mail_queue_campaign",
+          args: {
+            p_email_id: string;
+            p_now: string;
+            p_daily_limit: number;
+            p_sent_today: number;
+          },
+        ): Promise<{
+          data: { released: number; due_now: number; scheduled_future: number }[] | null;
+          error: { message: string } | null;
+        }>;
       }
+    ).rpc("release_mail_queue_campaign", {
+      p_email_id: id,
+      p_now: nowIso,
+      p_daily_limit: dailySendLimit,
+      p_sent_today: sentToday,
+    });
+    if (releaseError) return { error: releaseError.message };
 
-      releasedCount += queueIds.length;
-      if (queuedRows.length < QUEUE_RELEASE_SELECT_PAGE_SIZE) break;
-    }
+    const releaseSummary = releaseRows?.[0] ?? { released: 0, due_now: 0, scheduled_future: 0 };
 
-    if (releasedCount === 0 && (dueBefore ?? 0) === 0) {
+    if (releaseSummary.released === 0 && (dueBefore ?? 0) === 0) {
       return { error: "No queued recipients are ready for this email." };
     }
 
@@ -1023,7 +1013,9 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       entity: "emails",
       entityId: id,
       payload: {
-        released: releasedCount,
+        released: releaseSummary.released,
+        dueNow: releaseSummary.due_now,
+        scheduledFuture: releaseSummary.scheduled_future,
         processed: result.processed,
         succeeded: result.succeeded,
         failed: result.failed,
@@ -1035,7 +1027,9 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     revalidatePath("/email/sends");
 
     return {
-      released: releasedCount,
+      released: releaseSummary.released,
+      dueNow: releaseSummary.due_now,
+      scheduledFuture: releaseSummary.scheduled_future,
       processed: result.processed,
       succeeded: result.succeeded,
       failed: result.failed,

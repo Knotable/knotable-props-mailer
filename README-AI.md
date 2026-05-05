@@ -143,7 +143,8 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
    - Sends in parallel windows of 5 (`WORKER_CONCURRENCY`) via `Promise.allSettled`, matching nodemailer's `maxConnections: 5` — sustains ~14 msg/sec (SES SMTP rate limit)
    - Permanent failures (SMTP 5xx) → `dead` immediately; transient → exponential backoff up to `max_attempts`
    - Calls `reconcileEmailStatuses()` to roll up `emails.status` after each batch
-   - `dedupe_hash` (SHA-256 of `emailId:recipientEmail`) stamped on every queue row at insert; unique DB constraint not yet enforced (see TODOs)
+   - `dedupe_hash` (SHA-256 of `emailId:recipientEmail`) stamped on every queue row at insert; unique DB index makes queue creation retry-safe
+   - Claims due rows through `claim_mail_queue_batch()` so concurrent monitors cannot select the same pending rows
 5. **SES Webhooks** (`/api/webhooks/ses`): SNS signature-verified; ingests delivery/bounce events into `provider_events`; auto-suppresses hard bounces and complaints in `list_members`.
 
 **Daily send limit** is defined in `dailyQuota.ts` — check that file for the current cap constant.
@@ -189,11 +190,10 @@ See `.env.example` for full list.
 
 ## Known TODOs / In-Progress Work
 
-- `ses_message_id` column missing from `mail_queue` — migration needed before SES webhook events can be linked back to queue rows (see TODO comment in `queueWorker.ts` for exact SQL)
-- `dedupe_hash` unique constraint missing from `mail_queue` — add `UNIQUE (dedupe_hash)` constraint via migration to get DB-level insert protection
+- Verify `supabase/migrations/20260505_big_send_queue_rpcs.sql` is applied before large sends; it provides atomic queue claims and multi-day release scheduling.
 - Supabase TypeScript types (`src/supabase/types.ts`) are stale — regenerate with `supabase gen types typescript` after any schema migration; many tables currently resolve to `never` (pre-existing, not a regression)
 - RLS policies in `schema.sql` are commented out — need to be enabled manually in Supabase
-- `provider_events` bounce/complaint data is stored but not yet surfaced in analytics UI
+- `provider_events` bounce/complaint data is stored and partially surfaced in analytics; detailed deliverability reporting still needs more operator UI.
 - Route protection via middleware is partially implemented
 
 ---
