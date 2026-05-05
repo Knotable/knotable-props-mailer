@@ -41,5 +41,5 @@ SQL schema lives in `supabase/schema.sql`. Apply it to your Supabase instance, e
 ## Outstanding work
 - Wire Supabase auth session into layouts/middleware for route protection
 - Expand queue review tooling and delivery safeguards
-- Capture SES SNS notifications and insert them into `provider_events`
+- Expand SES deliverability reporting and large-send operator runbooks
 - Style tweaks to perfectly match legacy Props UI

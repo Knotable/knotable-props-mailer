@@ -98,7 +98,7 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
         ok: true,
         message:
           (res.remainingQueued ?? 0) > 0
-            ? `Released ${res.released ?? 0}; sent ${res.succeeded}, ${res.remainingQueued} still queued.`
+            ? `Released ${res.dueNow ?? 0} for today${(res.scheduledFuture ?? 0) > 0 ? `, scheduled ${res.scheduledFuture} future` : ""}; sent ${res.succeeded}, ${res.remainingQueued} still queued.`
             : `Sent ${res.succeeded}${(res.failed ?? 0) > 0 ? `, ${res.failed} failed` : ""}.`,
       });
       router.push(`/email/monitor?emailId=${id}&auto=1`);

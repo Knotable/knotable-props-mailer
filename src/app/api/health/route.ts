@@ -50,6 +50,39 @@ async function columnOk(db: SupabaseClient, table: string, col: string): Promise
   return !error || error.code !== "PGRST204";
 }
 
+async function queueRpcOk(db: SupabaseClient, name: "claim_mail_queue_batch" | "release_mail_queue_campaign"): Promise<boolean> {
+  if (name === "claim_mail_queue_batch") {
+    const { error } = await (
+      db as unknown as {
+        rpc(
+          fn: "claim_mail_queue_batch",
+          args: { p_limit: number; p_email_id: string | null; p_now: string },
+        ): Promise<{ error: { message?: string } | null }>;
+      }
+    ).rpc("claim_mail_queue_batch", {
+      p_limit: 0,
+      p_email_id: null,
+      p_now: new Date().toISOString(),
+    });
+    return !error;
+  }
+
+  const { error } = await (
+    db as unknown as {
+      rpc(
+        fn: "release_mail_queue_campaign",
+        args: { p_email_id: string; p_now: string; p_daily_limit: number; p_sent_today: number },
+      ): Promise<{ error: { message?: string } | null }>;
+    }
+  ).rpc("release_mail_queue_campaign", {
+    p_email_id: "00000000-0000-0000-0000-000000000000",
+    p_now: new Date().toISOString(),
+    p_daily_limit: 1,
+    p_sent_today: 0,
+  });
+  return !error;
+}
+
 // ── route handler ─────────────────────────────────────────────────────────────
 
 export async function GET() {
@@ -268,7 +301,24 @@ export async function GET() {
     }),
   );
 
-  // ── 4. Queue processing ───────────────────────────────────────────────────
+  // ── 4. Required queue RPCs for large-send safety ──────────────────────────
+  await Promise.all(
+    (["claim_mail_queue_batch", "release_mail_queue_campaign"] as const).map(async (name) => {
+      const ok = await queueRpcOk(db, name);
+      checks.push({
+        id: `rpc_${name}`,
+        label: `DB function: ${name}`,
+        severity: "critical",
+        ok,
+        message: ok
+          ? `${name} exists`
+          : `${name} is missing or not executable`,
+        fix: ok ? undefined : "Run supabase/migrations/20260505_big_send_queue_rpcs.sql in the Supabase SQL Editor.",
+      });
+    }),
+  );
+
+  // ── 5. Queue processing ───────────────────────────────────────────────────
   // Queue is processed manually via the "⚡ Process Queue Now" button — no
   // automatic cron is used. This is intentional, so always mark ok.
   checks.push({
@@ -279,7 +329,7 @@ export async function GET() {
     message: 'Queue is processed manually via "⚡ Process Queue Now" on the Drafts & Queued page.',
   });
 
-  // ── 5. SNS webhook events ─────────────────────────────────────────────────
+  // ── 6. SNS webhook events ─────────────────────────────────────────────────
   try {
     const [{ count: snsCount }, { data: latestSnsEvent }, { count: recentSnsCount }] = await Promise.all([
       db
@@ -331,7 +381,7 @@ export async function GET() {
     // provider_events table might not exist — already caught above
   }
 
-  // ── 6. Verified SES sending identity ─────────────────────────────────────
+  // ── 7. Verified SES sending identity ─────────────────────────────────────
   // We can't call SES API from here without aws-sdk, so just flag it as advisory.
   checks.push({
     id: "ses_identity",

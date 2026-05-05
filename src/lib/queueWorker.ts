@@ -95,6 +95,13 @@ type EmailTemplate = {
   campaigns: string[] | null;
 };
 
+type ClaimedQueueItem = {
+  id: string;
+  email_id: string | null;
+  payload: unknown;
+  list_id: string | null;
+};
+
 async function writeMetrics(opts: { queueDepth: number; processed: number; failed: number }) {
   const supabase = getSupabaseAdmin();
   const { error } = await supabase
@@ -256,19 +263,18 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
 
   const limit = Math.min(remaining, WORKER_BATCH_SIZE);
 
-  let fetchQuery = supabase
-    .from("mail_queue")
-    .select("id, email_id, payload, list_id")
-    .eq("status", "pending")
-    .lte("available_at", now.toISOString());
-
-  if (options.emailId) {
-    fetchQuery = fetchQuery.eq("email_id", options.emailId);
-  }
-
-  const { data: items, error: fetchError } = await fetchQuery
-    .order("available_at", { ascending: true })
-    .limit(limit);
+  const { data: items, error: fetchError } = await (
+    supabase as unknown as {
+      rpc(
+        fn: "claim_mail_queue_batch",
+        args: { p_limit: number; p_email_id: string | null; p_now: string },
+      ): Promise<{ data: ClaimedQueueItem[] | null; error: { message: string } | null }>;
+    }
+  ).rpc("claim_mail_queue_batch", {
+    p_limit: limit,
+    p_email_id: options.emailId ?? null,
+    p_now: now.toISOString(),
+  });
 
   if (fetchError) throw new Error(fetchError.message);
 
@@ -295,12 +301,6 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
       message: "No pending items.",
     };
   }
-
-  const ids = items.map((item) => item.id);
-  await supabase
-    .from("mail_queue")
-    .update({ status: "processing", locked_at: now.toISOString() })
-    .in("id", ids);
 
   const touchedEmailIds = items
     .map((item) => item.email_id)
@@ -329,7 +329,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
    * We fan these out with Promise.allSettled in WORKER_CONCURRENCY-sized
    * windows below, saturating the nodemailer connection pool at ~14 msg/sec.
    */
-  async function processItem(item: (typeof items)[number]): Promise<"succeeded" | "failed"> {
+  async function processItem(item: ClaimedQueueItem): Promise<"succeeded" | "failed"> {
     const payloadParsed = MailQueuePayloadSchema.safeParse(item.payload);
     if (!payloadParsed.success) {
       console.error(`[queue worker] invalid payload for item ${item.id}:`, payloadParsed.error.issues);
@@ -364,11 +364,6 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
         throw new Error("sendMail returned no message ID — treat as unconfirmed");
       }
 
-      // TODO: ses_message_id column does not yet exist in mail_queue.
-      // Migration needed: ALTER TABLE mail_queue ADD COLUMN ses_message_id text;
-      //                   CREATE INDEX ON mail_queue(ses_message_id);
-      // Until then, Supabase silently ignores the unknown field.
-      // Once added, this links SES delivery/bounce webhooks back to queue rows.
       await supabase
         .from("mail_queue")
         .update({
