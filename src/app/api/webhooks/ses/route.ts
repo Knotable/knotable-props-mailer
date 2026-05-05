@@ -53,8 +53,8 @@ function buildStringToSign(msg: Record<string, unknown>): string {
 
   return fields
     .filter((k) => msg[k] !== undefined && msg[k] !== null)
-    .map((k) => `${k}\n${msg[k]}`)
-    .join("\n");
+    .map((k) => `${k}\n${msg[k]}\n`)
+    .join("");
 }
 
 async function verifySnsSignature(body: Record<string, unknown>): Promise<boolean> {
