@@ -926,6 +926,34 @@ export async function getQueueSnapshotAction(emailId?: string) {
   };
 }
 
+export async function getRecipientSendLogAction(emailId: string, limit = 200) {
+  await requireAuthUserId();
+  const parsed = EmailIdSchema.safeParse({ id: emailId });
+  if (!parsed.success) throw new Error("Invalid email id");
+
+  const supabase = getSupabaseAdmin();
+  const safeLimit = Math.min(Math.max(limit, 1), 2_000);
+
+  const { data, error } = await supabase
+    .from("mail_queue")
+    .select("recipient_email, status, attempt_count, max_attempts, available_at, updated_at, last_error")
+    .eq("email_id", parsed.data.id)
+    .order("updated_at", { ascending: false })
+    .limit(safeLimit);
+
+  if (error) throw error;
+
+  return (data ?? []).map((row) => ({
+    recipientEmail: row.recipient_email,
+    status: row.status,
+    attemptCount: row.attempt_count,
+    maxAttempts: row.max_attempts,
+    availableAt: row.available_at,
+    updatedAt: row.updated_at,
+    lastError: row.last_error,
+  }));
+}
+
 export async function sendQueuedEmailAction(formData: FormData): Promise<{
   released?: number;
   dueNow?: number;
