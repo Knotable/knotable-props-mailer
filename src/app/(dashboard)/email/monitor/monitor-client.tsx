@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { getQueueSnapshotAction, triggerQueueAction } from "../actions";
+import { getQueueSnapshotAction, getRecipientSendLogAction, triggerQueueAction } from "../actions";
 
 type QueueSnapshot = Awaited<ReturnType<typeof getQueueSnapshotAction>>;
+type RecipientLogRow = Awaited<ReturnType<typeof getRecipientSendLogAction>>[number];
 
 type Props = {
   emailId?: string;
@@ -18,10 +19,17 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  const [recipientLog, setRecipientLog] = useState<RecipientLogRow[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     const next = await getQueueSnapshotAction(emailId);
+    if (emailId) {
+      const logRows = await getRecipientSendLogAction(emailId, 250);
+      setRecipientLog(logRows);
+    } else {
+      setRecipientLog([]);
+    }
     setSnapshot(next);
     return next;
   }, [emailId]);
@@ -185,6 +193,49 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
           </p>
         </div>
       </div>
+
+      {emailId && (
+        <div className="rounded-lg border border-slate-200">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+            <p className="text-sm font-semibold text-slate-900">Recipient send log (latest first)</p>
+            <p className="text-xs text-slate-500">Showing up to 250 rows for audit visibility.</p>
+          </div>
+          <div className="max-h-[420px] overflow-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+                <tr>
+                  <th className="px-4 py-2">Recipient</th>
+                  <th className="px-4 py-2">Status</th>
+                  <th className="px-4 py-2">Attempts</th>
+                  <th className="px-4 py-2">Updated (UTC)</th>
+                  <th className="px-4 py-2">Last error</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {recipientLog.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-4 text-slate-500">
+                      No recipient logs yet.
+                    </td>
+                  </tr>
+                ) : (
+                  recipientLog.map((row) => (
+                    <tr key={`${row.recipientEmail}-${row.updatedAt}`}>
+                      <td className="px-4 py-2 font-mono text-xs text-slate-700">{row.recipientEmail}</td>
+                      <td className="px-4 py-2 text-slate-700">{row.status}</td>
+                      <td className="px-4 py-2 text-slate-700">
+                        {row.attemptCount}/{row.maxAttempts}
+                      </td>
+                      <td className="px-4 py-2 text-slate-700">{row.updatedAt?.replace("T", " ").slice(0, 19)}</td>
+                      <td className="px-4 py-2 text-xs text-red-700">{row.lastError ?? "—"}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
