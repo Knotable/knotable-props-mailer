@@ -1,49 +1,126 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
-import { getQueueSnapshotAction, getRecipientSendLogAction, triggerQueueAction } from "../actions";
 
-type QueueSnapshot = Awaited<ReturnType<typeof getQueueSnapshotAction>>;
-type RecipientLogRow = Awaited<ReturnType<typeof getRecipientSendLogAction>>[number];
+type RecipientLogRow = {
+  recipientEmail: string | null;
+  status: string | null;
+  attemptCount: number | null;
+  maxAttempts: number | null;
+  availableAt: string | null;
+  updatedAt: string | null;
+  lastError: string | null;
+};
+
+type QueueSnapshot = {
+  ok: true;
+  emailId: string | null;
+  subject: string | null;
+  emailStatus: string | null;
+  displayStatus: string;
+  statusDetail: string;
+  date: string;
+  dailyCap: number;
+  sentToday: number;
+  remainingToday: number;
+  total: number;
+  resolved: number;
+  terminalFailures: number;
+  isDrained: boolean;
+  pending: number;
+  pendingDue: number;
+  pendingHeld: number;
+  processing: number;
+  succeeded: number;
+  failed: number;
+  dead: number;
+  canceled: number;
+  recipientLog?: RecipientLogRow[];
+};
+
+type WorkerResult = {
+  processed?: number;
+  succeeded?: number;
+  failed?: number;
+  message?: string;
+};
 
 type Props = {
   emailId?: string;
   autoStart?: boolean;
+  monitorSecret: string;
 };
 
 const POLL_MS = 31_000;
 
-export function MonitorClient({ emailId, autoStart = false }: Props) {
+async function readJson<T>(response: Response): Promise<T> {
+  const body = (await response.json().catch(() => ({}))) as { error?: string };
+  if (!response.ok) {
+    throw new Error(body.error ?? `Request failed with ${response.status}`);
+  }
+  return body as T;
+}
+
+export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Props) {
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
   const [autoRun, setAutoRun] = useState(autoStart);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [runState, setRunState] = useState<"idle" | "running">("idle");
+  const [lastRequestAt, setLastRequestAt] = useState<string | null>(null);
+  const [lastResponseAt, setLastResponseAt] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
   const [recipientLog, setRecipientLog] = useState<RecipientLogRow[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const authHeaders = useCallback(() => {
+    if (!monitorSecret) throw new Error("Monitor secret is missing. Set CRON_SECRET in Vercel.");
+    return { Authorization: `Bearer ${monitorSecret}` };
+  }, [monitorSecret]);
+
   const refresh = useCallback(async () => {
-    const next = await getQueueSnapshotAction(emailId);
-    if (emailId) {
-      const logRows = await getRecipientSendLogAction(emailId, 250);
-      setRecipientLog(logRows);
-    } else {
-      setRecipientLog([]);
-    }
+    const params = new URLSearchParams();
+    if (emailId) params.set("emailId", emailId);
+
+    const response = await fetch(`/api/email/send-monitor?${params.toString()}`, {
+      method: "GET",
+      headers: authHeaders(),
+      cache: "no-store",
+    });
+    const next = await readJson<QueueSnapshot>(response);
+    setRecipientLog(emailId ? next.recipientLog ?? [] : []);
     setSnapshot(next);
     return next;
-  }, [emailId]);
+  }, [authHeaders, emailId]);
 
   const runOnce = useCallback(async () => {
     setError(null);
-    const result = await triggerQueueAction(emailId);
-    setMessage(
-      result.processed === 0
-        ? result.message
-        : `Processed ${result.processed}: ${result.succeeded} sent${result.failed > 0 ? `, ${result.failed} failed` : ""}.`,
-    );
-    return refresh();
-  }, [emailId, refresh]);
+    setRunState("running");
+    setLastRequestAt(new Date().toISOString());
+
+    try {
+      const response = await fetch("/api/email/send-monitor", {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(emailId ? { emailId } : {}),
+      });
+      const result = await readJson<WorkerResult>(response);
+      setLastResponseAt(new Date().toISOString());
+      setMessage(
+        (result.processed ?? 0) === 0
+          ? result.message ?? "Queue checked; no rows were processed."
+          : `Processed ${result.processed ?? 0}: ${result.succeeded ?? 0} sent${
+              (result.failed ?? 0) > 0 ? `, ${result.failed} failed` : ""
+            }.`,
+      );
+      return refresh();
+    } finally {
+      setRunState("idle");
+    }
+  }, [authHeaders, emailId, refresh]);
 
   useEffect(() => {
     startTransition(async () => {
@@ -85,6 +162,8 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
   const done = snapshot?.resolved ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const terminalFailures = snapshot?.terminalFailures ?? 0;
+  const isWorking = pending || runState === "running";
+  const terminalFailuresText = terminalFailures.toLocaleString();
   const statusTone =
     snapshot?.isDrained && terminalFailures === 0
       ? "border-green-200 bg-green-50 text-green-800"
@@ -116,14 +195,18 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
                 }
               })
             }
-            disabled={pending}
+            disabled={isWorking}
             className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
-            {pending ? "Working..." : "Run once"}
+            {isWorking ? "Working..." : "Run once"}
           </button>
           <button
             type="button"
-            onClick={() => setAutoRun((value) => !value)}
+            onClick={() => {
+              setError(null);
+              setMessage(null);
+              setAutoRun((value) => !value);
+            }}
             className={`rounded-md px-4 py-2 text-sm font-semibold text-white ${
               autoRun ? "bg-red-700 hover:bg-red-800" : "bg-slate-900 hover:bg-slate-700"
             }`}
@@ -133,6 +216,11 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
         </div>
       </header>
 
+      {!monitorSecret && (
+        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          Monitor secret is missing. Set CRON_SECRET before starting the worker.
+        </div>
+      )}
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
@@ -191,6 +279,26 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
             Email record:{" "}
             <span className="font-medium text-slate-900">{snapshot?.emailStatus ?? "all queue"}</span>
           </p>
+          <p>
+            Auto-run:{" "}
+            <span className="font-medium text-slate-900">
+              {autoRun ? (isWorking ? "active, request in flight" : "active") : "off"}
+            </span>
+          </p>
+          <p>
+            Last request:{" "}
+            <span className="font-medium text-slate-900">{formatTimestamp(lastRequestAt)}</span>
+          </p>
+          <p>
+            Last response:{" "}
+            <span className="font-medium text-slate-900">{formatTimestamp(lastResponseAt)}</span>
+          </p>
+          {terminalFailures > 0 && (
+            <p className="sm:col-span-2">
+              Permanent failures:{" "}
+              <span className="font-medium text-red-700">{terminalFailuresText}</span>
+            </p>
+          )}
         </div>
       </div>
 
@@ -219,15 +327,15 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
                     </td>
                   </tr>
                 ) : (
-                  recipientLog.map((row) => (
-                    <tr key={`${row.recipientEmail}-${row.updatedAt}`}>
+                  recipientLog.map((row, index) => (
+                    <tr key={`${row.recipientEmail ?? "unknown"}-${row.updatedAt ?? index}`}>
                       <td className="px-4 py-2 font-mono text-xs text-slate-700">{row.recipientEmail}</td>
                       <td className="px-4 py-2 text-slate-700">{row.status}</td>
                       <td className="px-4 py-2 text-slate-700">
                         {row.attemptCount}/{row.maxAttempts}
                       </td>
                       <td className="px-4 py-2 text-slate-700">{row.updatedAt?.replace("T", " ").slice(0, 19)}</td>
-                      <td className="px-4 py-2 text-xs text-red-700">{row.lastError ?? "—"}</td>
+                      <td className="px-4 py-2 text-xs text-red-700">{row.lastError ?? "-"}</td>
                     </tr>
                   ))
                 )}
@@ -238,6 +346,10 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
       )}
     </div>
   );
+}
+
+function formatTimestamp(value: string | null) {
+  return value ? value.replace("T", " ").slice(0, 19) : "never";
 }
 
 function Metric({

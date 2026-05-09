@@ -6,5 +6,11 @@ type Props = {
 
 export default async function MonitorPage({ searchParams }: Props) {
   const { emailId, auto } = await searchParams;
-  return <MonitorClient emailId={emailId} autoStart={auto === "1"} />;
+  return (
+    <MonitorClient
+      emailId={emailId}
+      autoStart={auto === "1"}
+      monitorSecret={process.env.CRON_SECRET ?? ""}
+    />
+  );
 }
