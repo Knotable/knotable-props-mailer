@@ -51,6 +51,16 @@ function optionalEmailId(request: Request): string | undefined {
   return value || undefined;
 }
 
+function errorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return fallback;
+  }
+}
+
 async function countQueueRows(status: string, emailId?: string, availability?: "due" | "held") {
   const supabase = getSupabaseAdmin();
   let query = supabase
@@ -199,7 +209,7 @@ export async function GET(request: Request) {
   try {
     return NextResponse.json(await buildMonitorSnapshot(optionalEmailId(request)));
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unable to load queue status";
+    const message = errorMessage(error, "Unable to load queue status");
     console.error("[send-monitor] snapshot error", error);
     return NextResponse.json({ error: message }, { status: 500 });
   }
@@ -222,7 +232,7 @@ export async function POST(request: Request) {
     const result = await runQueueWorker(emailId ? { emailId } : {});
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Worker failed";
+    const message = errorMessage(error, "Worker failed");
     console.error("[send-monitor] worker error", error);
     return NextResponse.json({ error: message }, { status: 500 });
   }

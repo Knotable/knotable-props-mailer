@@ -54,11 +54,22 @@ type Props = {
 const POLL_MS = 31_000;
 
 async function readJson<T>(response: Response): Promise<T> {
-  const body = (await response.json().catch(() => ({}))) as { error?: string };
+  const body = (await response.json().catch(() => ({}))) as { error?: unknown };
   if (!response.ok) {
-    throw new Error(body.error ?? `Request failed with ${response.status}`);
+    throw new Error(formatError(body.error, `Request failed with ${response.status}`));
   }
   return body as T;
+}
+
+function formatError(error: unknown, fallback: string) {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  if (error == null) return fallback;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return fallback;
+  }
 }
 
 export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Props) {

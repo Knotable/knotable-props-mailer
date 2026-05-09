@@ -182,6 +182,26 @@ async function reconcileEmailStatuses(emailIds: string[]) {
   }
 }
 
+async function reconcileEmailStatusesIfDrained(emailIds: string[]) {
+  if (emailIds.length === 0) return;
+
+  const supabase = getSupabaseAdmin();
+  const uniqueIds = [...new Set(emailIds)];
+  const { count, error } = await supabase
+    .from("mail_queue")
+    .select("id", { count: "exact", head: true })
+    .in("email_id", uniqueIds)
+    .in("status", ["pending", "processing"]);
+
+  if (error) {
+    console.error("[queue worker] drain check failed", error);
+    return;
+  }
+
+  if ((count ?? 0) > 0) return;
+  await reconcileEmailStatuses(uniqueIds);
+}
+
 function formatRecipientAddress(email: string, displayName: string | undefined): string {
   const name = displayName
     ?.replace(/[\r\n]/g, " ")
@@ -440,18 +460,15 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
     }
   }
 
-  const { count: pendingAfter } = await supabase
-    .from("mail_queue")
-    .select("id", { count: "exact", head: true })
-    .eq("status", "pending");
-
   await writeMetrics({
-    queueDepth: pendingAfter ?? 0,
+    queueDepth: 0,
     processed: items.length,
     failed,
   });
 
-  await reconcileEmailStatuses(touchedEmailIds);
+  if (items.length < limit) {
+    await reconcileEmailStatusesIfDrained(touchedEmailIds);
+  }
 
   return {
     ok: true,
