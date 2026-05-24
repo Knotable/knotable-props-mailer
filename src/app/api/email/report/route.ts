@@ -19,6 +19,7 @@
  */
 
 import { NextResponse } from "next/server";
+import { parseUuid } from "@/lib/ids";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 function unauthorizedResponse() {
@@ -39,8 +40,8 @@ export async function GET(request: Request) {
 
   // ── Input ─────────────────────────────────────────────────────────────────
   const { searchParams } = new URL(request.url);
-  const emailId = searchParams.get("emailId");
-  if (!emailId || !/^[0-9a-f-]{36}$/i.test(emailId)) {
+  const emailId = parseUuid(searchParams.get("emailId"));
+  if (!emailId) {
     return NextResponse.json({ error: "emailId (UUID) is required" }, { status: 400 });
   }
 

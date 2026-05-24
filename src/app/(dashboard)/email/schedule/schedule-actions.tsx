@@ -6,49 +6,14 @@ import {
   deleteEmailAction,
   editQueuedEmailAction,
   sendQueuedEmailAction,
-  triggerQueueAction,
 } from "../actions";
+import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 
-// ── Process-all button shown in the page header ──────────────────────────────
-export function ProcessQueueButton() {
-  const [pending, startTransition] = useTransition();
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
-
-  const handleProcess = () => {
-    setResult(null);
-    startTransition(async () => {
-      try {
-        const res = await triggerQueueAction();
-        setResult({
-          ok: true,
-          message:
-            res.processed === 0
-              ? "Queue is empty — nothing to process."
-              : `Processed ${res.processed}: ${res.succeeded} sent${res.failed > 0 ? `, ${res.failed} failed` : ""}.`,
-        });
-      } catch (err) {
-        setResult({
-          ok: false,
-          message: err instanceof Error ? err.message : "Queue processing failed.",
-        });
-      }
-    });
-  };
-
+// ── Header safety notice: broad queue drains are intentionally unavailable. ──
+export function QueueSafetyNotice() {
   return (
-    <div className="flex flex-col items-end gap-1">
-      <button
-        onClick={handleProcess}
-        disabled={pending}
-        className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
-      >
-        {pending ? "Processing…" : "⚡ Process Queue Now"}
-      </button>
-      {result && (
-        <span className={`text-xs ${result.ok ? "text-green-700" : "text-red-700"}`}>
-          {result.message}
-        </span>
-      )}
+    <div className="max-w-sm rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+      Process sends from a specific row only. Broad queue draining is disabled to avoid sending an unintended campaign.
     </div>
   );
 }
@@ -89,9 +54,15 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
   };
 
   const handleSendNow = () => {
+    const confirmed = confirm(
+      `Release queued recipients for "${subject || "this email"}" and start the monitor?`,
+    );
+    if (!confirmed) return;
+
     runAction(async () => {
       const fd = new FormData();
       fd.set("id", id);
+      fd.set("releaseConfirmation", buildQueueReleaseConfirmation(id));
       const res = await sendQueuedEmailAction(fd);
       if (res.error) throw new Error(res.error);
       setResult({

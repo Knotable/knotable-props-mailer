@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
 import { getDailySendLimit } from "@/lib/appSettings";
+import { parseUuid } from "@/lib/ids";
 
 /**
  * Extract the SMTP numeric response code from a nodemailer error.
@@ -83,7 +84,7 @@ export type QueueWorkerResult = {
 };
 
 type RunQueueWorkerOptions = {
-  emailId?: string;
+  emailId: string;
 };
 
 type EmailTemplate = {
@@ -240,7 +241,12 @@ async function loadTemplates(emailIds: string[]) {
   );
 }
 
-export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promise<QueueWorkerResult> {
+export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<QueueWorkerResult> {
+  const emailId = parseUuid(options.emailId);
+  if (!emailId) {
+    throw new Error("runQueueWorker requires a valid emailId. Global queue worker runs are disabled.");
+  }
+
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const now = new Date();
@@ -255,6 +261,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
       updated_at: now.toISOString(),
     })
     .eq("status", "processing")
+    .eq("email_id", emailId)
     .lt("locked_at", staleLockedBefore)
     .select("id");
 
@@ -292,21 +299,20 @@ export async function runQueueWorker(options: RunQueueWorkerOptions = {}): Promi
     }
   ).rpc("claim_mail_queue_batch", {
     p_limit: limit,
-    p_email_id: options.emailId ?? null,
+    p_email_id: emailId,
     p_now: now.toISOString(),
   });
 
   if (fetchError) throw new Error(fetchError.message);
 
   if (!items || items.length === 0) {
-    if (options.emailId) {
-      await reconcileEmailStatuses([options.emailId]);
-    }
+    await reconcileEmailStatuses([emailId]);
 
     const { count: pendingCount } = await supabase
       .from("mail_queue")
       .select("id", { count: "exact", head: true })
-      .eq("status", "pending");
+      .eq("status", "pending")
+      .eq("email_id", emailId);
 
     await writeMetrics({ queueDepth: pendingCount ?? 0, processed: 0, failed: 0 });
     return {

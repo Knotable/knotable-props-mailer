@@ -74,7 +74,7 @@ function formatError(error: unknown, fallback: string) {
 
 export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Props) {
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
-  const [autoRun, setAutoRun] = useState(autoStart);
+  const [autoRun, setAutoRun] = useState(autoStart && Boolean(emailId && monitorSecret));
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runState, setRunState] = useState<"idle" | "running">("idle");
@@ -105,6 +105,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   }, [authHeaders, emailId]);
 
   const runOnce = useCallback(async () => {
+    if (!emailId) throw new Error("Worker controls require a specific emailId.");
     setError(null);
     setRunState("running");
     setLastRequestAt(new Date().toISOString());
@@ -144,7 +145,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   }, [refresh]);
 
   useEffect(() => {
-    if (!autoRun) return;
+    if (!autoRun || !emailId) return;
 
     const tick = () => {
       startTransition(async () => {
@@ -167,13 +168,14 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [autoRun, runOnce]);
+  }, [autoRun, emailId, runOnce]);
 
   const total = snapshot?.total ?? 0;
   const done = snapshot?.resolved ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const terminalFailures = snapshot?.terminalFailures ?? 0;
   const isWorking = pending || runState === "running";
+  const canRunWorker = Boolean(emailId && monitorSecret);
   const terminalFailuresText = terminalFailures.toLocaleString();
   const statusTone =
     snapshot?.isDrained && terminalFailures === 0
@@ -206,7 +208,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
                 }
               })
             }
-            disabled={isWorking}
+            disabled={isWorking || !canRunWorker}
             className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             {isWorking ? "Working..." : "Run once"}
@@ -218,9 +220,10 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
               setMessage(null);
               setAutoRun((value) => !value);
             }}
+            disabled={!canRunWorker}
             className={`rounded-md px-4 py-2 text-sm font-semibold text-white ${
               autoRun ? "bg-red-700 hover:bg-red-800" : "bg-slate-900 hover:bg-slate-700"
-            }`}
+            } disabled:opacity-50`}
           >
             {autoRun ? "Stop auto-run" : "Start auto-run"}
           </button>
@@ -230,6 +233,11 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
       {!monitorSecret && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           Monitor secret is missing. Set CRON_SECRET before starting the worker.
+        </div>
+      )}
+      {!emailId && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          This is a read-only global queue snapshot. Worker controls require a specific emailId in the URL.
         </div>
       )}
       {error && (

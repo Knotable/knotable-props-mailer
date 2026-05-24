@@ -4,6 +4,65 @@
 
 ---
 
+## OPERATOR STATUS - READ THIS FIRST
+
+**As of 2026-05-21 09:14 UTC, the old 186k send remains killed, and there are two smaller follow-up queues still held. Do not open or auto-run the monitor casually; verify the exact email id first.**
+
+Any AI agent entering this repo should first tell the operator:
+
+> Hey, here is what's up right now: the old large campaign was canceled on 2026-05-12. It already sent 63,553 recipients, has 122,592 canceled queue rows, 1 dead row, and 0 pending/processing rows. There is no due queue work for that old campaign. Separately, there are 6,111 held pending follow-up recipients across two queued emails; they are not due yet, but they still exist. Verify whether those should be canceled or released before creating another 186k send.
+
+Current live-send details:
+
+- Old canceled campaign email id: `696a333a-4909-41e8-ad3e-81c2e11b39db`
+- Subject: `NY: birthday + LifeX Fund 2`
+- List: `Amols202604` (`dbd52a08-9a38-4573-bf06-09e401015ae9`), 185,909 active members at last check
+- Final old-campaign queue state after cancellation: `63,553` succeeded, `122,592` canceled, `1` dead, `0` pending, `0` processing
+- Global queue state checked on 2026-05-21: `0` due pending rows, `0` processing rows, `6,111` held pending rows
+- Held follow-up email `aacdd257-4604-4f0c-b13d-54add0aff534`: `4,898` held pending, `102` canceled
+- Held follow-up email `7b57066b-6400-4216-8ef0-12faa967cbee`: `1,213` held pending, `5` canceled
+- Production health critical checks were green on 2026-05-21; the remaining warning was stale SES/SNS tracking, with latest provider event observed at `2026-05-05T16:55:27Z`
+
+Next-send checklist:
+
+- Decide whether the two held follow-up queues should be canceled or intentionally released.
+- Create or clone a fresh email for the next 186k send; do not reuse the canceled email id above.
+- Confirm SES/SNS tracking is fresh by sending a small test and verifying a new `provider_events` row.
+- Confirm the intended daily send cap in `app_settings` / Analytics before release.
+- Queue rows should remain held (`available_at = 2999-12-31T23:59:59Z`) until the operator intentionally releases them.
+- Before opening `/email/monitor`, verify the target email id and queue counts so no unrelated campaign drains.
+
+### Running Repair / Readiness Checklist
+
+Update this section as work progresses so future agents do not re-derive the state.
+
+| Item | Status | Notes / Checks |
+|---|---|---|
+| Resolve monitor UI conflict markers | Done 2026-05-20 | Kept the API-route implementation that calls `/api/email/send-monitor` with `CRON_SECRET`; removed stale server-action conflict branch. Verified no conflict markers remain in the monitor client. |
+| Disable accidental global queue drains | Done 2026-05-21 | `/api/email/send-monitor` POST, `/api/email/queue` POST, and `triggerQueueAction` now require a valid `emailId`; the schedule page no longer shows the broad "Process Queue Now" control; `/email/monitor` without `emailId` is read-only. |
+| Require explicit per-email release confirmation | Done 2026-05-21 | `Send Now` now requires a campaign-specific `release:<emailId>` confirmation token; the server action preflights email status plus due/held/processing counts before calling `release_mail_queue_campaign`. Direct action calls without the token fail before mutating queue rows. |
+| Centralize strict email id parsing | Done 2026-05-21 | Worker/report endpoints now share `parseUuid`; malformed 36-character strings no longer pass the report endpoint's looser UUID check, and invalid monitor `emailId` query strings return 400 instead of behaving like a valid campaign filter. |
+| Harden worker core against global mutation | Done 2026-05-21 | `runQueueWorker` now requires a valid `emailId` and throws without one; stale `processing` row recovery is scoped to that campaign instead of mutating all processing rows globally. |
+| Bound schedule page queue lookups | Done 2026-05-21 | `/email/schedule` no longer fetches every `mail_queue` row for visible emails just to render list badges; it samples at most 25 queue rows per email so a 186k queued campaign does not make the page pull a 186k-row result set. |
+| Surface queue due snapshot in health | Done 2026-05-21 | `/api/health` now includes a warning check with global due pending, processing, and held pending queue counts so readiness reviews see accidental due work without opening the monitor. |
+| Commit/persist this operator status | Pending | `README-AI.md` is modified locally until committed. |
+| Decide fate of held follow-up queues | Pending | `aacdd257...` has 4,898 held; `7b57066...` has 1,213 held. |
+| Verify SES/SNS event freshness | Pending | `/api/health` still reports stale SNS events; latest `provider_events.received_at` is 2026-05-05. Send a small test and check for a new row before any large send. |
+| Verify large-send RPCs in prod | Done 2026-05-21 | `/api/health` critical checks are green, including `claim_mail_queue_batch` and `release_mail_queue_campaign`. Re-check immediately before release. |
+| Confirm queue is not accidentally due | Done 2026-05-21 | `0` due pending and `0` processing globally; 6,111 held pending remain. Re-check immediately before monitor use. |
+| Run local checks after hardening | Partially done 2026-05-21 | `git diff --check` passed; conflict-marker scan is clean; code stale-reference scan no longer finds the old broad-drain UI/API paths; TypeScript `transpileModule` checks passed for touched TS/TSX files; direct `vitest run` passed 7 tests. Full `tsc --noEmit` runs but fails on the known stale Supabase generated types (`never` table rows across existing files), so regenerate `src/supabase/types.ts` before treating full typecheck as a release gate. `npm` is still not on PATH in this desktop shell; re-run `npm run lint`, `npm test`, and `npm run build` in a normal Node/npm shell before deploy. |
+
+Suggested verification commands once Node/npm are available:
+
+```bash
+npm run lint
+npm test
+npm run build
+curl -fsS https://knotable-props-mailer.vercel.app/api/health | jq '{ok, critical, warnings, failed: [.checks[] | select(.ok==false)]}'
+```
+
+---
+
 ## What This Project Is
 
 A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, queue them, send via Amazon SES (SMTP), manage mailing lists, and track analytics. There is no Cron automation — sends are initiated manually, then drained by keeping `/email/monitor` open in a browser tab.
@@ -53,7 +112,7 @@ src/
       users/                # Admin-only user management
     api/
       email/
-        queue/route.ts      # POST: run queue worker batch; GET: quota + queue depth. Both require Bearer $CRON_SECRET.
+        queue/route.ts      # POST: run queue worker batch for a specific emailId; GET: quota + queue depth. Both require Bearer $CRON_SECRET.
         preview/[id]/route.ts # GET: render email HTML for preview iframe
         report/route.ts     # GET ?emailId=<uuid>: per-email send report (queue outcome counts + SES event counts + first 100 unsent recipients). Requires Bearer $CRON_SECRET.
       health/route.ts       # GET: unauthenticated; checks env vars + DB tables/columns. Good smoke test after deploy.
@@ -135,7 +194,7 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 
 1. **Composer** (`/email/composer`): User drafts an email. Server action in `email/actions.ts` saves to `emails` table as `draft`.
 2. **Queue**: Queueing action creates rows in `mail_queue` (one per recipient), sets `emails.status = 'queued'`.
-3. **Send Monitor** (`/email/monitor`): Browser page that fires `POST /api/email/send-monitor` every 31 seconds while open. 31s is intentional — just over Vercel's 30s hobby-tier timeout so each worker call finishes before the next fires.
+3. **Send Monitor** (`/email/monitor?emailId=<uuid>`): Browser page that fires `POST /api/email/send-monitor` every 31 seconds while open for a specific email. 31s is intentional — just over Vercel's 30s hobby-tier timeout so each worker call finishes before the next fires. `/email/monitor` without an `emailId` is read-only and must not run the worker.
 4. **Queue Worker** (`src/lib/queueWorker.ts`):
    - Reclaims stuck `processing` rows older than 15 min
    - Checks daily quota via `dailyQuota.ts`
@@ -190,6 +249,8 @@ See `.env.example` for full list.
 
 ## Known TODOs / In-Progress Work
 
+- **Operational status lives at the top of this file.** Check `OPERATOR STATUS - READ THIS FIRST` before queueing or releasing any large send.
+- Verify SES/SNS tracking freshness before the next 186k send; production health was otherwise green but provider events were stale as of 2026-05-21.
 - Verify `supabase/migrations/20260505_big_send_queue_rpcs.sql` is applied before large sends; it provides atomic queue claims and multi-day release scheduling.
 - Supabase TypeScript types (`src/supabase/types.ts`) are stale — regenerate with `supabase gen types typescript` after any schema migration; many tables currently resolve to `never` (pre-existing, not a regression)
 - RLS policies in `schema.sql` are commented out — need to be enabled manually in Supabase
@@ -206,7 +267,8 @@ See `.env.example` for full list.
 - **No Cron**: Do not add Vercel Cron entries — queue draining is handled by the monitor page (`/email/monitor`), which fires the worker every 31s while open. `vercel.json` intentionally stays `{}`.
 - **Rate limiting**: Use `checkRateLimit(key, max, windowMs)` (async, DB-backed via `error_logs` sentinel rows) for any endpoint that needs cross-instance protection. Use `checkRateLimitSync` only where async is impossible (currently: login server action). The DB version writes rows with `source = 'rate_limit:<key>'` and `message = 'hit'` — don't mistake these for real errors when reading `error_logs`.
 - **Monitor page auth**: `/api/email/send-monitor` uses the same `CRON_SECRET` bearer token as `/api/email/queue`. The server component at `/email/monitor/page.tsx` passes `process.env.CRON_SECRET` to the client component so the browser can authenticate its polling calls. `CRON_SECRET` must be set in Vercel env vars or the monitor page will show a warning and refuse to fire.
-- **Queue hold pattern**: When `queueCampaignAction` inserts queue rows, all rows get `available_at = '2999-12-31T23:59:59Z'` (the `QUEUE_HOLD_AT` constant). `sendQueuedEmailAction` then updates `available_at` to `now()` for the rows being released. This two-step pattern lets you inspect and cancel before anything goes out.
+- **No global queue drains**: Worker POST routes and `runQueueWorker` itself require a specific `emailId`; broad all-pending queue drains are disabled to prevent accidentally sending unrelated due rows. Use a row's **Send Now** action or `/email/monitor?emailId=<uuid>`.
+- **Queue hold pattern**: When `queueCampaignAction` inserts queue rows, all rows get `available_at = '2999-12-31T23:59:59Z'` (the `QUEUE_HOLD_AT` constant). `sendQueuedEmailAction` requires a per-email release confirmation token, preflights counts, and then updates `available_at` to `now()` for the rows being released. This two-step pattern lets you inspect and cancel before anything goes out.
 - **Feature flags**: Use `getFeatureFlag(key)` from `featureFlags.ts`; defaults to `true` if the key doesn't exist in the DB.
 - **Schema changes**: Add a new file to `supabase/migrations/` with the format `YYYYMMDD_description.sql`. Update `schema.sql` to match. Then regenerate types: `supabase gen types typescript > src/supabase/types.ts`.
 - **Next.js version**: Always check `node_modules/next/dist/docs/` before using Next.js APIs — this is v16, not v14/15.

@@ -319,15 +319,51 @@ export async function GET() {
   );
 
   // ── 5. Queue processing ───────────────────────────────────────────────────
-  // Queue is processed manually via the "⚡ Process Queue Now" button — no
-  // automatic cron is used. This is intentional, so always mark ok.
+  // Queue is processed manually per email — no automatic cron is used. This is
+  // intentional, so always mark ok.
   checks.push({
     id: "cron_frequency",
     label: "Queue processing",
     severity: "warning",
     ok: true,
-    message: 'Queue is processed manually via "⚡ Process Queue Now" on the Drafts & Queued page.',
+    message: "Queue is processed manually per queued email; broad all-pending drains are disabled.",
   });
+
+  try {
+    const nowIso = new Date().toISOString();
+    const [{ count: due }, { count: held }, { count: processing }] = await Promise.all([
+      db
+        .from("mail_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "pending")
+        .lte("available_at", nowIso),
+      db
+        .from("mail_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "pending")
+        .gt("available_at", nowIso),
+      db
+        .from("mail_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "processing"),
+    ]);
+
+    const dueCount = due ?? 0;
+    const processingCount = processing ?? 0;
+    checks.push({
+      id: "queue_due_snapshot",
+      label: "Queue due snapshot",
+      severity: "warning",
+      ok: dueCount === 0 && processingCount === 0,
+      message: `${dueCount.toLocaleString()} due pending, ${processingCount.toLocaleString()} processing, ${(held ?? 0).toLocaleString()} held pending.`,
+      fix:
+        dueCount === 0 && processingCount === 0
+          ? undefined
+          : "Before releasing or creating another campaign, inspect /email/monitor?emailId=<uuid> for the intended campaign and confirm no unrelated rows are due.",
+    });
+  } catch {
+    // mail_queue table/columns might not exist — already covered by DB checks.
+  }
 
   // ── 6. SNS webhook events ─────────────────────────────────────────────────
   try {

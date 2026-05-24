@@ -6,8 +6,9 @@
  *
  * POST /api/email/send-monitor
  *
- * Fires the queue worker for a specific emailId (or all pending if omitted).
- * This is what the monitor page hits on each tick.
+ * Fires the queue worker for a specific emailId. This is what the monitor page
+ * hits on each tick. Global worker runs are intentionally rejected so a monitor
+ * tab cannot accidentally drain unrelated due rows.
  *
  * Auth: same CRON_SECRET bearer token as /api/email/queue.
  */
@@ -16,6 +17,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
 import { getDailySendLimit } from "@/lib/appSettings";
+import { parseUuid } from "@/lib/ids";
 import { runQueueWorker } from "@/lib/queueWorker";
 
 export const dynamic = "force-dynamic";
@@ -46,9 +48,11 @@ function authCheck(request: Request): boolean {
   return request.headers.get("authorization") === `Bearer ${cronSecret}`;
 }
 
-function optionalEmailId(request: Request): string | undefined {
-  const value = new URL(request.url).searchParams.get("emailId")?.trim();
-  return value || undefined;
+function optionalEmailId(request: Request): { emailId?: string; error?: string } {
+  const raw = new URL(request.url).searchParams.get("emailId");
+  if (!raw) return {};
+  const emailId = parseUuid(raw);
+  return emailId ? { emailId } : { error: "emailId must be a valid UUID" };
 }
 
 function errorMessage(error: unknown, fallback: string) {
@@ -207,7 +211,9 @@ export async function GET(request: Request) {
   }
 
   try {
-    return NextResponse.json(await buildMonitorSnapshot(optionalEmailId(request)));
+    const parsed = optionalEmailId(request);
+    if (parsed.error) return NextResponse.json({ error: parsed.error }, { status: 400 });
+    return NextResponse.json(await buildMonitorSnapshot(parsed.emailId));
   } catch (error) {
     const message = errorMessage(error, "Unable to load queue status");
     console.error("[send-monitor] snapshot error", error);
@@ -220,16 +226,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let emailId: string | undefined;
+  let emailId: string | null = null;
   try {
-    const body = (await request.json()) as { emailId?: string };
-    emailId = body.emailId;
+    const body = (await request.json()) as { emailId?: unknown };
+    emailId = parseUuid(body.emailId);
   } catch {
-    // No body is fine - run the global worker.
+    // Handled below so missing/invalid JSON cannot fall through to a global run.
+  }
+
+  if (!emailId) {
+    return NextResponse.json(
+      { error: "emailId is required. Global queue worker runs are disabled for operator safety." },
+      { status: 400 },
+    );
   }
 
   try {
-    const result = await runQueueWorker(emailId ? { emailId } : {});
+    const result = await runQueueWorker({ emailId });
     return NextResponse.json(result);
   } catch (error) {
     const message = errorMessage(error, "Worker failed");

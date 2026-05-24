@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { createServerAppClient } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { ScheduleActions, ProcessQueueButton } from "./schedule-actions";
+import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
 
 export default async function SchedulePage() {
@@ -19,18 +19,26 @@ export default async function SchedulePage() {
 
   const emailIds = (emails ?? []).map((e) => e.id);
 
-  // Fetch the list associations for all queued/sending emails from mail_queue.
-  // Drafts won't have queue rows yet, so they'll just have no lists shown.
-  const { data: queueRows } = emailIds.length
-    ? await admin
-        .from("mail_queue")
-        .select("email_id, list_id")
-        .in("email_id", emailIds)
-        .not("list_id", "is", null)
-    : { data: [] as { email_id: string; list_id: string }[] };
+  // Fetch bounded list-association samples. A large queued send can have
+  // 186k+ mail_queue rows, so never pull every row just to render badges.
+  const queueRows = emailIds.length
+    ? (
+        await Promise.all(
+          emailIds.map(async (emailId) => {
+            const { data } = await admin
+              .from("mail_queue")
+              .select("email_id, list_id")
+              .eq("email_id", emailId)
+              .not("list_id", "is", null)
+              .limit(25);
+            return data ?? [];
+          }),
+        )
+      ).flat()
+    : ([] as { email_id: string; list_id: string }[]);
 
   // Unique list IDs across all emails
-  const listIds = [...new Set((queueRows ?? []).map((r) => r.list_id).filter(Boolean) as string[])];
+  const listIds = [...new Set(queueRows.map((r) => r.list_id).filter(Boolean) as string[])];
 
   const [{ data: lists }, listCounts, { data: sampleMembers }] = await Promise.all([
     listIds.length
@@ -81,7 +89,7 @@ export default async function SchedulePage() {
 
   // Build email_id → lists[]
   const listsByEmail = new Map<string, { id: string; name: string; address: string; memberCount: number; sampleEmails: string[] }[]>();
-  for (const row of queueRows ?? []) {
+  for (const row of queueRows) {
     if (!row.email_id || !row.list_id) continue;
     const list = listMap.get(row.list_id);
     if (!list) continue;
@@ -100,7 +108,7 @@ export default async function SchedulePage() {
             Drafts you&apos;re working on, plus emails held for manual send.
           </p>
         </div>
-        <ProcessQueueButton />
+        <QueueSafetyNotice />
       </header>
 
       <div className="divide-y rounded-lg border border-slate-200">

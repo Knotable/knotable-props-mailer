@@ -9,6 +9,7 @@ import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
 import { getDailySendLimit } from "@/lib/appSettings";
 import { logAudit } from "@/lib/logger";
+import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/queueReleaseGuard";
 import { runQueueWorker } from "@/lib/queueWorker";
 import type { Json } from "@/supabase/types";
 
@@ -794,9 +795,12 @@ export async function sendTestAction(formData: FormData) {
 }
 
 // ── Manually trigger the queue worker ───────────────────────────────────────
-export async function triggerQueueAction(emailId?: string): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
+export async function triggerQueueAction(emailId: string): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
   await requireAuthUserId();
-  const data = await runQueueWorker({ emailId });
+  const parsed = EmailIdSchema.safeParse({ id: emailId });
+  if (!parsed.success) throw new Error("Invalid email id");
+
+  const data = await runQueueWorker({ emailId: parsed.data.id });
   revalidatePath("/email/schedule");
   revalidatePath("/email/sends");
   return {
@@ -958,6 +962,9 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
   released?: number;
   dueNow?: number;
   scheduledFuture?: number;
+  pendingDueBefore?: number;
+  pendingHeldBefore?: number;
+  processingBefore?: number;
   processed?: number;
   succeeded?: number;
   failed?: number;
@@ -978,20 +985,64 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     }
     const userId = auth.userId;
 
+    const nowIso = new Date().toISOString();
+    const [
+      { data: emailRow, error: emailError },
+      { count: dueBefore, error: dueError },
+      { count: heldBefore, error: heldError },
+      { count: processingBefore, error: processingError },
+    ] = await Promise.all([
+      supabase.from("emails").select("status").eq("id", id).maybeSingle(),
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("email_id", id)
+        .eq("status", "pending")
+        .lte("available_at", nowIso),
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("email_id", id)
+        .eq("status", "pending")
+        .gt("available_at", nowIso),
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "exact", head: true })
+        .eq("email_id", id)
+        .eq("status", "processing"),
+    ]);
+
+    if (emailError) return { error: emailError.message };
+    if (dueError) return { error: dueError.message };
+    if (heldError) return { error: heldError.message };
+    if (processingError) return { error: processingError.message };
+
+    if (emailRow?.status !== "queued" && emailRow?.status !== "sending") {
+      return { error: "Only queued or sending emails can be released." };
+    }
+
+    const preflight = {
+      pendingDue: dueBefore ?? 0,
+      pendingHeld: heldBefore ?? 0,
+      processing: processingBefore ?? 0,
+    };
+
+    if (preflight.pendingDue + preflight.pendingHeld + preflight.processing === 0) {
+      return { error: "No queued recipients are ready for this email." };
+    }
+
+    if (!isQueueReleaseConfirmed(id, formData.get("releaseConfirmation"))) {
+      return {
+        error: `Release confirmation required for ${describeQueueReleasePreflight(preflight)}.`,
+      };
+    }
+
     const sentToday = await getDailySentCount();
     const dailySendLimit = await getDailySendLimit();
     const remainingToday = Math.max(0, dailySendLimit - sentToday);
     if (remainingToday === 0) {
       return { error: `Daily cap of ${dailySendLimit.toLocaleString()} reached. Nothing can be sent right now.` };
     }
-
-    const nowIso = new Date().toISOString();
-    const { count: dueBefore } = await supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("email_id", id)
-      .eq("status", "pending")
-      .lte("available_at", nowIso);
 
     const { data: releaseRows, error: releaseError } = await (
       supabase as unknown as {
@@ -1018,7 +1069,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
 
     const releaseSummary = releaseRows?.[0] ?? { released: 0, due_now: 0, scheduled_future: 0 };
 
-    if (releaseSummary.released === 0 && (dueBefore ?? 0) === 0) {
+    if (releaseSummary.released === 0 && preflight.pendingDue === 0) {
       return { error: "No queued recipients are ready for this email." };
     }
 
@@ -1044,6 +1095,9 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
         released: releaseSummary.released,
         dueNow: releaseSummary.due_now,
         scheduledFuture: releaseSummary.scheduled_future,
+        pendingDueBefore: preflight.pendingDue,
+        pendingHeldBefore: preflight.pendingHeld,
+        processingBefore: preflight.processing,
         processed: result.processed,
         succeeded: result.succeeded,
         failed: result.failed,
