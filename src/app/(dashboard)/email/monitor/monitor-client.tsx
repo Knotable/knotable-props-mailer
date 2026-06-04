@@ -23,7 +23,7 @@ type QueueSnapshot = {
   dailyCap: number;
   sentToday: number;
   sentLast7Days: number;
-  sentAllTime: number;
+  sentAllTime: number | null;
   remainingToday: number;
   total: number;
   resolved: number;
@@ -54,6 +54,7 @@ type Props = {
 };
 
 const POLL_MS = 31_000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json().catch(() => ({}))) as { error?: unknown };
@@ -67,16 +68,22 @@ function formatError(error: unknown, fallback: string) {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
   if (error == null) return fallback;
+  if (typeof error === "object" && "message" in error) {
+    const message = String(error.message ?? "").trim();
+    if (message) return message;
+  }
   try {
-    return JSON.stringify(error);
+    const serialized = JSON.stringify(error);
+    return serialized && serialized !== "{}" ? serialized : fallback;
   } catch {
     return fallback;
   }
 }
 
 export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Props) {
+  const scopedEmailId = emailId && UUID_RE.test(emailId) ? emailId : undefined;
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
-  const [autoRun, setAutoRun] = useState(autoStart && Boolean(emailId && monitorSecret));
+  const [autoRun, setAutoRun] = useState(autoStart && Boolean(scopedEmailId && monitorSecret));
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runState, setRunState] = useState<"idle" | "running">("idle");
@@ -93,7 +100,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
-    if (emailId) params.set("emailId", emailId);
+    if (scopedEmailId) params.set("emailId", scopedEmailId);
 
     const response = await fetch(`/api/email/send-monitor?${params.toString()}`, {
       method: "GET",
@@ -101,13 +108,13 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
       cache: "no-store",
     });
     const next = await readJson<QueueSnapshot>(response);
-    setRecipientLog(emailId ? next.recipientLog ?? [] : []);
+    setRecipientLog(scopedEmailId ? next.recipientLog ?? [] : []);
     setSnapshot(next);
     return next;
-  }, [authHeaders, emailId]);
+  }, [authHeaders, scopedEmailId]);
 
   const runOnce = useCallback(async () => {
-    if (!emailId) throw new Error("Worker controls require a specific emailId.");
+    if (!scopedEmailId) throw new Error("Worker controls require a specific emailId.");
     setError(null);
     setRunState("running");
     setLastRequestAt(new Date().toISOString());
@@ -119,7 +126,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
           ...authHeaders(),
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(emailId ? { emailId } : {}),
+        body: JSON.stringify({ emailId: scopedEmailId }),
       });
       const result = await readJson<WorkerResult>(response);
       setLastResponseAt(new Date().toISOString());
@@ -134,7 +141,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     } finally {
       setRunState("idle");
     }
-  }, [authHeaders, emailId, refresh]);
+  }, [authHeaders, scopedEmailId, refresh]);
 
   useEffect(() => {
     startTransition(async () => {
@@ -147,7 +154,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   }, [refresh]);
 
   useEffect(() => {
-    if (!autoRun || !emailId) return;
+    if (!autoRun || !scopedEmailId) return;
 
     const tick = () => {
       startTransition(async () => {
@@ -170,7 +177,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [autoRun, emailId, runOnce]);
+  }, [autoRun, scopedEmailId, runOnce]);
 
   const total = snapshot?.total ?? 0;
   const done = snapshot?.resolved ?? 0;
@@ -178,7 +185,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   const terminalFailures = snapshot?.terminalFailures ?? 0;
   const isCampaignScoped = Boolean(snapshot?.emailId);
   const isWorking = pending || runState === "running";
-  const canRunWorker = Boolean(emailId && monitorSecret);
+  const canRunWorker = Boolean(scopedEmailId && monitorSecret);
   const terminalFailuresText = terminalFailures.toLocaleString();
   const statusTone =
     snapshot?.isDrained && terminalFailures === 0
@@ -238,7 +245,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
           Monitor secret is missing. Set CRON_SECRET before starting the worker.
         </div>
       )}
-      {!emailId && (
+      {!scopedEmailId && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           This is a read-only global queue snapshot. Worker controls require a specific emailId in the URL.
         </div>
@@ -265,13 +272,15 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
           <Metric
-            label={isCampaignScoped ? "Campaign accepted" : "Accepted all time"}
-            value={snapshot?.succeeded ?? 0}
+            label={isCampaignScoped ? "Campaign accepted" : "Sent last 7 days"}
+            value={isCampaignScoped ? snapshot?.succeeded ?? 0 : snapshot?.sentLast7Days ?? 0}
             tone="green"
           />
           <Metric label="Pending now" value={snapshot?.pendingDue ?? 0} tone="amber" />
           <Metric label="Held" value={snapshot?.pendingHeld ?? 0} tone="slate" />
-          <Metric label="Accepted last 7 days" value={snapshot?.sentLast7Days ?? 0} tone="green" />
+          {isCampaignScoped && (
+            <Metric label="Accepted last 7 days" value={snapshot?.sentLast7Days ?? 0} tone="green" />
+          )}
           <Metric label="Processing" value={snapshot?.processing ?? 0} tone="blue" />
           <Metric label="Failed rows" value={snapshot?.failed ?? 0} tone="red" />
           <Metric label="Permanent failures" value={snapshot?.dead ?? 0} tone="red" />
@@ -299,7 +308,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
           <p>
             {isCampaignScoped ? "Campaign accepted all time" : "Accepted all time"}:{" "}
             <span className="font-medium text-slate-900">
-              {(snapshot?.sentAllTime ?? 0).toLocaleString()}
+              {snapshot?.sentAllTime == null ? "Campaign only" : snapshot.sentAllTime.toLocaleString()}
             </span>
           </p>
           <p>

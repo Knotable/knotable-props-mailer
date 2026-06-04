@@ -58,8 +58,13 @@ function optionalEmailId(request: Request): { emailId?: string; error?: string }
 function errorMessage(error: unknown, fallback: string) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
+  if (error && typeof error === "object" && "message" in error) {
+    const message = String(error.message ?? "").trim();
+    if (message) return message;
+  }
   try {
-    return JSON.stringify(error);
+    const serialized = JSON.stringify(error);
+    return serialized && serialized !== "{}" ? serialized : fallback;
   } catch {
     return fallback;
   }
@@ -127,6 +132,53 @@ async function buildMonitorSnapshot(emailId?: string) {
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const last7Date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  if (!emailId) {
+    const [sentToday, sentLast7Days, dailySendLimit, pendingDue, pendingHeld, processing] =
+      await Promise.all([
+        getDailySentCount(today),
+        countSucceededRows(undefined, last7Date),
+        getDailySendLimit(),
+        countQueueRows("pending", undefined, "due"),
+        countQueueRows("pending", undefined, "held"),
+        countQueueRows("processing"),
+      ]);
+
+    const pending = pendingDue + pendingHeld;
+    const total = pending + processing;
+    return {
+      ok: true,
+      emailId: null,
+      subject: null,
+      emailStatus: null,
+      displayStatus: total > 0 ? "Sending" : "No active queue rows",
+      statusDetail:
+        total > 0
+          ? `${(pending + processing).toLocaleString()} recipient${
+              pending + processing === 1 ? "" : "s"
+            } still waiting or sending.`
+          : "No pending or processing queue rows.",
+      date: today,
+      dailyCap: dailySendLimit,
+      sentToday,
+      sentLast7Days,
+      sentAllTime: null,
+      remainingToday: Math.max(0, dailySendLimit - sentToday),
+      total,
+      resolved: 0,
+      terminalFailures: 0,
+      isDrained: total === 0,
+      pending,
+      pendingDue,
+      pendingHeld,
+      processing,
+      succeeded: 0,
+      failed: 0,
+      dead: 0,
+      canceled: 0,
+      recipientLog: [],
+    };
+  }
 
   const [
     sentToday,
