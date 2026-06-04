@@ -21,9 +21,13 @@ export default async function AnalyticsPage() {
   const dailySendLimit = await getDailySendLimit();
 
   // ── Delivery totals — COUNT queries at DB level, not full table scans ────────
+  const last7Date = isoDaysAgo(7).slice(0, 10);
+  const last7Timestamp = isoDaysAgo(7);
   const [
-    { count: totalSent },
-    { count: totalFailed },
+    { count: sentAllTime },
+    { count: sentLast7Days },
+    { count: failedAllTime },
+    { count: failedLast7Days },
     { count: totalPending },
   ] = await Promise.all([
     supabase
@@ -33,44 +37,77 @@ export default async function AnalyticsPage() {
     supabase
       .from("mail_queue")
       .select("id", { count: "exact", head: true })
+      .eq("status", "succeeded")
+      .gte("send_date", last7Date),
+    supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
       .in("status", ["failed", "dead"]),
+    supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .in("status", ["failed", "dead"])
+      .gte("updated_at", last7Timestamp),
     supabase
       .from("mail_queue")
       .select("id", { count: "exact", head: true })
       .in("status", ["pending", "processing"]),
   ]);
 
-  const delivered = totalSent ?? 0;
-  const failed = totalFailed ?? 0;
+  const delivered = sentAllTime ?? 0;
+  const deliveredLast7Days = sentLast7Days ?? 0;
+  const failed = failedAllTime ?? 0;
+  const recentFailed = failedLast7Days ?? 0;
   const pending = totalPending ?? 0;
   const totalAttempted = delivered + failed;
   const deliveryRate =
     totalAttempted > 0 ? Math.round((delivered / totalAttempted) * 100) : null;
 
-  // ── Engagement totals — last 30 days, event type only (no payload) ──────────
-  const thirtyDaysAgo = isoDaysAgo(30);
+  // ── Engagement totals — matching last-7-days and all-time buckets ───────────
+  const [
+    { count: opensLast7Days },
+    { count: clicksLast7Days },
+    { count: bouncesLast7Days },
+    { count: opensAllTime },
+    { count: clicksAllTime },
+    { count: bouncesAllTime },
+  ] = await Promise.all([
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "opened")
+      .gte("received_at", last7Timestamp),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "clicked")
+      .gte("received_at", last7Timestamp),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "bounced")
+      .gte("received_at", last7Timestamp),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "opened"),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "clicked"),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "bounced"),
+  ]);
 
-  const { data: recentEvents } = await supabase
-    .from("provider_events")
-    .select("event_type")
-    .gte("received_at", thirtyDaysAgo);
-
-  const eventCounts =
-    recentEvents?.reduce<Record<string, number>>((acc, e) => {
-      acc[e.event_type] = (acc[e.event_type] ?? 0) + 1;
-      return acc;
-    }, {}) ?? {};
-
-  const opens = eventCounts["opened"] ?? 0;
-  const clicks = eventCounts["clicked"] ?? 0;
-  const bounces = eventCounts["bounced"] ?? 0;
-
-  const openRate =
-    delivered > 0 ? ((opens / delivered) * 100).toFixed(1) : null;
-  const clickRate =
-    delivered > 0 ? ((clicks / delivered) * 100).toFixed(1) : null;
-
-  const hasSnsEvents = (recentEvents?.length ?? 0) > 0;
+  const recentOpens = opensLast7Days ?? 0;
+  const recentClicks = clicksLast7Days ?? 0;
+  const recentBounces = bouncesLast7Days ?? 0;
+  const allTimeOpens = opensAllTime ?? 0;
+  const allTimeClicks = clicksAllTime ?? 0;
+  const allTimeBounces = bouncesAllTime ?? 0;
+  const hasSnsEvents = allTimeOpens + allTimeClicks + allTimeBounces > 0;
 
   // ── Per-campaign breakdown — uses campaign_stats VIEW (DB-level GROUP BY) ────
   // Falls back to an empty list with an advisory message if the migration has
@@ -215,40 +252,73 @@ export default async function AnalyticsPage() {
       {/* ── Summary cards ── */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <StatCard
-          label="Delivered"
+          label="Sent last 7 days"
+          value={deliveredLast7Days.toLocaleString()}
+          sub={`${recentFailed.toLocaleString()} failed in same window`}
+          color="green"
+        />
+        <StatCard
+          label="Sent all time"
           value={delivered.toLocaleString()}
           sub={
             deliveryRate !== null
-              ? `${deliveryRate}% delivery rate`
+              ? `${deliveryRate}% delivery success`
               : pending > 0
-              ? `${pending} pending`
-              : "no sends yet"
+                ? `${pending.toLocaleString()} pending`
+                : "no sends yet"
           }
           color="green"
         />
         <StatCard
-          label="Failed"
+          label="Failures all time"
           value={failed > 0 ? failed.toLocaleString() : "0"}
           sub={
-            hasSnsEvents && bounces > 0
-              ? `${bounces.toLocaleString()} bounces reported`
+            hasSnsEvents && allTimeBounces > 0
+              ? `${allTimeBounces.toLocaleString()} bounces reported`
               : totalAttempted > 0
-              ? `${Math.round((failed / totalAttempted) * 100)}% of attempts`
-              : "—"
+                ? `${Math.round((failed / totalAttempted) * 100)}% of attempts`
+                : "no failed rows"
           }
           color={failed > 0 ? "red" : "slate"}
         />
         <StatCard
-          label="Opens"
-          value={hasSnsEvents ? opens.toLocaleString() : "—"}
-          sub={hasSnsEvents && openRate ? `${openRate}% open rate` : "awaiting SNS events"}
+          label="Pending now"
+          value={pending.toLocaleString()}
+          sub={`${dailySendLimit.toLocaleString()} daily cap`}
+          color={pending > 0 ? "blue" : "slate"}
+        />
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard
+          label="Opens last 7 days"
+          value={hasSnsEvents ? recentOpens.toLocaleString() : "—"}
+          sub={
+            hasSnsEvents
+              ? `${allTimeOpens.toLocaleString()} all time`
+              : "awaiting SNS events"
+          }
           color="blue"
         />
         <StatCard
-          label="Clicks"
-          value={hasSnsEvents ? clicks.toLocaleString() : "—"}
-          sub={hasSnsEvents && clickRate ? `${clickRate}% click rate` : "awaiting SNS events"}
+          label="Clicks last 7 days"
+          value={hasSnsEvents ? recentClicks.toLocaleString() : "—"}
+          sub={
+            hasSnsEvents
+              ? `${allTimeClicks.toLocaleString()} all time`
+              : "awaiting SNS events"
+          }
           color="blue"
+        />
+        <StatCard
+          label="Bounces last 7 days"
+          value={hasSnsEvents ? recentBounces.toLocaleString() : "—"}
+          sub={
+            hasSnsEvents
+              ? `${allTimeBounces.toLocaleString()} all time`
+              : "awaiting SNS events"
+          }
+          color={recentBounces > 0 ? "red" : "slate"}
         />
       </div>
 
@@ -304,7 +374,7 @@ export default async function AnalyticsPage() {
                 <tr>
                   <th className="px-4 py-3">Subject</th>
                   <th className="px-4 py-3">List</th>
-                  <th className="px-4 py-3 text-right">Sent</th>
+                  <th className="px-4 py-3 text-right">Campaign sent</th>
                   <th className="px-4 py-3 text-right">Failed</th>
                   <th className="px-4 py-3 text-right">Opens</th>
                   <th className="px-4 py-3 text-right">Clicks</th>

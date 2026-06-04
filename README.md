@@ -42,4 +42,6 @@ SQL schema lives in `supabase/schema.sql`. Apply it to your Supabase instance, e
 - Wire Supabase auth session into layouts/middleware for route protection
 - Expand queue review tooling and delivery safeguards
 - Expand SES deliverability reporting and large-send operator runbooks
+- Add synchronization or reconciliation with Amazon SES suppression lists
+- Build an embeddable newsletter sign-up widget that can be pasted into a website as a content item, similar to Mailchimp. Consider a Google Apps Script-backed endpoint so sign-ups still work while the Props host is unavailable. Clarify the remaining requirement after: "but I do want to ..."
 - Style tweaks to perfectly match legacy Props UI

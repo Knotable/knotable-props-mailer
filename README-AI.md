@@ -6,30 +6,46 @@
 
 ## OPERATOR STATUS - READ THIS FIRST
 
-**As of 2026-05-21 09:14 UTC, the old 186k send remains killed, and there are two smaller follow-up queues still held. Do not open or auto-run the monitor casually; verify the exact email id first.**
+**As of 2026-06-03, the AWS SES daily sending quota is 65,400 emails per 24-hour period, with a maximum send rate of 15 emails per second. The checked-in app fallback and settings seed must stay at 65,400 unless SES changes again. The released LifeX campaign remains under email id `532a06ae-c296-4f93-8483-e250d803f08d`. Do not open or auto-run the monitor casually; verify the exact email id first.**
+
+**Paris override update, 2026-05-31:** a separate `AmolsParis` campaign (`0949ffd6-044c-42e9-97ba-585a72281c6a`) was explicitly sent after the app cap was already full. SES accepted `414` recipients, then returned `454 Throttling failure: Daily message quota exceeded.` The remaining `103` Paris recipients are held at year 2999. Do not retry them until SES headroom is confirmed. The LifeX campaign remained isolated with `0` due and `0` processing rows when checked at `2026-05-31T22:03:54Z`.
 
 Any AI agent entering this repo should first tell the operator:
 
-> Hey, here is what's up right now: the old large campaign was canceled on 2026-05-12. It already sent 63,553 recipients, has 122,592 canceled queue rows, 1 dead row, and 0 pending/processing rows. There is no due queue work for that old campaign. Separately, there are 6,111 held pending follow-up recipients across two queued emails; they are not due yet, but they still exist. Verify whether those should be canceled or released before creating another 186k send.
+> Hey, here is what's up right now: the LifeX campaign is released under email id `532a06ae-c296-4f93-8483-e250d803f08d`. The current SES account limit is 65,400 emails per 24-hour period and 15 emails per second. Production health on 2026-06-03 showed due pending queue work, so resume only this exact id through `/email/monitor?emailId=532a06ae-c296-4f93-8483-e250d803f08d`; the global `/email/monitor` page is read-only. The old large campaign was canceled on 2026-05-12 after sending 63,553 recipients. Separately, held follow-up recipients still exist across two older queued emails.
 
 Current live-send details:
 
+- Released LifeX campaign email id: `532a06ae-c296-4f93-8483-e250d803f08d`
+- Subject: `LifeX is getting loud: exits, London, and useful little machines`
+- Source editable draft: `ec97551d-0bea-463f-8630-58ac2d246b81` (revision 3 snapshot written before AI-native edits)
+- List: `Amols202604` (`dbd52a08-9a38-4573-bf06-09e401015ae9`), 185,907 active members at preparation time
+- Current SES quota: `65,400` recipients per 24-hour period; maximum send rate: `15` emails per second.
+- Previous LifeX slice result: `53,998` accepted by SES, `1` dead malformed recipient, plus `2` earlier test sends counted toward that day's global quota.
+- Additional run on 2026-05-31: `9,001` extra LifeX recipients released from the next slice and accepted by SES with `0` failures.
+- Remaining new-campaign rows should be verified live before each monitor run; production health on 2026-06-03 reported `122,782` due pending, `0` processing, and `6,091` held pending.
+- Invalid recipient marked terminal: `barbaraceñestealvarez@hotmail.com` (`501 Invalid RCPT TO address provided`)
+- New-campaign screenshot asset: `https://yxmnqlxdxrtfnpcvvoww.supabase.co/storage/v1/object/public/email-assets/lifex/lifex-whatsapp-london-2026-05-30.jpg`
+- Pre-release global queue state checked on 2026-05-31: `0` due pending rows, `0` processing rows, `192,018` held pending rows
 - Old canceled campaign email id: `696a333a-4909-41e8-ad3e-81c2e11b39db`
-- Subject: `NY: birthday + LifeX Fund 2`
-- List: `Amols202604` (`dbd52a08-9a38-4573-bf06-09e401015ae9`), 185,909 active members at last check
+- Old canceled campaign subject: `NY: birthday + LifeX Fund 2`
 - Final old-campaign queue state after cancellation: `63,553` succeeded, `122,592` canceled, `1` dead, `0` pending, `0` processing
-- Global queue state checked on 2026-05-21: `0` due pending rows, `0` processing rows, `6,111` held pending rows
 - Held follow-up email `aacdd257-4604-4f0c-b13d-54add0aff534`: `4,898` held pending, `102` canceled
 - Held follow-up email `7b57066b-6400-4216-8ef0-12faa967cbee`: `1,213` held pending, `5` canceled
-- Production health critical checks were green on 2026-05-21; the remaining warning was stale SES/SNS tracking, with latest provider event observed at `2026-05-05T16:55:27Z`
+- Production health was green after the 2026-05-31 deployment with `0` critical failures and `0` warnings, `0` due pending, `0` processing, and `138,019` held pending rows. SES/SNS events are fresh. The deployed health route now surfaces queue count errors instead of silently rendering timed-out counts as zero.
+- Live-schema drift discovered during new-campaign preparation: `public.app_settings` is missing in some environments, so the app falls back to the checked-in 65,400 daily cap. The documented unique constraint for `mail_queue.dedupe_hash` is also missing, so the generic conflict-safe queue upsert path fails until the migration is applied. Apply `20260531_update_daily_send_limit.sql` with the settings-table repair.
+- Release gotcha: `release_mail_queue_campaign` timed out when updating all 185,907 rows in one statement. The release schedule was applied in bounded chunks instead.
+- Drain gotcha: the initial unpaced worker loop hit transient SES `454 Maximum sending rate exceeded` responses. Those addresses succeeded on retry. Run local scoped worker calls with a 5-second pause between batches.
+- Continuation gotcha: the local `CRON_SECRET` does not authenticate the deployed worker endpoint, and this desktop session could not register a thread heartbeat. Resume through a local Next dev server and the local scoped `/api/email/send-monitor` endpoint.
 
 Next-send checklist:
 
-- Decide whether the two held follow-up queues should be canceled or intentionally released.
-- Create or clone a fresh email for the next 186k send; do not reuse the canceled email id above.
-- Confirm SES/SNS tracking is fresh by sending a small test and verifying a new `provider_events` row.
-- Confirm the intended daily send cap in `app_settings` / Analytics before release.
-- Queue rows should remain held (`available_at = 2999-12-31T23:59:59Z`) until the operator intentionally releases them.
+- Resume only the released LifeX email id `532a06ae-c296-4f93-8483-e250d803f08d` after each future UTC slice becomes due. Never run a global drain.
+- For the next slice, start after `2026-06-01T00:00:00Z` (`2026-05-31 20:00 EDT`). Start local Next dev, then POST only that `emailId` to local `/api/email/send-monitor` with a 5-second pause between batches.
+- Decide whether the two older held follow-up queues should be canceled or intentionally released.
+- Apply/repair the `app_settings` table migration and `mail_queue.dedupe_hash` unique constraint before relying on analytics cap editing or the generic UI queue-upsert path.
+- The checked-in 65,400 fallback is the current SES quota. Apply the settings-table repair migration in the Supabase Dashboard before relying on analytics cap editing in production. The direct DB connection is IPv6-only from this network and the tested shared pooler endpoints did not recognize this older project tenant.
+- Older unrelated queue rows should remain held (`available_at = 2999-12-31T23:59:59Z`). The released LifeX campaign now uses explicit UTC-day scheduling.
 - Before opening `/email/monitor`, verify the target email id and queue counts so no unrelated campaign drains.
 
 ### Running Repair / Readiness Checklist
@@ -44,12 +60,16 @@ Update this section as work progresses so future agents do not re-derive the sta
 | Centralize strict email id parsing | Done 2026-05-21 | Worker/report endpoints now share `parseUuid`; malformed 36-character strings no longer pass the report endpoint's looser UUID check, and invalid monitor `emailId` query strings return 400 instead of behaving like a valid campaign filter. |
 | Harden worker core against global mutation | Done 2026-05-21 | `runQueueWorker` now requires a valid `emailId` and throws without one; stale `processing` row recovery is scoped to that campaign instead of mutating all processing rows globally. |
 | Bound schedule page queue lookups | Done 2026-05-21 | `/email/schedule` no longer fetches every `mail_queue` row for visible emails just to render list badges; it samples at most 25 queue rows per email so a 186k queued campaign does not make the page pull a 186k-row result set. |
-| Surface queue due snapshot in health | Done 2026-05-21 | `/api/health` now includes a warning check with global due pending, processing, and held pending queue counts so readiness reviews see accidental due work without opening the monitor. |
+| Surface queue due snapshot in health | Done 2026-05-31 | `/api/health` includes a warning check with global due pending, processing, and held pending queue counts so readiness reviews see accidental due work without opening the monitor. The deployed 2026-05-31 safety fix makes count-query errors surface instead of rendering timed-out counts as zero. |
 | Commit/persist this operator status | Pending | `README-AI.md` is modified locally until committed. |
 | Decide fate of held follow-up queues | Pending | `aacdd257...` has 4,898 held; `7b57066...` has 1,213 held. |
-| Verify SES/SNS event freshness | Pending | `/api/health` still reports stale SNS events; latest `provider_events.received_at` is 2026-05-05. Send a small test and check for a new row before any large send. |
+| Prepare AI-native LifeX full-list campaign | Done 2026-05-31 | Fresh email `532a06ae...` has a hosted screenshot asset and the updated AI-native copy. |
+| Send first LifeX UTC-day slice | Done 2026-05-31 | Released exact email `532a06ae...`; 53,998 LifeX recipients were accepted by SES, 1 malformed address was marked dead, and 2 earlier tests counted toward that day's global quota. The current checked-in cap is now 65,400. |
+| Continue future LifeX slices | Pending | Resume exact email `532a06ae...` after each scheduled UTC boundary. Next: `2026-06-01T00:00:00Z`. Use local scoped worker calls with a 5-second pause. |
+| Repair live-schema queue/settings drift | Pending | `public.app_settings` is absent and the documented unique constraint for `mail_queue.dedupe_hash` is absent. The fallback and checked-in seed are now 65,400, and `20260531_update_daily_send_limit.sql` updates the setting. Apply the settings-table migration through the Supabase Dashboard: the stored direct DB hostname resolves IPv6-only from this network and the tested shared pooler endpoints did not recognize this older project tenant. Apply the queue-index repair before relying on generic UI queue upserts. |
+| Verify SES/SNS event freshness | Done 2026-05-31 | Production health is green and fresh provider events were observed on 2026-05-30. |
 | Verify large-send RPCs in prod | Done 2026-05-21 | `/api/health` critical checks are green, including `claim_mail_queue_batch` and `release_mail_queue_campaign`. Re-check immediately before release. |
-| Confirm queue is not accidentally due | Done 2026-05-21 | `0` due pending and `0` processing globally; 6,111 held pending remain. Re-check immediately before monitor use. |
+| Confirm queue is not accidentally due | Needs live check | Production health on 2026-06-03 reported 122,782 due pending, 0 processing, and 6,091 held pending. Re-check immediately before monitor use and only run the intended `emailId`; the global monitor is read-only. |
 | Run local checks after hardening | Partially done 2026-05-21 | `git diff --check` passed; conflict-marker scan is clean; code stale-reference scan no longer finds the old broad-drain UI/API paths; TypeScript `transpileModule` checks passed for touched TS/TSX files; direct `vitest run` passed 7 tests. Full `tsc --noEmit` runs but fails on the known stale Supabase generated types (`never` table rows across existing files), so regenerate `src/supabase/types.ts` before treating full typecheck as a release gate. `npm` is still not on PATH in this desktop shell; re-run `npm run lint`, `npm test`, and `npm run build` in a normal Node/npm shell before deploy. |
 
 Suggested verification commands once Node/npm are available:
@@ -270,6 +290,7 @@ See `.env.example` for full list.
 - **No global queue drains**: Worker POST routes and `runQueueWorker` itself require a specific `emailId`; broad all-pending queue drains are disabled to prevent accidentally sending unrelated due rows. Use a row's **Send Now** action or `/email/monitor?emailId=<uuid>`.
 - **Queue hold pattern**: When `queueCampaignAction` inserts queue rows, all rows get `available_at = '2999-12-31T23:59:59Z'` (the `QUEUE_HOLD_AT` constant). `sendQueuedEmailAction` requires a per-email release confirmation token, preflights counts, and then updates `available_at` to `now()` for the rows being released. This two-step pattern lets you inspect and cancel before anything goes out.
 - **Feature flags**: Use `getFeatureFlag(key)` from `featureFlags.ts`; defaults to `true` if the key doesn't exist in the DB.
+- **Email copy convention**: Never use the header phrase `From the phone of Amol` in drafts, templates, or sent email copy. Amol explicitly retired it on 2026-05-31.
 - **Schema changes**: Add a new file to `supabase/migrations/` with the format `YYYYMMDD_description.sql`. Update `schema.sql` to match. Then regenerate types: `supabase gen types typescript > src/supabase/types.ts`.
 - **Next.js version**: Always check `node_modules/next/dist/docs/` before using Next.js APIs — this is v16, not v14/15.
 
@@ -277,5 +298,6 @@ See `.env.example` for full list.
 
 ## Composer UI Features
 
-- **Preview button**: Opens a new `800×700` browser window and writes the raw HTML textarea content into it via `document.write`. Purely client-side — no save required. Added to `composer-form.tsx` alongside the other action buttons.
+- **WYSIWYG HTML editor**: The composer defaults to a visual `contentEditable` editor with paragraph, heading, emphasis, list, link, and clear-format controls. The **HTML source** tab remains available for exact markup edits. Both modes synchronize into the existing `html` form value so autosave, preview, test sends, and queueing keep the same server-action contract.
+- **Preview button**: Opens a new `800×700` browser window and writes the current synchronized HTML content into it via `document.write`. Purely client-side — no save required. Added to `composer-form.tsx` alongside the other action buttons.
 - **Send Test button**: Calls `sendTestAction` (in `email/actions.ts`) but overrides `recipients` in the FormData to `a@sarva.co` (owner address). Does not affect the To field or selected list. Test sends appear in Past Sends (`mail_queue` row with `status = 'succeeded'`). The action accepts any valid `recipients` value — the caller controls the destination.

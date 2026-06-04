@@ -331,7 +331,11 @@ export async function GET() {
 
   try {
     const nowIso = new Date().toISOString();
-    const [{ count: due }, { count: held }, { count: processing }] = await Promise.all([
+    const [
+      { count: due, error: dueError },
+      { count: held, error: heldError },
+      { count: processing, error: processingError },
+    ] = await Promise.all([
       db
         .from("mail_queue")
         .select("id", { count: "exact", head: true })
@@ -348,6 +352,9 @@ export async function GET() {
         .eq("status", "processing"),
     ]);
 
+    const queueSnapshotError = dueError ?? heldError ?? processingError;
+    if (queueSnapshotError) throw queueSnapshotError;
+
     const dueCount = due ?? 0;
     const processingCount = processing ?? 0;
     checks.push({
@@ -361,13 +368,30 @@ export async function GET() {
           ? undefined
           : "Before releasing or creating another campaign, inspect /email/monitor?emailId=<uuid> for the intended campaign and confirm no unrelated rows are due.",
     });
-  } catch {
-    // mail_queue table/columns might not exist — already covered by DB checks.
+  } catch (error) {
+    const errorMessage =
+      error && typeof error === "object" && "message" in error
+        ? String(error.message)
+        : "";
+    const message = errorMessage.trim() || "queue count query failed";
+    checks.push({
+      id: "queue_due_snapshot",
+      label: "Queue due snapshot",
+      severity: "warning",
+      ok: false,
+      message: `Unable to load queue due snapshot: ${message}`,
+      fix: "Inspect the intended campaign directly before releasing or draining queue rows. Add or repair the queue indexes if this count keeps timing out.",
+    });
   }
 
   // ── 6. SNS webhook events ─────────────────────────────────────────────────
   try {
-    const [{ count: snsCount }, { data: latestSnsEvent }, { count: recentSnsCount }] = await Promise.all([
+    const [
+      { count: snsCount },
+      { data: latestSnsEvent },
+      { count: recentSnsCount },
+      { data: latestWebhookFailure },
+    ] = await Promise.all([
       db
         .from("provider_events")
         .select("id", { count: "exact", head: true }),
@@ -381,9 +405,40 @@ export async function GET() {
         .from("provider_events")
         .select("id", { count: "exact", head: true })
         .gte("received_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
+      db
+        .from("error_logs")
+        .select("message, created_at, payload")
+        .eq("source", "ses-webhook")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
 
     const latestSnsReceivedAt = (latestSnsEvent as { received_at?: string } | null)?.received_at;
+    const latestFailure = latestWebhookFailure as {
+      message?: string;
+      created_at?: string;
+      payload?: unknown;
+    } | null;
+    const latestFailurePayload =
+      typeof latestFailure?.payload === "string"
+        ? (() => {
+            try {
+              return JSON.parse(latestFailure.payload) as { reason?: unknown };
+            } catch {
+              return null;
+            }
+          })()
+        : latestFailure?.payload && typeof latestFailure.payload === "object"
+          ? latestFailure.payload as { reason?: unknown }
+          : null;
+    const latestFailureReason =
+      typeof latestFailurePayload?.reason === "string"
+        ? ` (${latestFailurePayload.reason})`
+        : "";
+    const latestFailureSummary = latestFailure
+      ? ` Latest webhook failure: ${latestFailure.message ?? "unknown"}${latestFailureReason} at ${latestFailure.created_at ?? "unknown"}.`
+      : "";
     const hasSns = (snsCount ?? 0) > 0;
     const hasRecentSns = (recentSnsCount ?? 0) > 0;
     checks.push({
@@ -394,8 +449,8 @@ export async function GET() {
       message: hasRecentSns
         ? `SNS webhook active — ${recentSnsCount} event(s) received in the last 7 days`
         : hasSns
-          ? `SNS webhook stale — ${snsCount} total event(s), latest at ${latestSnsReceivedAt ?? "unknown"}`
-          : "No SNS events received yet. Opens, clicks, and bounces will show '—' in Analytics.",
+          ? `SNS webhook stale — ${snsCount} total event(s), latest at ${latestSnsReceivedAt ?? "unknown"}.${latestFailureSummary}`
+          : `No SNS events received yet. Opens, clicks, and bounces will show '—' in Analytics.${latestFailureSummary}`,
       fix: hasRecentSns
         ? undefined
         : [

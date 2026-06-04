@@ -22,6 +22,8 @@ type QueueSnapshot = {
   date: string;
   dailyCap: number;
   sentToday: number;
+  sentLast7Days: number;
+  sentAllTime: number;
   remainingToday: number;
   total: number;
   resolved: number;
@@ -174,6 +176,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   const done = snapshot?.resolved ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const terminalFailures = snapshot?.terminalFailures ?? 0;
+  const isCampaignScoped = Boolean(snapshot?.emailId);
   const isWorking = pending || runState === "running";
   const canRunWorker = Boolean(emailId && monitorSecret);
   const terminalFailuresText = terminalFailures.toLocaleString();
@@ -261,9 +264,14 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
           <div className="h-full bg-green-600 transition-all" style={{ width: `${pct}%` }} />
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Metric label="Accepted by SES" value={snapshot?.succeeded ?? 0} tone="green" />
+          <Metric
+            label={isCampaignScoped ? "Campaign accepted" : "Accepted all time"}
+            value={snapshot?.succeeded ?? 0}
+            tone="green"
+          />
           <Metric label="Pending now" value={snapshot?.pendingDue ?? 0} tone="amber" />
           <Metric label="Held" value={snapshot?.pendingHeld ?? 0} tone="slate" />
+          <Metric label="Accepted last 7 days" value={snapshot?.sentLast7Days ?? 0} tone="green" />
           <Metric label="Processing" value={snapshot?.processing ?? 0} tone="blue" />
           <Metric label="Failed rows" value={snapshot?.failed ?? 0} tone="red" />
           <Metric label="Permanent failures" value={snapshot?.dead ?? 0} tone="red" />
@@ -283,9 +291,15 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
             </span>
           </p>
           <p>
-            Sent today:{" "}
+            Global sent today:{" "}
             <span className="font-medium text-slate-900">
               {(snapshot?.sentToday ?? 0).toLocaleString()}
+            </span>
+          </p>
+          <p>
+            {isCampaignScoped ? "Campaign accepted all time" : "Accepted all time"}:{" "}
+            <span className="font-medium text-slate-900">
+              {(snapshot?.sentAllTime ?? 0).toLocaleString()}
             </span>
           </p>
           <p>

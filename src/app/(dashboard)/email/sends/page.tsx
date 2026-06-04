@@ -16,6 +16,7 @@ export default async function PastSendsPage({
   const offset = (page - 1) * PAGE_SIZE;
 
   const supabase = getSupabaseAdmin();
+  const last7Date = isoDaysAgo(7).slice(0, 10);
 
   type StatRow = {
     email_id: string;
@@ -31,10 +32,24 @@ export default async function PastSendsPage({
   // If the migration hasn't been applied yet, fall back to a bounded direct
   // scan of mail_queue (last 90 days, max 5 000 rows) so the page still shows
   // historical data rather than a blocking advisory.
-  const [{ count: totalCount }, { data: stats, error: statsError }] = await Promise.all([
+  const [
+    { count: totalCount },
+    { count: sentLast7Days },
+    { count: sentAllTime },
+    { data: stats, error: statsError },
+  ] = await Promise.all([
     supabase
       .from("email_send_stats")
       .select("email_id", { count: "exact", head: true }),
+    supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "succeeded")
+      .gte("send_date", last7Date),
+    supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "succeeded"),
     supabase
       .from("email_send_stats")
       .select("email_id, list_ids, sent, failed, pending, first_sent, last_queued_at")
@@ -183,7 +198,11 @@ export default async function PastSendsPage({
 
   return (
     <div className="space-y-6">
-      <Header total={total} />
+      <Header
+        total={total}
+        sentLast7Days={sentLast7Days ?? 0}
+        sentAllTime={sentAllTime ?? 0}
+      />
       {viewMissing && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
           <span className="font-medium">Showing last 90 days (fallback).</span>{" "}
@@ -202,19 +221,33 @@ export default async function PastSendsPage({
   );
 }
 
-function Header({ total }: { total?: number }) {
+function Header({
+  total,
+  sentLast7Days,
+  sentAllTime,
+}: {
+  total?: number;
+  sentLast7Days?: number;
+  sentAllTime?: number;
+}) {
   return (
     <header className="flex flex-wrap items-end justify-between gap-2">
       <div>
         <p className="text-xs uppercase tracking-wide text-slate-400">History</p>
         <h2 className="text-2xl font-semibold text-slate-900">Past Sends</h2>
         <p className="text-sm text-slate-500">
-          Emails queued or sent, with delivery stats and preview.
+          Per-email campaign history, with delivery stats and preview.
         </p>
       </div>
-      {total !== undefined && (
-        <p className="text-sm text-slate-400">{total.toLocaleString()} total</p>
-      )}
+      <div className="text-right text-sm text-slate-500">
+        {total !== undefined && <p>{total.toLocaleString()} email records</p>}
+        {sentLast7Days !== undefined && sentAllTime !== undefined && (
+          <p>
+            {sentLast7Days.toLocaleString()} sent last 7 days ·{" "}
+            {sentAllTime.toLocaleString()} sent all time
+          </p>
+        )}
+      </div>
     </header>
   );
 }

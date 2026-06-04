@@ -1,7 +1,7 @@
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import type { Json } from "@/supabase/types";
 
-export const DEFAULT_DAILY_SEND_LIMIT = 45_000;
+export const DEFAULT_DAILY_SEND_LIMIT = 65_400;
 const DAILY_SEND_LIMIT_KEY = "daily_send_limit";
 
 function readPositiveInteger(value: Json | null | undefined): number | null {

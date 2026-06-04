@@ -53,24 +53,57 @@ function buildStringToSign(msg: Record<string, unknown>): string {
 
   return fields
     .filter((k) => msg[k] !== undefined && msg[k] !== null)
+    .map((k) => `${k}\n${msg[k]}\n`)
+    .join("");
+}
+
+function buildLegacyStringToSign(msg: Record<string, unknown>): string {
+  const type = msg["Type"] as string;
+  const fields =
+    type === "Notification"
+      ? ["Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type"]
+      : ["Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type"];
+
+  return fields
+    .filter((k) => msg[k] !== undefined && msg[k] !== null)
     .map((k) => `${k}\n${msg[k]}`)
     .join("\n");
 }
 
-async function verifySnsSignature(body: Record<string, unknown>): Promise<boolean> {
+function verifyWithAlgorithm(algorithm: string, pem: string, stringToSign: string, signature: string): boolean {
+  const verifier = createVerify(algorithm);
+  verifier.update(stringToSign, "utf8");
+  verifier.end();
+  return verifier.verify(pem, Buffer.from(signature, "base64"));
+}
+
+async function verifySnsSignature(body: Record<string, unknown>): Promise<{ valid: boolean; reason?: string }> {
   try {
     const certUrl = body["SigningCertURL"] as string | undefined;
     const signature = body["Signature"] as string | undefined;
     const sigVer = body["SignatureVersion"] as string | undefined;
-    if (!certUrl || !signature) return false;
+    if (!certUrl || !signature) return { valid: false, reason: "missing_cert_or_signature" };
 
-    const algorithm = sigVer === "2" ? "sha256WithRSAEncryption" : "sha1WithRSAEncryption";
+    const algorithms = sigVer === "2"
+      ? ["RSA-SHA256", "sha256WithRSAEncryption"]
+      : ["RSA-SHA1", "sha1WithRSAEncryption"];
     const pem = await fetchSigningCert(certUrl);
-    const verifier = createVerify(algorithm);
-    verifier.update(buildStringToSign(body));
-    return verifier.verify(pem, Buffer.from(signature, "base64"));
-  } catch {
-    return false;
+    const stringsToSign = [buildStringToSign(body), buildLegacyStringToSign(body)];
+
+    for (const stringToSign of stringsToSign) {
+      for (const algorithm of algorithms) {
+        if (verifyWithAlgorithm(algorithm, pem, stringToSign, signature)) {
+          return { valid: true };
+        }
+      }
+    }
+
+    return { valid: false, reason: "signature_mismatch" };
+  } catch (err) {
+    return {
+      valid: false,
+      reason: err instanceof Error ? err.message : String(err),
+    };
   }
 }
 
@@ -166,14 +199,15 @@ export async function POST(request: Request) {
 
   // ── SNS signature verification ─────────────────────────────────────────────
   // Reject forged or tampered notifications before doing any DB work.
-  const sigValid = await verifySnsSignature(body);
-  if (!sigValid) {
+  const signatureVerification = await verifySnsSignature(body);
+  if (!signatureVerification.valid) {
     console.warn("[ses-webhook] SNS signature verification failed");
     await logWebhookFailure("SNS signature verification failed", {
       messageType,
       topicArn: body["TopicArn"],
       signingCertUrl: body["SigningCertURL"],
       signatureVersion: body["SignatureVersion"],
+      reason: signatureVerification.reason,
     });
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }

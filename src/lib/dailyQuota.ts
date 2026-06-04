@@ -1,8 +1,8 @@
 /**
  * Daily send-quota helpers.
  *
- * Default SES production quota: 50,000 emails / 24-hour period.
- * The app defaults to 45,000 to leave a safety buffer, but the active cap is
+ * Current SES production quota: 65,400 emails / 24-hour period.
+ * The app defaults to 65,400, but the active cap is
  * editable in the analytics UI and stored in public.app_settings.
  */
 

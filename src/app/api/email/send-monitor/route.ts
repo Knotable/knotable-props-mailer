@@ -81,6 +81,21 @@ async function countQueueRows(status: string, emailId?: string, availability?: "
   return count ?? 0;
 }
 
+async function countSucceededRows(emailId?: string, sendDateGte?: string) {
+  const supabase = getSupabaseAdmin();
+  let query = supabase
+    .from("mail_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "succeeded");
+
+  if (emailId) query = query.eq("email_id", emailId);
+  if (sendDateGte) query = query.gte("send_date", sendDateGte);
+
+  const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+}
+
 async function loadRecipientLog(emailId: string, limit = 250): Promise<RecipientLogRow[]> {
   const supabase = getSupabaseAdmin();
   const safeLimit = Math.min(Math.max(limit, 1), 2_000);
@@ -111,9 +126,11 @@ async function loadRecipientLog(emailId: string, limit = 250): Promise<Recipient
 async function buildMonitorSnapshot(emailId?: string) {
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
+  const last7Date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const [
     sentToday,
+    sentLast7Days,
     dailySendLimit,
     pending,
     processing,
@@ -125,6 +142,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     pendingHeld,
   ] = await Promise.all([
     getDailySentCount(today),
+    countSucceededRows(emailId, last7Date),
     getDailySendLimit(),
     countQueueRows("pending", emailId),
     countQueueRows("processing", emailId),
@@ -150,6 +168,7 @@ async function buildMonitorSnapshot(emailId?: string) {
   }
 
   const terminalFailures = failed + dead;
+  const sentAllTime = succeeded;
   const total = pending + processing + succeeded + failed + dead + canceled;
   const resolved = succeeded + failed + dead + canceled;
   const isDrained = total > 0 && pending === 0 && processing === 0;
@@ -188,6 +207,8 @@ async function buildMonitorSnapshot(emailId?: string) {
     date: today,
     dailyCap: dailySendLimit,
     sentToday,
+    sentLast7Days,
+    sentAllTime,
     remainingToday: Math.max(0, dailySendLimit - sentToday),
     total,
     resolved,

@@ -422,16 +422,10 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
         </div>
 
         {/* HTML */}
-        <label className="block text-sm font-medium text-slate-700">
-          HTML
-          <textarea
-            name="html"
-            required
-            rows={8}
-            defaultValue={draft?.html ?? ""}
-            className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-mono"
-          />
-        </label>
+        <RichHtmlEditor
+          initialHtml={draft?.html ?? ""}
+          onChange={scheduleAutosave}
+        />
 
         {/* Campaigns + Tags */}
         <div className="grid gap-4 sm:grid-cols-2">
@@ -629,6 +623,125 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
         </div>
       </form>
     </div>
+  );
+}
+
+type EditorMode = "visual" | "html";
+
+function RichHtmlEditor({
+  initialHtml,
+  onChange,
+}: {
+  initialHtml: string;
+  onChange: () => void;
+}) {
+  const [mode, setMode] = useState<EditorMode>("visual");
+  const [html, setHtml] = useState(initialHtml);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const htmlInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (mode === "visual" && editorRef.current && editorRef.current.innerHTML !== html) {
+      editorRef.current.innerHTML = html;
+    }
+  }, [html, mode]);
+
+  const updateHtml = (nextHtml: string) => {
+    if (htmlInputRef.current) htmlInputRef.current.value = nextHtml;
+    setHtml(nextHtml);
+    onChange();
+  };
+
+  const runCommand = (command: string, value?: string) => {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value);
+    updateHtml(editorRef.current?.innerHTML ?? html);
+  };
+
+  const addLink = () => {
+    const url = window.prompt("Enter the link URL");
+    if (!url) return;
+    runCommand("createLink", url);
+  };
+
+  return (
+    <div>
+      <div className="mb-1 flex items-end justify-between gap-3">
+        <span className="text-sm font-medium text-slate-700">HTML</span>
+        <div className="flex rounded-md border border-slate-300 bg-white p-0.5 text-xs">
+          <button
+            type="button"
+            onClick={() => setMode("visual")}
+            className={`rounded px-2.5 py-1 font-medium ${
+              mode === "visual" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            Visual
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("html")}
+            className={`rounded px-2.5 py-1 font-medium ${
+              mode === "html" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            HTML source
+          </button>
+        </div>
+      </div>
+
+      <input ref={htmlInputRef} type="hidden" name="html" value={html} />
+
+      {mode === "visual" ? (
+        <div className="overflow-hidden rounded-md border border-slate-300 bg-white">
+          <div className="flex flex-wrap gap-1 border-b border-slate-200 bg-slate-50 p-2">
+            <EditorToolbarButton label="Paragraph" onClick={() => runCommand("formatBlock", "p")} />
+            <EditorToolbarButton label="Heading" onClick={() => runCommand("formatBlock", "h2")} />
+            <EditorToolbarButton label="Bold" onClick={() => runCommand("bold")} />
+            <EditorToolbarButton label="Italic" onClick={() => runCommand("italic")} />
+            <EditorToolbarButton label="Underline" onClick={() => runCommand("underline")} />
+            <EditorToolbarButton label="Bullets" onClick={() => runCommand("insertUnorderedList")} />
+            <EditorToolbarButton label="Numbered list" onClick={() => runCommand("insertOrderedList")} />
+            <EditorToolbarButton label="Link" onClick={addLink} />
+            <EditorToolbarButton label="Unlink" onClick={() => runCommand("unlink")} />
+            <EditorToolbarButton label="Clear format" onClick={() => runCommand("removeFormat")} />
+          </div>
+          <div
+            ref={editorRef}
+            contentEditable
+            suppressContentEditableWarning
+            onInput={(event) => updateHtml(event.currentTarget.innerHTML)}
+            className="min-h-64 px-4 py-3 text-sm leading-6 text-slate-900 outline-none [&_a]:text-blue-700 [&_a]:underline [&_h2]:my-3 [&_h2]:text-xl [&_h2]:font-semibold [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6"
+            aria-label="Email body visual editor"
+          />
+        </div>
+      ) : (
+        <textarea
+          required
+          rows={14}
+          value={html}
+          onChange={(event) => updateHtml(event.target.value)}
+          className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-mono"
+          aria-label="Email body HTML source"
+        />
+      )}
+      <p className="mt-1 text-xs text-slate-500">
+        Use Visual for formatting or HTML source for exact markup. Preview before sending.
+      </p>
+    </div>
+  );
+}
+
+function EditorToolbarButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={onClick}
+      className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+    >
+      {label}
+    </button>
   );
 }
 

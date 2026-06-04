@@ -11,4 +11,7 @@ values (
   '{"value": 65400}'::jsonb,
   'Manual daily send cap used by the queue worker. Keep below the active SES sending quota.'
 )
-on conflict (key) do nothing;
+on conflict (key) do update
+set value = excluded.value,
+    description = excluded.description,
+    updated_at = now();

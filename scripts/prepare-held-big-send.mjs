@@ -8,7 +8,7 @@ const BIG_LIST_ID = "dbd52a08-9a38-4573-bf06-09e401015ae9";
 const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
 const PAGE_SIZE = 1000;
 const UPSERT_CHUNK_SIZE = 500;
-const DEFAULT_DAILY_LIMIT = 45000;
+const DEFAULT_DAILY_LIMIT = 65400;
 
 function loadDotEnvLocal() {
   const path = ".env.local";
