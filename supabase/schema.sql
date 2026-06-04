@@ -177,10 +177,6 @@ create table if not exists public.app_settings (
   updated_at timestamptz default now()
 );
 
--- RLS policies placeholders
--- alter table public.emails enable row level security;
--- create policy "user owns draft" on public.emails for select using (auth.uid() = author_id);
-
 -- Provider events from Mailgun webhooks
 create table if not exists public.provider_events (
   id uuid primary key default gen_random_uuid(),
@@ -306,5 +302,94 @@ create table if not exists public.profiles (
 );
 
 -- Row-Level Security placeholders (enable manually in Supabase)
--- alter table public.emails enable row level security;
--- create policy "Admins can do anything" on public.emails for all using (auth.uid() = author_id);
+alter table public.emails enable row level security;
+alter table public.email_recipients enable row level security;
+alter table public.draft_snapshots enable row level security;
+alter table public.lists enable row level security;
+alter table public.list_members enable row level security;
+alter table public.profiles enable row level security;
+alter table public.feature_flags enable row level security;
+alter table public.mail_queue enable row level security;
+alter table public.queue_metrics enable row level security;
+alter table public.provider_events enable row level security;
+alter table public.audit_logs enable row level security;
+alter table public.error_logs enable row level security;
+alter table public.admin_audit enable row level security;
+alter table public.files enable row level security;
+alter table public.app_settings enable row level security;
+
+drop policy if exists "emails: owner full access" on public.emails;
+create policy "emails: owner full access"
+  on public.emails
+  for all
+  using (auth.uid() = author_id)
+  with check (auth.uid() = author_id);
+
+drop policy if exists "email_recipients: owner full access" on public.email_recipients;
+create policy "email_recipients: owner full access"
+  on public.email_recipients
+  for all
+  using (
+    exists (
+      select 1
+      from public.emails
+      where emails.id = email_recipients.email_id
+        and emails.author_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.emails
+      where emails.id = email_recipients.email_id
+        and emails.author_id = auth.uid()
+    )
+  );
+
+drop policy if exists "draft_snapshots: owner full access" on public.draft_snapshots;
+create policy "draft_snapshots: owner full access"
+  on public.draft_snapshots
+  for all
+  using (auth.uid() = author_id)
+  with check (auth.uid() = author_id);
+
+drop policy if exists "lists: owner full access" on public.lists;
+create policy "lists: owner full access"
+  on public.lists
+  for all
+  using (auth.uid() = owner_id)
+  with check (auth.uid() = owner_id);
+
+drop policy if exists "list_members: owner full access" on public.list_members;
+create policy "list_members: owner full access"
+  on public.list_members
+  for all
+  using (
+    exists (
+      select 1
+      from public.lists
+      where lists.id = list_members.list_id
+        and lists.owner_id = auth.uid()
+    )
+  )
+  with check (
+    exists (
+      select 1
+      from public.lists
+      where lists.id = list_members.list_id
+        and lists.owner_id = auth.uid()
+    )
+  );
+
+drop policy if exists "profiles: own row" on public.profiles;
+create policy "profiles: own row"
+  on public.profiles
+  for all
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
+
+drop policy if exists "feature_flags: authenticated read" on public.feature_flags;
+create policy "feature_flags: authenticated read"
+  on public.feature_flags
+  for select
+  using (auth.role() = 'authenticated');
