@@ -308,7 +308,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
           <p>
             {isCampaignScoped ? "Campaign accepted all time" : "Accepted all time"}:{" "}
             <span className="font-medium text-slate-900">
-              {snapshot?.sentAllTime == null ? "Campaign only" : snapshot.sentAllTime.toLocaleString()}
+              {snapshot?.sentAllTime == null ? "Open a campaign monitor" : snapshot.sentAllTime.toLocaleString()}
             </span>
           </p>
           <p>
@@ -344,7 +344,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
         </div>
       </div>
 
-      {emailId && (
+      {isCampaignScoped && (
         <div className="rounded-lg border border-slate-200">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <p className="text-sm font-semibold text-slate-900">Recipient send log (latest first)</p>

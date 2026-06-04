@@ -15,7 +15,7 @@
 
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
+import { todayUTC } from "@/lib/dailyQuota";
 import { getDailySendLimit } from "@/lib/appSettings";
 import { parseUuid } from "@/lib/ids";
 import { runQueueWorker } from "@/lib/queueWorker";
@@ -74,7 +74,7 @@ async function countQueueRows(status: string, emailId?: string, availability?: "
   const supabase = getSupabaseAdmin();
   let query = supabase
     .from("mail_queue")
-    .select("id", { count: "exact", head: true })
+    .select("id", { count: "planned", head: true })
     .eq("status", status);
 
   if (emailId) query = query.eq("email_id", emailId);
@@ -90,13 +90,25 @@ async function countSucceededRows(emailId?: string, sendDateGte?: string) {
   const supabase = getSupabaseAdmin();
   let query = supabase
     .from("mail_queue")
-    .select("id", { count: "exact", head: true })
+    .select("id", { count: "planned", head: true })
     .eq("status", "succeeded");
 
   if (emailId) query = query.eq("email_id", emailId);
   if (sendDateGte) query = query.gte("send_date", sendDateGte);
 
   const { count, error } = await query;
+  if (error) throw error;
+  return count ?? 0;
+}
+
+async function countSucceededOnDate(date: string) {
+  const supabase = getSupabaseAdmin();
+  const { count, error } = await supabase
+    .from("mail_queue")
+    .select("id", { count: "planned", head: true })
+    .eq("send_date", date)
+    .eq("status", "succeeded");
+
   if (error) throw error;
   return count ?? 0;
 }
@@ -136,7 +148,7 @@ async function buildMonitorSnapshot(emailId?: string) {
   if (!emailId) {
     const [sentToday, sentLast7Days, dailySendLimit, pendingDue, pendingHeld, processing] =
       await Promise.all([
-        getDailySentCount(today),
+        countSucceededOnDate(today),
         countSucceededRows(undefined, last7Date),
         getDailySendLimit(),
         countQueueRows("pending", undefined, "due"),
@@ -193,7 +205,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     pendingDue,
     pendingHeld,
   ] = await Promise.all([
-    getDailySentCount(today),
+    countSucceededOnDate(today),
     countSucceededRows(emailId, last7Date),
     getDailySendLimit(),
     countQueueRows("pending", emailId),
@@ -274,7 +286,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     failed,
     dead,
     canceled,
-    recipientLog: emailId ? await loadRecipientLog(emailId) : [],
+    recipientLog: [],
   };
 }
 
