@@ -6,19 +6,29 @@ import { PropsWithChildren, useTransition } from "react";
 import { dashboardNav } from "@/lib/nav";
 import { signOutAction } from "@/app/(auth)/login/actions";
 
-const NavLink = ({ href, label, description }: { href: string; label: string; description: string }) => {
-  const pathname = usePathname();
-  const isActive = pathname === href;
+const NavLink = ({
+  href,
+  label,
+  description,
+  pathname,
+}: {
+  href: string;
+  label: string;
+  description: string;
+  pathname: string;
+}) => {
+  const isActive = pathname === href || (href !== "/email/composer" && pathname.startsWith(href));
 
   return (
     <Link
       href={href}
-      className={`flex flex-col rounded-md border p-3 text-sm transition hover:border-slate-400 hover:bg-white/70 ${
-        isActive ? "border-slate-800 bg-white text-slate-900" : "border-transparent bg-transparent text-slate-600"
+      className={`group rounded-full border px-3 py-2 text-sm transition hover:border-slate-300 hover:bg-white ${
+        isActive ? "border-slate-900 bg-white text-slate-900 shadow-sm" : "border-transparent text-slate-600"
       }`}
+      title={description}
     >
       <span className="font-medium">{label}</span>
-      <span className="text-xs text-slate-500">{description}</span>
+      <span className="sr-only">: {description}</span>
     </Link>
   );
 };
@@ -46,6 +56,8 @@ function LogoutButton() {
 type AppShellProps = PropsWithChildren<{ userEmail: string | null; isBypass?: boolean }>;
 
 export const AppShell = ({ children, userEmail, isBypass = false }: AppShellProps) => {
+  const pathname = usePathname();
+
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="border-b bg-white">
@@ -70,13 +82,16 @@ export const AppShell = ({ children, userEmail, isBypass = false }: AppShellProp
           </div>
         </div>
       </header>
-      <main className="mx-auto flex max-w-6xl flex-col gap-6 px-4 py-6 lg:flex-row">
-        <nav className="grid flex-1 grid-cols-1 gap-3 lg:max-w-xs">
+      <main className="mx-auto flex max-w-6xl flex-col gap-4 px-4 py-5">
+        <nav
+          aria-label="Dashboard"
+          className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 p-2 shadow-sm"
+        >
           {dashboardNav.map((item) => (
-            <NavLink key={item.href} {...item} />
+            <NavLink key={item.href} {...item} pathname={pathname} />
           ))}
         </nav>
-        <section className="flex-[2] rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
           {children}
         </section>
       </main>

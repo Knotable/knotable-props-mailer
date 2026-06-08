@@ -8,41 +8,36 @@ export const dashboardNav: NavItem[] = [
   {
     label: "Composer",
     href: "/email/composer",
-    description: "Write and preview emails before sending",
+    description: "Write and preview",
   },
   {
-    label: "Drafts / Queue",
+    label: "Queue",
     href: "/email/schedule",
-    description: "Queue drafts, review them, and send each one manually",
+    description: "Drafts and sending",
   },
   {
-    label: "Past Sends",
+    label: "Sends",
     href: "/email/sends",
-    description: "View sent emails, delivery stats, and previews",
+    description: "History and previews",
   },
   {
     label: "Monitor",
     href: "/email/monitor",
-    description: "Drain a large queued campaign safely",
+    description: "Scoped queue drain",
   },
   {
     label: "Analytics",
     href: "/email/analytics",
-    description: "Track opens, clicks, and deliverability",
-  },
-  {
-    label: "Send Monitor",
-    href: "/email/monitor",
-    description: "Live queue drain — keep open during large sends",
+    description: "Delivery health",
   },
   {
     label: "Lists",
     href: "/lists",
-    description: "Manage mailing lists and imports",
+    description: "Members and imports",
   },
   {
     label: "Users",
     href: "/users",
-    description: "Platform admin controls",
+    description: "Admin access",
   },
 ];

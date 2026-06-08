@@ -4,30 +4,70 @@ import { useEffect, useState } from "react";
 import type { HealthCheck, HealthReport } from "@/app/api/health/route";
 
 const DISMISSED_KEY = "health_banner_dismissed_v1";
+const REPORT_CACHE_KEY = "health_banner_report_v1";
+const REPORT_TTL_MS = 5 * 60 * 1000;
+const HEALTH_FETCH_DELAY_MS = 1200;
+
+type CachedReport = {
+  savedAt: number;
+  report: HealthReport;
+};
+
+function readJson<T>(key: string): T | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(key);
+    return raw ? (JSON.parse(raw) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function getInitialState() {
+  const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
+  const cached = readJson<CachedReport>(REPORT_CACHE_KEY);
+  const isFresh = cached && Date.now() - cached.savedAt < REPORT_TTL_MS;
+  const report = isFresh ? cached.report : null;
+  const dismissed = Boolean(
+    report && prev && report.critical <= (prev.critical ?? 0),
+  );
+  return { report, dismissed, hasFreshCache: Boolean(isFresh) };
+}
 
 export function HealthBanner() {
-  const [report, setReport] = useState<HealthReport | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  const [initialState] = useState(getInitialState);
+  const [report, setReport] = useState<HealthReport | null>(initialState.report);
+  const [dismissed, setDismissed] = useState(initialState.dismissed);
   const [expanded, setExpanded] = useState(false);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Restore dismiss state, but always re-show if there are new critical issues.
-    const raw = sessionStorage.getItem(DISMISSED_KEY);
-    const prev = raw ? JSON.parse(raw) : null;
+    if (initialState.hasFreshCache) return;
 
-    fetch("/api/health")
-      .then((r) => r.json())
-      .then((data: HealthReport) => {
-        setReport(data);
-        setLoading(false);
-        // Only dismiss if the user already dismissed AND critical count hasn't grown.
-        if (prev && data.critical <= (prev.critical ?? 0)) {
-          setDismissed(true);
-        }
-      })
-      .catch(() => setLoading(false));
-  }, []);
+    const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
+    const controller = new AbortController();
+    const load = () => {
+      fetch("/api/health", { signal: controller.signal })
+        .then((r) => r.json())
+        .then((data: HealthReport) => {
+          setReport(data);
+          sessionStorage.setItem(
+            REPORT_CACHE_KEY,
+            JSON.stringify({ savedAt: Date.now(), report: data }),
+          );
+          // Only dismiss if the user already dismissed AND critical count hasn't grown.
+          if (prev && data.critical <= (prev.critical ?? 0)) {
+            setDismissed(true);
+          }
+        })
+        .catch(() => undefined);
+    };
+
+    const timeout = window.setTimeout(load, HEALTH_FETCH_DELAY_MS);
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [initialState.hasFreshCache]);
 
   const handleDismiss = () => {
     setDismissed(true);
@@ -37,7 +77,7 @@ export function HealthBanner() {
     );
   };
 
-  if (loading || !report || (report.ok && report.warnings === 0)) return null;
+  if (!report || (report.ok && report.warnings === 0)) return null;
   if (dismissed) return null;
 
   const failing = report.checks.filter((c) => !c.ok);

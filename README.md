@@ -39,6 +39,7 @@ SQL schema lives in `supabase/schema.sql`. Apply it to your Supabase instance, e
 - `docs/` – roadmap, data model, and the legacy README for reference
 
 ## Outstanding work
+- Major UI performance and usability sprint: remove redundant dashboard chrome, make page navigation feel instant, and eliminate slow unbounded reads from app screens.
 - Wire Supabase auth session into layouts/middleware for route protection
 - Expand queue review tooling and delivery safeguards
 - Expand SES deliverability reporting and large-send operator runbooks

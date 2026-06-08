@@ -155,6 +155,7 @@ export default async function PastSendsPage({
           .in("list_id", listIds)
           .eq("status", "active")
           .order("email", { ascending: true })
+          .limit(120)
       : Promise.resolve({ data: [] as { list_id: string; email: string }[] }),
   ]);
 

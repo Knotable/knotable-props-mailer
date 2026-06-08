@@ -129,7 +129,7 @@ export default async function AnalyticsPage() {
     .from("campaign_stats")
     .select("campaign_label, email_id, list_id, sent, failed, pending, started_at")
     .order("started_at", { ascending: false })
-    .limit(100);
+    .limit(50);
 
   if (campaignError) {
     // View not yet created — fall back to a bounded scan of mail_queue
@@ -183,18 +183,23 @@ export default async function AnalyticsPage() {
       listIds.length
         ? supabase.from("lists").select("id, name").in("id", listIds)
         : Promise.resolve({ data: [] as { id: string; name: string }[] }),
-      // Per-campaign event counts — last 90 days only.
+      // Per-campaign event samples — bounded so Analytics cannot scan every
+      // event row when a high-volume campaign is selected.
       supabase
         .from("provider_events")
         .select("email_id, event_type")
         .in("event_type", ["opened", "clicked", "bounced"])
         .not("email_id", "is", null)
-        .gte("received_at", isoDaysAgo(90)),
+        .gte("received_at", isoDaysAgo(90))
+        .limit(20000),
       emailIds.length
         ? supabase
             .from("mail_queue")
             .select("email_id, status, ses_message_id")
             .in("email_id", emailIds)
+            .eq("status", "succeeded")
+            .not("ses_message_id", "is", null)
+            .limit(20000)
         : Promise.resolve({ data: [] as { email_id: string; status: string; ses_message_id: string | null }[] }),
     ]);
 
@@ -213,10 +218,9 @@ export default async function AnalyticsPage() {
 
   const sendConfirmationByEmail = new Map<string, { sent: number; amazonAccepted: number }>();
   for (const row of queueRows ?? []) {
-    if (!row.email_id || row.status !== "succeeded") continue;
+    if (!row.email_id) continue;
     const entry = sendConfirmationByEmail.get(row.email_id) ?? { sent: 0, amazonAccepted: 0 };
-    entry.sent++;
-    if (row.ses_message_id) entry.amazonAccepted++;
+    entry.amazonAccepted++;
     sendConfirmationByEmail.set(row.email_id, entry);
   }
 
@@ -350,7 +354,7 @@ export default async function AnalyticsPage() {
       <section>
         <h3 className="mb-3 text-sm font-semibold text-slate-700">
           Campaigns{" "}
-          <span className="font-normal text-slate-400">(most recent 100)</span>
+          <span className="font-normal text-slate-400">(most recent 50)</span>
         </h3>
 
         {viewMissing && (
@@ -398,7 +402,7 @@ export default async function AnalyticsPage() {
                         title={
                           c.sent > 0 && c.amazonAccepted === c.sent
                             ? "Amazon SES accepted every sent row and returned message IDs."
-                            : `${c.amazonAccepted.toLocaleString()} of ${c.sent.toLocaleString()} sent rows have SES message IDs.`
+                            : `${c.amazonAccepted.toLocaleString()} sampled sent rows have SES message IDs.`
                         }
                       >
                         {c.sent > 0 && c.amazonAccepted === c.sent && (

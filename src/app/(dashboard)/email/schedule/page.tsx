@@ -23,18 +23,13 @@ export default async function SchedulePage() {
   // 186k+ mail_queue rows, so never pull every row just to render badges.
   const queueRows = emailIds.length
     ? (
-        await Promise.all(
-          emailIds.map(async (emailId) => {
-            const { data } = await admin
-              .from("mail_queue")
-              .select("email_id, list_id")
-              .eq("email_id", emailId)
-              .not("list_id", "is", null)
-              .limit(25);
-            return data ?? [];
-          }),
-        )
-      ).flat()
+        await admin
+          .from("mail_queue")
+          .select("email_id, list_id")
+          .in("email_id", emailIds)
+          .not("list_id", "is", null)
+          .limit(500)
+      ).data ?? []
     : ([] as { email_id: string; list_id: string }[]);
 
   // Unique list IDs across all emails

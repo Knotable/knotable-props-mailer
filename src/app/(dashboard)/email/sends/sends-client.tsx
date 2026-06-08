@@ -298,7 +298,7 @@ function RecipientTooltip({
       {open && memberEmails && memberEmails.length > 0 && (
         <span className="absolute z-50 left-0 top-full mt-1 w-72 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-xl p-3 text-left flex flex-col gap-0.5">
           <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">
-            {memberEmails.length} recipient{memberEmails.length !== 1 ? "s" : ""}
+            Sample recipients
           </span>
           {memberEmails.map((email) => (
             <span key={email} className="text-xs text-slate-700 truncate">
