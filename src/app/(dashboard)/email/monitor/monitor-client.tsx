@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { ProgressStatus } from "@/components/progress-status";
 
 type RecipientLogRow = {
   recipientEmail: string | null;
@@ -89,6 +90,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   const [runState, setRunState] = useState<"idle" | "running">("idle");
   const [lastRequestAt, setLastRequestAt] = useState<string | null>(null);
   const [lastResponseAt, setLastResponseAt] = useState<string | null>(null);
+  const [progressMessage, setProgressMessage] = useState("Loading queue status from Supabase...");
   const [pending, startTransition] = useTransition();
   const [recipientLog, setRecipientLog] = useState<RecipientLogRow[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -101,6 +103,11 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
     if (scopedEmailId) params.set("emailId", scopedEmailId);
+    setProgressMessage(
+      scopedEmailId
+        ? "Refreshing this campaign's queue snapshot..."
+        : "Refreshing the global queue snapshot...",
+    );
 
     const response = await fetch(`/api/email/send-monitor?${params.toString()}`, {
       method: "GET",
@@ -110,6 +117,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     const next = await readJson<QueueSnapshot>(response);
     setRecipientLog(scopedEmailId ? next.recipientLog ?? [] : []);
     setSnapshot(next);
+    setProgressMessage("Queue snapshot loaded.");
     return next;
   }, [authHeaders, scopedEmailId]);
 
@@ -118,6 +126,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     setError(null);
     setRunState("running");
     setLastRequestAt(new Date().toISOString());
+    setProgressMessage("Calling the scoped queue worker. This can take up to one Vercel function window.");
 
     try {
       const response = await fetch("/api/email/send-monitor", {
@@ -130,6 +139,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
       });
       const result = await readJson<WorkerResult>(response);
       setLastResponseAt(new Date().toISOString());
+      setProgressMessage("Worker returned. Refreshing queue counts and recipient log...");
       setMessage(
         (result.processed ?? 0) === 0
           ? result.message ?? "Queue checked; no rows were processed."
@@ -221,7 +231,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
             disabled={isWorking || !canRunWorker}
             className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
-            {isWorking ? "Working..." : "Run once"}
+            {isWorking ? "Running scoped worker..." : "Run once"}
           </button>
           <button
             type="button"
@@ -259,6 +269,16 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
         <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
           {message}
         </div>
+      )}
+      {(isWorking || !snapshot) && (
+        <ProgressStatus
+          title={progressMessage}
+          detail={
+            autoRun
+              ? "Auto-run waits about 31 seconds between worker calls to avoid overlapping sends."
+              : "Waiting for the remote request to complete."
+          }
+        />
       )}
 
       <div className={`rounded-lg border px-4 py-3 ${statusTone}`}>

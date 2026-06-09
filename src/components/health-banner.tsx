@@ -39,6 +39,7 @@ export function HealthBanner() {
   const [report, setReport] = useState<HealthReport | null>(initialState.report);
   const [dismissed, setDismissed] = useState(initialState.dismissed);
   const [expanded, setExpanded] = useState(false);
+  const [checking, setChecking] = useState(!initialState.hasFreshCache);
 
   useEffect(() => {
     if (initialState.hasFreshCache) return;
@@ -59,7 +60,8 @@ export function HealthBanner() {
             setDismissed(true);
           }
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => setChecking(false));
     };
 
     const timeout = window.setTimeout(load, HEALTH_FETCH_DELAY_MS);
@@ -76,6 +78,20 @@ export function HealthBanner() {
       JSON.stringify({ critical: report?.critical ?? 0 }),
     );
   };
+
+  if (!report && checking) {
+    return (
+      <div className="border-b border-blue-100 bg-blue-50 text-sm text-blue-900">
+        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-600" />
+          <span className="font-medium">Checking production health...</span>
+          <span className="text-xs text-blue-700">
+            Waiting for queue, settings, and webhook readiness checks.
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   if (!report || (report.ok && report.warnings === 0)) return null;
   if (dismissed) return null;

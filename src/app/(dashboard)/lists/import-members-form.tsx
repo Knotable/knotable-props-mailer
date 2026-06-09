@@ -2,6 +2,7 @@
 
 import { useRef, useState, useTransition } from "react";
 import { importMembersAction } from "./actions";
+import { ProgressStatus } from "@/components/progress-status";
 
 type ImportResult = Awaited<ReturnType<typeof importMembersAction>>;
 
@@ -65,6 +66,13 @@ export function ImportMembersForm({ listId }: { listId: string }) {
         )}
         {error && <span className="text-xs text-red-700">{error}</span>}
       </div>
+      {pending && (
+        <ProgressStatus
+          title="Importing members into Supabase"
+          detail="Parsing pasted rows, skipping invalid addresses, and upserting valid members."
+          tone="slate"
+        />
+      )}
     </form>
   );
 }

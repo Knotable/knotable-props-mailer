@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { saveDraftAction, sendTestAction, queueCampaignAction, type QueueCampaignConfirm, type QueueCampaignOk } from "../actions";
+import { ProgressStatus } from "@/components/progress-status";
 
 const LAST_DRAFT_KEY = "composer.lastDraftId";
 const AUTOSAVE_DELAY_MS = 3_000;
@@ -37,6 +38,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<{ ok: boolean; message: string } | null>(null);
+  const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | null>(templateMode ? null : (draft?.id ?? null));
   const [autosaveState, setAutosaveState] = useState<AutosaveState>("idle");
   // Duplicate-send confirmation state — set when the server returns requiresConfirmation:true.
@@ -139,6 +141,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     cancelAutosave();
     setSendingTest(true);
     setBanner(null);
+    setActionStatus("Sending a test email through SES...");
     try {
       const fd = new FormData(formRef.current);
       // Override recipients with the logged-in user's address.
@@ -149,6 +152,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       setBanner({ ok: false, message: getActionErrorMessage(err, "Test send failed.") });
     } finally {
       setSendingTest(false);
+      setActionStatus(null);
     }
   };
 
@@ -159,6 +163,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     cancelAutosave();
     setSaving(true);
     setBanner(null);
+    setActionStatus("Saving draft to Supabase...");
     try {
       const fd = new FormData(formRef.current);
       const res = await saveDraftAction(fd);
@@ -172,6 +177,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       setBanner({ ok: false, message: err instanceof Error ? err.message : "Save failed." });
     } finally {
       setSaving(false);
+      setActionStatus(null);
     }
   };
 
@@ -183,6 +189,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     setSending(true);
     setBanner(null);
     setDupWarning(null);
+    setActionStatus("Saving the latest draft before queue preparation...");
 
     try {
       const saveFd = new FormData(formRef.current);
@@ -199,6 +206,11 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       let lastOk: QueueCampaignOk | null = null;
 
       for (;;) {
+        setActionStatus(
+          offset === 0
+            ? `Preparing recipients from "${selectedList.name}"...`
+            : `Preparing the next recipient batch from "${selectedList.name}" at offset ${offset.toLocaleString()}...`,
+        );
         const fd = new FormData(formRef.current);
         fd.set("emailId", emailId);
         fd.set("listId", selectedList.id);
@@ -215,6 +227,9 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
         }
 
         lastOk = res;
+        setActionStatus(
+          `Prepared ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} recipients from "${selectedList.name}".`,
+        );
         setBanner({
           ok: true,
           message: `Queueing "${selectedList.name}": ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} prepared...`,
@@ -225,6 +240,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       }
 
       if (lastOk?.ok) {
+        setActionStatus("Queue preparation finished. Opening the Queue page...");
         setBanner({
           ok: true,
           message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
@@ -235,6 +251,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       setBanner({ ok: false, message: getActionErrorMessage(err, "Queue failed.") });
     } finally {
       setSending(false);
+      setActionStatus(null);
     }
   };
 
@@ -249,6 +266,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
     if (selectedList) {
       let emailId = draftId;
       if (!emailId) {
+        setActionStatus("Creating a draft before queue preparation...");
         try {
           const saveRes = await saveDraftAction(fd);
           emailId = saveRes.id;
@@ -257,6 +275,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
           router.replace(`/email/composer?id=${emailId}`, { scroll: false });
         } catch (err) {
           setBanner({ ok: false, message: getActionErrorMessage(err, "Unable to prepare this email for queueing.") });
+          setActionStatus(null);
           return;
         }
       }
@@ -267,6 +286,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
       await runQueueCampaign(false, emailId);
     } else {
       setSending(true);
+      setActionStatus("Sending email through SES...");
       try {
         const res = await sendTestAction(fd);
         const n = res.sent;
@@ -279,6 +299,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
         setBanner({ ok: false, message: getActionErrorMessage(err, "Send failed.") });
       } finally {
         setSending(false);
+        setActionStatus(null);
       }
     }
   };
@@ -458,6 +479,14 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
           }`}>
             {banner.message}
           </div>
+        )}
+
+        {actionStatus && (
+          <ProgressStatus
+            title={actionStatus}
+            detail="Waiting for the remote call to finish before updating this page."
+            tone={sending ? "blue" : "slate"}
+          />
         )}
 
         {/* Duplicate-send confirmation */}

@@ -2,6 +2,7 @@
 
 import { useState, useTransition, useRef } from "react";
 import { requeueDeadAction } from "../actions";
+import { ProgressStatus } from "@/components/progress-status";
 
 type SendItem = {
   email_id: string;
@@ -23,6 +24,7 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
   const [previewMode, setPreviewMode] = useState<Record<string, PreviewMode>>({});
   const [sourceContent, setSourceContent] = useState<Record<string, string>>({});
   const [loadingSource, setLoadingSource] = useState<Record<string, boolean>>({});
+  const [loadingPreview, setLoadingPreview] = useState<Record<string, boolean>>({});
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => (prev === id ? null : id));
@@ -30,6 +32,9 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
 
   const setMode = async (id: string, mode: PreviewMode) => {
     setPreviewMode((prev) => ({ ...prev, [id]: mode }));
+    if (mode === "html") {
+      setLoadingPreview((prev) => ({ ...prev, [id]: true }));
+    }
 
     if (mode === "source" && !sourceContent[id]) {
       setLoadingSource((prev) => ({ ...prev, [id]: true }));
@@ -149,12 +154,24 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                 {/* Preview content */}
                 {mode === "html" && (
                   <div className="bg-white">
+                    {loadingPreview[send.email_id] && (
+                      <div className="p-4">
+                        <ProgressStatus
+                          title="Loading rendered email preview"
+                          detail="Waiting for the preview route to render this email HTML."
+                          tone="slate"
+                        />
+                      </div>
+                    )}
                     <iframe
                       src={`/api/email/preview/${send.email_id}`}
                       className="w-full border-0"
                       style={{ height: "520px" }}
                       title={`Preview: ${send.subject}`}
                       sandbox="allow-same-origin"
+                      onLoad={() =>
+                        setLoadingPreview((prev) => ({ ...prev, [send.email_id]: false }))
+                      }
                     />
                   </div>
                 )}
@@ -162,7 +179,11 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                 {mode === "source" && (
                   <div className="bg-slate-950 p-4 overflow-auto max-h-96">
                     {loadingSource[send.email_id] ? (
-                      <p className="text-slate-400 text-xs">Loading…</p>
+                      <ProgressStatus
+                        title="Loading email source"
+                        detail="Fetching the raw HTML from the preview API."
+                        tone="slate"
+                      />
                     ) : (
                       <pre className="text-xs text-green-400 whitespace-pre-wrap break-all font-mono">
                         {sourceContent[send.email_id] ?? ""}
@@ -221,6 +242,11 @@ function RequeueDeadButton({ emailId, failedCount }: { emailId: string; failedCo
 
   return (
     <span className="flex items-center gap-2">
+      {pending && (
+        <span className="text-xs text-amber-700">
+          Resetting failed queue rows so the worker can retry them...
+        </span>
+      )}
       {result && (
         <span className={result.ok ? "text-green-700" : "text-red-700"}>
           {result.message}

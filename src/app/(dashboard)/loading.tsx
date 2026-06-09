@@ -1,7 +1,12 @@
+import { ProgressStatus } from "@/components/progress-status";
+
 export default function DashboardLoading() {
   return (
     <div className="space-y-4">
-      <div className="h-5 w-32 animate-pulse rounded bg-slate-200" />
+      <ProgressStatus
+        title="Loading dashboard data"
+        detail="Waiting on Supabase queries for this page. The dashboard shell stays usable while data streams in."
+      />
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {Array.from({ length: 4 }).map((_, index) => (
           <div

@@ -8,6 +8,7 @@ import {
   sendQueuedEmailAction,
 } from "../actions";
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
+import { ProgressStatus } from "@/components/progress-status";
 
 // ── Header safety notice: broad queue drains are intentionally unavailable. ──
 export function QueueSafetyNotice() {
@@ -28,9 +29,11 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
   const router = useRouter();
   const [working, startWorking] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+  const [progress, setProgress] = useState<string | null>(null);
 
-  const runAction = (task: () => Promise<void>) => {
+  const runAction = (initialProgress: string, task: () => Promise<void>) => {
     setResult(null);
+    setProgress(initialProgress);
     startWorking(async () => {
       try {
         await task();
@@ -39,16 +42,19 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
           ok: false,
           message: err instanceof Error ? err.message : "Action failed.",
         });
+      } finally {
+        setProgress(null);
       }
     });
   };
 
   const handleEdit = () => {
-    runAction(async () => {
+    runAction("Unlocking the queued email so it can be edited...", async () => {
       const fd = new FormData();
       fd.set("id", id);
       const res = await editQueuedEmailAction(fd);
       if (res.error) throw new Error(res.error);
+      setProgress("Draft reopened. Loading the composer...");
       router.push(res.href!);
     });
   };
@@ -59,12 +65,13 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
     );
     if (!confirmed) return;
 
-    runAction(async () => {
+    runAction("Releasing due recipients and checking the daily send cap...", async () => {
       const fd = new FormData();
       fd.set("id", id);
       fd.set("releaseConfirmation", buildQueueReleaseConfirmation(id));
       const res = await sendQueuedEmailAction(fd);
       if (res.error) throw new Error(res.error);
+      setProgress("Release complete. Opening the scoped monitor for this email...");
       setResult({
         ok: true,
         message:
@@ -78,7 +85,7 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
 
   const handleDelete = () => {
     if (!confirm(`Delete "${subject || "this draft"}"?`)) return;
-    runAction(async () => {
+    runAction("Deleting this draft and refreshing the queue list...", async () => {
       const fd = new FormData();
       fd.set("id", id);
       const res = await deleteEmailAction(fd);
@@ -117,6 +124,15 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
           {working ? "Working..." : "Delete"}
         </button>
       </div>
+      {progress && (
+        <div className="w-full min-w-64">
+          <ProgressStatus
+            title={progress}
+            detail="Waiting for the server action to finish."
+            tone="slate"
+          />
+        </div>
+      )}
       {result && (
         <span className={`text-xs ${result.ok ? "text-green-700" : "text-red-700"}`}>
           {result.message}
