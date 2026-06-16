@@ -1,5 +1,6 @@
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { revalidatePath } from "next/cache";
+import { connection } from "next/server";
 import { getServerAuthContext } from "@/lib/authAccess";
 import { getDailySendLimit, setDailySendLimit } from "@/lib/appSettings";
 import { isoDaysAgo } from "@/lib/dateWindows";
@@ -17,6 +18,7 @@ async function updateDailySendLimitAction(formData: FormData) {
 }
 
 export default async function AnalyticsPage() {
+  await connection();
   const supabase = getSupabaseAdmin();
   const dailySendLimit = await getDailySendLimit();
 
@@ -32,25 +34,25 @@ export default async function AnalyticsPage() {
   ] = await Promise.all([
     supabase
       .from("mail_queue")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("status", "succeeded"),
     supabase
       .from("mail_queue")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("status", "succeeded")
       .gte("send_date", last7Date),
     supabase
       .from("mail_queue")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .in("status", ["failed", "dead"]),
     supabase
       .from("mail_queue")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .in("status", ["failed", "dead"])
       .gte("updated_at", last7Timestamp),
     supabase
       .from("mail_queue")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .in("status", ["pending", "processing"]),
   ]);
 
@@ -74,30 +76,30 @@ export default async function AnalyticsPage() {
   ] = await Promise.all([
     supabase
       .from("provider_events")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("event_type", "opened")
       .gte("received_at", last7Timestamp),
     supabase
       .from("provider_events")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("event_type", "clicked")
       .gte("received_at", last7Timestamp),
     supabase
       .from("provider_events")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("event_type", "bounced")
       .gte("received_at", last7Timestamp),
     supabase
       .from("provider_events")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("event_type", "opened"),
     supabase
       .from("provider_events")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("event_type", "clicked"),
     supabase
       .from("provider_events")
-      .select("id", { count: "exact", head: true })
+      .select("id", { count: "planned", head: true })
       .eq("event_type", "bounced"),
   ]);
 
@@ -122,53 +124,67 @@ export default async function AnalyticsPage() {
       started_at: string | null;
   };
 
+  type RecentSendStatsRpcRow = {
+    email_id: string;
+    subject: string;
+    from_address: string;
+    status: string;
+    created_at: string | null;
+    list_ids: string[] | null;
+    sent: number;
+    failed: number;
+    pending: number;
+    first_sent: string | null;
+    last_queued_at: string | null;
+    total_count: number | null;
+  };
+
+  type RecentSendStatsRpcClient = {
+    rpc(
+      fn: "get_recent_email_send_stats",
+      args: { p_limit: number; p_offset: number },
+    ): Promise<{ data: RecentSendStatsRpcRow[] | null; error: { message?: string } | null }>;
+  };
+
   let campaignStats: CampaignStat[] = [];
   let viewMissing = false;
 
-  const { data: campaignData, error: campaignError } = await supabase
-    .from("campaign_stats")
-    .select("campaign_label, email_id, list_id, sent, failed, pending, started_at")
-    .order("started_at", { ascending: false })
-    .limit(50);
+  const { data: recentSendStats, error: recentSendStatsError } = await (
+    supabase as unknown as RecentSendStatsRpcClient
+  ).rpc("get_recent_email_send_stats", {
+    p_limit: 50,
+    p_offset: 0,
+  });
 
-  if (campaignError) {
-    // View not yet created — fall back to a bounded scan of mail_queue
-    // (last 90 days, max 5 000 rows) so historical data is still visible.
+  if (recentSendStatsError) {
     viewMissing = true;
-    const ninetyDaysAgo = isoDaysAgo(90);
-    const { data: rawRows } = await supabase
-      .from("mail_queue")
-      .select("campaign_label, email_id, list_id, status, created_at")
-      .not("campaign_label", "is", null)
-      .gte("created_at", ninetyDaysAgo)
-      .limit(5000);
 
-    const grouped = new Map<string, CampaignStat>();
-    for (const row of rawRows ?? []) {
-      if (!row.campaign_label || !row.email_id) continue;
-      const key = row.campaign_label;
-      const entry: CampaignStat = grouped.get(key) ?? {
-        campaign_label: key,
-        email_id: row.email_id,
-        list_id: row.list_id ?? null,
+    const { data: recentEmails } = await supabase
+      .from("emails")
+      .select("id, created_at")
+      .neq("status", "draft")
+      .order("created_at", { ascending: false })
+      .limit(50);
+
+    campaignStats = ((recentEmails ?? []) as { id: string; created_at: string | null }[]).map((email) => ({
+        campaign_label: email.id,
+        email_id: email.id,
+        list_id: null,
         sent: 0,
         failed: 0,
         pending: 0,
-        started_at: row.created_at,
-      };
-      if (row.status === "succeeded") entry.sent++;
-      else if (row.status === "failed" || row.status === "dead") entry.failed++;
-      else if (row.status === "pending" || row.status === "processing") entry.pending++;
-      if (row.created_at && row.created_at < (entry.started_at ?? row.created_at)) {
-        entry.started_at = row.created_at;
-      }
-      grouped.set(key, entry);
-    }
-    campaignStats = [...grouped.values()]
-      .sort((a, b) => ((b.started_at ?? "") > (a.started_at ?? "") ? 1 : -1))
-      .slice(0, 100);
+        started_at: email.created_at,
+      }));
   } else {
-    campaignStats = (campaignData ?? []) as CampaignStat[];
+    campaignStats = ((recentSendStats ?? []) as RecentSendStatsRpcRow[]).map((row) => ({
+      campaign_label: row.email_id,
+      email_id: row.email_id,
+      list_id: row.list_ids?.[0] ?? null,
+      sent: Number(row.sent),
+      failed: Number(row.failed),
+      pending: Number(row.pending),
+      started_at: row.last_queued_at ?? row.created_at,
+    }));
   }
 
   // Fetch email subjects + list names for the campaigns we have.
@@ -185,13 +201,15 @@ export default async function AnalyticsPage() {
         : Promise.resolve({ data: [] as { id: string; name: string }[] }),
       // Per-campaign event samples — bounded so Analytics cannot scan every
       // event row when a high-volume campaign is selected.
-      supabase
-        .from("provider_events")
-        .select("email_id, event_type")
-        .in("event_type", ["opened", "clicked", "bounced"])
-        .not("email_id", "is", null)
-        .gte("received_at", isoDaysAgo(90))
-        .limit(20000),
+      emailIds.length
+        ? supabase
+            .from("provider_events")
+            .select("email_id, event_type")
+            .in("email_id", emailIds)
+            .in("event_type", ["opened", "clicked", "bounced"])
+            .gte("received_at", isoDaysAgo(90))
+            .limit(20000)
+        : Promise.resolve({ data: [] as { email_id: string; event_type: string }[] }),
       emailIds.length
         ? supabase
             .from("mail_queue")
@@ -359,12 +377,12 @@ export default async function AnalyticsPage() {
 
         {viewMissing && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 mb-3">
-            <span className="font-medium">Showing last 90 days (fallback).</span>{" "}
+            <span className="font-medium">Showing recent emails without queue totals.</span>{" "}
             Run{" "}
             <code className="rounded bg-amber-100 px-1">
-              supabase/migrations/20260421_analytics_views.sql
+              supabase/migrations/20260615_send_history_rpc.sql
             </code>{" "}
-            for full history and better performance.
+            for fast campaign totals.
           </div>
         )}
         {campaigns.length === 0 ? (

@@ -316,6 +316,19 @@ export async function POST(request: Request) {
     emailId = queueRow?.email_id ?? null;
   }
 
+  if (!emailId) {
+    const commonHeaders = mail?.["commonHeaders"] as Record<string, unknown> | undefined;
+    const subject = commonHeaders?.["subject"];
+    if (typeof subject === "string" && subject.trim()) {
+      const { data: matches } = await supabase
+        .from("emails")
+        .select("id")
+        .eq("subject", subject.trim())
+        .limit(2);
+      if (matches?.length === 1) emailId = matches[0].id;
+    }
+  }
+
   // ── Insert event ───────────────────────────────────────────────────────────
   const { error } = await supabase.from("provider_events").insert({
     provider: "ses",

@@ -348,12 +348,14 @@ export interface Database {
           id: string;
           email: string;
           role: string;
+          can_send: boolean | null;
           created_at: string | null;
         };
         Insert: {
           id: string;
           email: string;
           role?: string;
+          can_send?: boolean | null;
           created_at?: string | null;
         };
         Update: Partial<Database["public"]["Tables"]["profiles"]["Insert"]>;

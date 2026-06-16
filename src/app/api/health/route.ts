@@ -338,17 +338,17 @@ export async function GET() {
     ] = await Promise.all([
       db
         .from("mail_queue")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .eq("status", "pending")
         .lte("available_at", nowIso),
       db
         .from("mail_queue")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .eq("status", "pending")
         .gt("available_at", nowIso),
       db
         .from("mail_queue")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .eq("status", "processing"),
     ]);
 
@@ -394,7 +394,7 @@ export async function GET() {
     ] = await Promise.all([
       db
         .from("provider_events")
-        .select("id", { count: "exact", head: true }),
+        .select("id", { count: "planned", head: true }),
       db
         .from("provider_events")
         .select("received_at")
@@ -403,7 +403,7 @@ export async function GET() {
         .maybeSingle(),
       db
         .from("provider_events")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .gte("received_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
       db
         .from("error_logs")

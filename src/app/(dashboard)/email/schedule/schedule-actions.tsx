@@ -10,11 +10,11 @@ import {
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 import { ProgressStatus } from "@/components/progress-status";
 
-// ── Header safety notice: broad queue drains are intentionally unavailable. ──
+// ── Header safety notice: this page still releases specific rows only. ──
 export function QueueSafetyNotice() {
   return (
     <div className="max-w-sm rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      Process sends from a specific row only. Broad queue draining is disabled to avoid sending an unintended campaign.
+      Process sends from a specific row here. The monitor page has a guarded global drain for queued, sending, or sent campaigns.
     </div>
   );
 }
@@ -23,9 +23,10 @@ type RowProps = {
   id: string;
   subject: string;
   status: "draft" | "queued" | "sending";
+  canSend: boolean;
 };
 
-export function ScheduleActions({ id, subject, status }: RowProps) {
+export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
   const router = useRouter();
   const [working, startWorking] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -107,13 +108,15 @@ export function ScheduleActions({ id, subject, status }: RowProps) {
             >
               {working ? "Working..." : "Edit"}
             </button>
-            <button
-              onClick={handleSendNow}
-              disabled={working}
-              className="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
-            >
-              {working ? "Working..." : "Send Now"}
-            </button>
+            {canSend && (
+              <button
+                onClick={handleSendNow}
+                disabled={working}
+                className="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                {working ? "Working..." : "Send Now"}
+              </button>
+            )}
           </>
         )}
         <button

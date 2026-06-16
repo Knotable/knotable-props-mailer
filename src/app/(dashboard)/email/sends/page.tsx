@@ -1,9 +1,408 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { isoDaysAgo } from "@/lib/dateWindows";
 import { SendsClient } from "./sends-client";
 
 const PAGE_SIZE = 20;
+const QUERY_TIMEOUT_MS = 2_500;
+
+type StatRow = {
+  email_id: string;
+  list_ids: string[] | null;
+  sent: number | null;
+  failed: number | null;
+  pending: number | null;
+  canceled: number | null;
+  first_sent: string | null;
+  last_queued_at: string | null;
+};
+
+type SendList = {
+  id: string;
+  name: string;
+  address: string;
+  updated_at: string | null;
+  memberCount: number;
+  memberEmails: string[];
+};
+
+type SendItem = {
+  email_id: string;
+  subject: string;
+  from_address: string;
+  status: string;
+  sent: number | null;
+  failed: number | null;
+  pending: number | null;
+  canceled: number | null;
+  first_sent: string | null;
+  last_queued_at: string | null;
+  lists: SendList[];
+  created_at: string | null;
+};
+
+type EmailRow = {
+  id: string;
+  subject: string;
+  from_address: string;
+  status: string;
+  created_at: string | null;
+};
+
+type FallbackEmailRow = Pick<EmailRow, "id" | "created_at">;
+
+type ListRow = {
+  id: string;
+  name: string;
+  address: string;
+  updated_at: string | null;
+};
+
+type SampleMemberRow = {
+  email: string;
+};
+
+type QueueListRow = {
+  list_id: string | null;
+};
+
+type QueueDateRow = {
+  send_date?: string | null;
+  created_at?: string | null;
+};
+
+type PastSendsData = {
+  sends: SendItem[];
+  total: number;
+  totalPages: number;
+  sentLast7Days: number;
+  sentAllTime: number;
+  statsPartial: boolean;
+};
+
+type RecentSendStatsRpcRow = StatRow & {
+  subject: string;
+  from_address: string;
+  status: string;
+  created_at: string | null;
+  total_count: number | null;
+};
+
+type TimedResult<T> = {
+  data: T[] | null;
+  count: number | null;
+  error: { message?: string } | null;
+};
+
+type QueryLike = PromiseLike<unknown> | {
+  abortSignal: (signal: AbortSignal) => unknown;
+};
+
+type RecentSendStatsRpcClient = {
+  rpc(
+    fn: "get_recent_email_send_stats",
+    args: { p_limit: number; p_offset: number },
+  ): Promise<TimedResult<RecentSendStatsRpcRow>>;
+};
+
+async function timedQuery<T>(query: QueryLike): Promise<TimedResult<T>> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), QUERY_TIMEOUT_MS);
+
+  try {
+    const runnable =
+      "abortSignal" in query && typeof query.abortSignal === "function"
+        ? query.abortSignal(controller.signal)
+        : query;
+    return (await runnable) as TimedResult<T>;
+  } catch (error) {
+    return {
+      data: null,
+      count: null,
+      error: { message: error instanceof Error ? error.message : "Query timed out" },
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function loadQueueStatsForEmail(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  email: FallbackEmailRow,
+): Promise<{ row: StatRow; partial: boolean }> {
+  const [
+    sentResult,
+    failedResult,
+    pendingResult,
+    canceledResult,
+    firstSentResult,
+    lastSentResult,
+    lastQueuedResult,
+    queueListResult,
+  ] = await Promise.all([
+    timedQuery(
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "planned", head: true })
+        .eq("email_id", email.id)
+        .eq("status", "succeeded"),
+    ),
+    timedQuery(
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "planned", head: true })
+        .eq("email_id", email.id)
+        .in("status", ["failed", "dead"]),
+    ),
+    timedQuery(
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "planned", head: true })
+        .eq("email_id", email.id)
+        .in("status", ["pending", "processing"]),
+    ),
+    timedQuery(
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "planned", head: true })
+        .eq("email_id", email.id)
+        .eq("status", "canceled"),
+    ),
+    timedQuery<QueueDateRow>(
+      supabase
+        .from("mail_queue")
+        .select("send_date")
+        .eq("email_id", email.id)
+        .eq("status", "succeeded")
+        .not("send_date", "is", null)
+        .order("send_date", { ascending: true })
+        .limit(1),
+    ),
+    timedQuery<QueueDateRow>(
+      supabase
+        .from("mail_queue")
+        .select("send_date")
+        .eq("email_id", email.id)
+        .eq("status", "succeeded")
+        .not("send_date", "is", null)
+        .order("send_date", { ascending: false })
+        .limit(1),
+    ),
+    timedQuery<QueueDateRow>(
+      supabase
+        .from("mail_queue")
+        .select("created_at")
+        .eq("email_id", email.id)
+        .order("created_at", { ascending: false })
+        .limit(1),
+    ),
+    timedQuery<QueueListRow>(
+      supabase
+        .from("mail_queue")
+        .select("list_id")
+        .eq("email_id", email.id)
+        .not("list_id", "is", null)
+        .order("list_id", { ascending: true })
+        .limit(5000),
+    ),
+  ]);
+
+  const firstSent = firstSentResult.data?.[0]?.send_date ?? null;
+  const lastSent = lastSentResult.data?.[0]?.send_date ?? null;
+  const lastQueued = lastSent ?? lastQueuedResult.data?.[0]?.created_at ?? email.created_at;
+  const listIds = [
+    ...new Set(
+      (queueListResult.data ?? [])
+        .map((row) => row.list_id)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const partial = [
+    sentResult,
+    failedResult,
+    pendingResult,
+    canceledResult,
+    firstSentResult,
+    lastSentResult,
+    lastQueuedResult,
+    queueListResult,
+  ].some((result) => Boolean(result.error));
+
+  return {
+    row: {
+      email_id: email.id,
+      list_ids: listIds,
+      sent: sentResult.count,
+      failed: failedResult.count,
+      pending: pendingResult.count,
+      canceled: canceledResult.count,
+      first_sent: firstSent,
+      last_queued_at: lastQueued,
+    },
+    partial,
+  };
+}
+
+async function loadPastSendsData(page: number): Promise<PastSendsData> {
+  const offset = (page - 1) * PAGE_SIZE;
+  const supabase = getSupabaseAdmin();
+  const last7Date = isoDaysAgo(7).slice(0, 10);
+
+  const [
+    sentLast7DaysResult,
+    sentAllTimeResult,
+    recentStatsResult,
+  ] = await Promise.all([
+    timedQuery(
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "planned", head: true })
+        .eq("status", "succeeded")
+        .gte("send_date", last7Date),
+    ),
+    timedQuery(
+      supabase
+        .from("mail_queue")
+        .select("id", { count: "planned", head: true })
+        .eq("status", "succeeded"),
+    ),
+    timedQuery<RecentSendStatsRpcRow>(
+      (supabase as unknown as RecentSendStatsRpcClient).rpc(
+        "get_recent_email_send_stats",
+        {
+          p_limit: PAGE_SIZE,
+          p_offset: offset,
+        },
+      ),
+    ),
+  ]);
+
+  let emailRows: EmailRow[] = [];
+  let rows: StatRow[] = [];
+  let total = 0;
+  let statsPartial = Boolean(sentLast7DaysResult.error) || Boolean(sentAllTimeResult.error);
+
+  if (!recentStatsResult.error) {
+    const rpcRows = (recentStatsResult.data ?? []) as RecentSendStatsRpcRow[];
+    emailRows = rpcRows.map((row) => ({
+      id: row.email_id,
+      subject: row.subject,
+      from_address: row.from_address,
+      status: row.status,
+      created_at: row.created_at,
+    }));
+    rows = rpcRows.map((row) => ({
+      email_id: row.email_id,
+      list_ids: row.list_ids ?? [],
+      sent: Number(row.sent),
+      failed: Number(row.failed),
+      pending: Number(row.pending),
+      canceled: Number(row.canceled ?? 0),
+      first_sent: row.first_sent,
+      last_queued_at: row.last_queued_at,
+    }));
+    total = Number(rpcRows[0]?.total_count ?? rpcRows.length);
+  } else {
+    statsPartial = true;
+
+    const { data: emailsPage, count: totalCount } = await supabase
+      .from("emails")
+      .select("id, subject, from_address, status, created_at", { count: "exact" })
+      .neq("status", "draft")
+      .order("created_at", { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    emailRows = (emailsPage ?? []) as EmailRow[];
+    const statsEntries = await Promise.all(
+      emailRows.map((email) => loadQueueStatsForEmail(supabase, email)),
+    );
+    rows = statsEntries.map((entry) => entry.row);
+    total = totalCount ?? emailRows.length;
+    statsPartial = statsPartial || statsEntries.some((entry) => entry.partial);
+  }
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const listIds = [...new Set(rows.flatMap((row) => row.list_ids ?? []).filter(Boolean))];
+
+    const [{ data: lists }] = await Promise.all([
+      listIds.length
+        ? supabase
+            .from("lists")
+            .select("id, name, address, updated_at")
+            .in("id", listIds)
+        : Promise.resolve({ data: [] }),
+    ]);
+
+    const listRows = (lists ?? []) as ListRow[];
+
+    const listMetaEntries = await Promise.all(
+      listRows.map(async (list) => {
+        const [{ count }, { data: sampleMembers }] = await Promise.all([
+          supabase
+            .from("list_members")
+            .select("id", { count: "exact", head: true })
+            .eq("list_id", list.id)
+            .eq("status", "active"),
+          supabase
+            .from("list_members")
+            .select("email")
+            .eq("list_id", list.id)
+            .eq("status", "active")
+            .order("email", { ascending: true })
+            .limit(8),
+        ]);
+
+        const sampleRows = (sampleMembers ?? []) as SampleMemberRow[];
+
+        return [
+          list.id,
+          {
+            id: list.id,
+            name: list.name,
+            address: list.address,
+            updated_at: list.updated_at,
+            memberCount: count ?? 0,
+            memberEmails: sampleRows.map((member) => member.email),
+          } satisfies SendList,
+        ] as const;
+      }),
+    );
+
+    const emailDetails = new Map(emailRows.map((email) => [email.id, email]));
+    const listDetails = new Map(listMetaEntries);
+
+    const sends = rows.map((row) => {
+      const email = emailDetails.get(row.email_id);
+      const sendLists = (row.list_ids ?? [])
+        .map((listId) => listDetails.get(listId))
+        .filter(Boolean) as SendList[];
+
+      return {
+        email_id: row.email_id,
+        subject: email?.subject ?? "(untitled)",
+        from_address: email?.from_address ?? "",
+        status: email?.status ?? "unknown",
+        sent: row.sent,
+        failed: row.failed,
+        pending: row.pending,
+        canceled: row.canceled,
+        first_sent: row.first_sent,
+        last_queued_at: row.last_queued_at,
+        lists: sendLists,
+        created_at: email?.created_at ?? null,
+      };
+    });
+
+    return {
+      sends,
+      total,
+      totalPages,
+      sentLast7Days: sentLast7DaysResult.count ?? 0,
+      sentAllTime: sentAllTimeResult.count ?? 0,
+      statsPartial,
+    };
+}
 
 // searchParams is a Promise in Next.js 15+.
 export default async function PastSendsPage({
@@ -11,119 +410,13 @@ export default async function PastSendsPage({
 }: {
   searchParams: Promise<Record<string, string | string[]>>;
 }) {
+  await connection();
   const params = await searchParams;
   const page = Math.max(1, parseInt((params.page as string) ?? "1", 10));
-  const offset = (page - 1) * PAGE_SIZE;
+  const { sends, total, totalPages, sentLast7Days, sentAllTime, statsPartial } =
+    await loadPastSendsData(page);
 
-  const supabase = getSupabaseAdmin();
-  const last7Date = isoDaysAgo(7).slice(0, 10);
-
-  type StatRow = {
-    email_id: string;
-    list_ids: string[] | null;
-    sent: number;
-    failed: number;
-    pending: number;
-    first_sent: string | null;
-    last_queued_at: string | null;
-  };
-
-  // ── Try the email_send_stats VIEW (O(emails) query) ───────────────────────
-  // If the migration hasn't been applied yet, fall back to a bounded direct
-  // scan of mail_queue (last 90 days, max 5 000 rows) so the page still shows
-  // historical data rather than a blocking advisory.
-  const [
-    { count: totalCount },
-    { count: sentLast7Days },
-    { count: sentAllTime },
-    { data: stats, error: statsError },
-  ] = await Promise.all([
-    supabase
-      .from("email_send_stats")
-      .select("email_id", { count: "exact", head: true }),
-    supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "succeeded")
-      .gte("send_date", last7Date),
-    supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "succeeded"),
-    supabase
-      .from("email_send_stats")
-      .select("email_id, list_ids, sent, failed, pending, first_sent, last_queued_at")
-      .order("last_queued_at", { ascending: false })
-      .range(offset, offset + PAGE_SIZE - 1),
-  ]);
-
-  let viewMissing = false;
-  let rows: StatRow[] = [];
-  let total: number;
-
-  if (statsError) {
-    viewMissing = true;
-    const ninetyDaysAgo = isoDaysAgo(90);
-    const { data: rawRows } = await supabase
-      .from("mail_queue")
-      .select("email_id, list_id, status, send_date, created_at")
-      .not("email_id", "is", null)
-      .gte("created_at", ninetyDaysAgo)
-      .limit(5000);
-
-    const grouped = new Map<string, StatRow & { _last_queued: string }>();
-    for (const row of rawRows ?? []) {
-      if (!row.email_id) continue;
-      const entry = grouped.get(row.email_id) ?? {
-        email_id: row.email_id,
-        list_ids: [] as string[],
-        sent: 0,
-        failed: 0,
-        pending: 0,
-        first_sent: null,
-        last_queued_at: row.created_at,
-        _last_queued: row.created_at ?? "",
-      };
-      if (row.list_id && !(entry.list_ids ?? []).includes(row.list_id)) {
-        (entry.list_ids as string[]).push(row.list_id);
-      }
-      if (row.status === "succeeded") {
-        entry.sent++;
-        if (!entry.first_sent || (row.send_date && row.send_date < entry.first_sent)) {
-          entry.first_sent = row.send_date;
-        }
-      } else if (row.status === "failed" || row.status === "dead") {
-        entry.failed++;
-      } else if (row.status === "pending" || row.status === "processing") {
-        entry.pending++;
-      }
-      if (row.created_at && row.created_at > (entry._last_queued ?? "")) {
-        entry._last_queued = row.created_at;
-        entry.last_queued_at = row.created_at;
-      }
-      grouped.set(row.email_id, entry);
-    }
-
-    const allRows = [...grouped.values()]
-      .sort((a, b) => ((b._last_queued ?? "") > (a._last_queued ?? "") ? 1 : -1));
-    total = allRows.length;
-    rows = allRows.slice(offset, offset + PAGE_SIZE).map((row) => ({
-      email_id: row.email_id,
-      list_ids: row.list_ids,
-      sent: row.sent,
-      failed: row.failed,
-      pending: row.pending,
-      first_sent: row.first_sent,
-      last_queued_at: row.last_queued_at,
-    }));
-  } else {
-    rows = (stats ?? []) as StatRow[];
-    total = totalCount ?? 0;
-  }
-
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  if (rows.length === 0 && page === 1) {
+  if (sends.length === 0 && page === 1) {
     return (
       <div className="space-y-6">
         <Header />
@@ -134,69 +427,6 @@ export default async function PastSendsPage({
     );
   }
 
-  // Fetch email details and list details for this page only.
-  const emailIds = rows.map((r) => r.email_id);
-  const listIds = [
-    ...new Set(rows.flatMap((r) => r.list_ids ?? []).filter(Boolean)),
-  ];
-
-  const [{ data: emails }, { data: lists }, { data: listMembers }] = await Promise.all([
-    supabase
-      .from("emails")
-      .select("id, subject, from_address, html, status, created_at")
-      .in("id", emailIds),
-    listIds.length
-      ? supabase.from("lists").select("id, name, address").in("id", listIds)
-      : Promise.resolve({ data: [] as { id: string; name: string; address: string }[] }),
-    listIds.length
-      ? supabase
-          .from("list_members")
-          .select("list_id, email")
-          .in("list_id", listIds)
-          .eq("status", "active")
-          .order("email", { ascending: true })
-          .limit(120)
-      : Promise.resolve({ data: [] as { list_id: string; email: string }[] }),
-  ]);
-
-  const emailDetails = new Map((emails ?? []).map((e) => [e.id, e]));
-
-  // Build a map of list_id → sorted member emails
-  const membersByList = new Map<string, string[]>();
-  for (const m of listMembers ?? []) {
-    if (!m.list_id) continue;
-    const arr = membersByList.get(m.list_id) ?? [];
-    arr.push(m.email);
-    membersByList.set(m.list_id, arr);
-  }
-
-  const listDetails = new Map(
-    (lists ?? []).map((l) => [
-      l.id,
-      { ...l, memberEmails: membersByList.get(l.id) ?? [] },
-    ])
-  );
-
-  const sends = rows.map((row) => {
-    const email = emailDetails.get(row.email_id);
-    const sendLists = (row.list_ids ?? [])
-      .map((lid) => listDetails.get(lid))
-      .filter(Boolean) as { id: string; name: string; address: string; memberEmails: string[] }[];
-
-    return {
-      email_id: row.email_id,
-      subject: email?.subject ?? "(untitled)",
-      from_address: email?.from_address ?? "",
-      status: email?.status ?? "unknown",
-      sent: Number(row.sent),
-      failed: Number(row.failed),
-      pending: Number(row.pending),
-      first_sent: row.first_sent,
-      lists: sendLists,
-      created_at: email?.created_at ?? null,
-    };
-  });
-
   return (
     <div className="space-y-6">
       <Header
@@ -204,14 +434,15 @@ export default async function PastSendsPage({
         sentLast7Days={sentLast7Days ?? 0}
         sentAllTime={sentAllTime ?? 0}
       />
-      {viewMissing && (
+      {statsPartial && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-          <span className="font-medium">Showing last 90 days (fallback).</span>{" "}
-          Run{" "}
+          <span className="font-medium">Some queue stats are still catching up.</span>{" "}
+          Recent campaigns are shown from the emails table, but one or more queue count
+          queries timed out. For full-speed counts, run{" "}
           <code className="rounded bg-amber-100 px-1">
-            supabase/migrations/20260421_analytics_views.sql
+            supabase/migrations/20260616_fast_send_history_rpc.sql
           </code>{" "}
-          for full history and better performance.
+          in Supabase.
         </div>
       )}
       <SendsClient sends={sends} />

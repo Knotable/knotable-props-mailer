@@ -6,13 +6,15 @@
 
 ## OPERATOR STATUS - READ THIS FIRST
 
-**As of 2026-06-03, the AWS SES daily sending quota is 65,400 emails per 24-hour period, with a maximum send rate of 15 emails per second. The checked-in app fallback and settings seed must stay at 65,400 unless SES changes again. The released LifeX campaign remains under email id `532a06ae-c296-4f93-8483-e250d803f08d`. Do not open or auto-run the monitor casually; verify the exact email id first.**
+**As of 2026-06-15, production health is green and reports `0` due pending, `0` processing, and `0` held pending queue rows. The AWS SES daily sending quota is 65,400 emails per 24-hour period, with a maximum send rate of 15 emails per second. `public.app_settings` now exists live with `daily_send_limit = 65,400`. Do not open or auto-run the monitor casually; verify the exact email id first.**
+
+**Hard sending rule, 2026-06-16:** Never use Gmail or the Gmail connector to send project, campaign, newsletter, list, test, or resend emails for this repo. Gmail may be used only for read-only mailbox lookup when explicitly relevant. All outbound mail must go through Props Mailer / SES using the app's queue, test-send, or monitor flows.
 
 **Paris override update, 2026-05-31:** a separate `AmolsParis` campaign (`0949ffd6-044c-42e9-97ba-585a72281c6a`) was explicitly sent after the app cap was already full. SES accepted `414` recipients, then returned `454 Throttling failure: Daily message quota exceeded.` The remaining `103` Paris recipients are held at year 2999. Do not retry them until SES headroom is confirmed. The LifeX campaign remained isolated with `0` due and `0` processing rows when checked at `2026-05-31T22:03:54Z`.
 
 Any AI agent entering this repo should first tell the operator:
 
-> Hey, here is what's up right now: the LifeX campaign is released under email id `532a06ae-c296-4f93-8483-e250d803f08d`. The current SES account limit is 65,400 emails per 24-hour period and 15 emails per second. Production health on 2026-06-03 showed due pending queue work, so resume only this exact id through `/email/monitor?emailId=532a06ae-c296-4f93-8483-e250d803f08d`; the global `/email/monitor` page is read-only. The old large campaign was canceled on 2026-05-12 after sending 63,553 recipients. Separately, held follow-up recipients still exist across two older queued emails.
+> Hey, here is what's up right now: production health is green with no due, processing, or held queue rows. The LifeX campaign under email id `532a06ae-c296-4f93-8483-e250d803f08d` has no pending/processing rows left, but its parent `emails.status` still reads `queued`, so it may need a status cleanup to `sent` if the UI still shows it as active. The current SES account limit is 65,400 emails per 24-hour period and 15 emails per second. The old large campaign was canceled on 2026-05-12 after sending 63,553 recipients.
 
 Current live-send details:
 
@@ -20,10 +22,10 @@ Current live-send details:
 - Subject: `LifeX is getting loud: exits, London, and useful little machines`
 - Source editable draft: `ec97551d-0bea-463f-8630-58ac2d246b81` (revision 3 snapshot written before AI-native edits)
 - List: `Amols202604` (`dbd52a08-9a38-4573-bf06-09e401015ae9`), 185,907 active members at preparation time
-- Current SES quota: `65,400` recipients per 24-hour period; maximum send rate: `15` emails per second.
+- Current SES quota: `65,400` recipients per 24-hour period; maximum send rate: `15` emails per second. Live `app_settings.daily_send_limit` is `65,400`.
 - Previous LifeX slice result: `53,998` accepted by SES, `1` dead malformed recipient, plus `2` earlier test sends counted toward that day's global quota.
 - Additional run on 2026-05-31: `9,001` extra LifeX recipients released from the next slice and accepted by SES with `0` failures.
-- Remaining new-campaign rows should be verified live before each monitor run; production health on 2026-06-03 reported `122,782` due pending, `0` processing, and `6,091` held pending.
+- Live check on 2026-06-15 showed LifeX has `0` pending and `0` processing rows. Its parent email still has status `queued`, likely because final status reconciliation timed out on the large success count.
 - Invalid recipient marked terminal: `barbaraceñestealvarez@hotmail.com` (`501 Invalid RCPT TO address provided`)
 - New-campaign screenshot asset: `https://yxmnqlxdxrtfnpcvvoww.supabase.co/storage/v1/object/public/email-assets/lifex/lifex-whatsapp-london-2026-05-30.jpg`
 - Pre-release global queue state checked on 2026-05-31: `0` due pending rows, `0` processing rows, `192,018` held pending rows
@@ -32,20 +34,18 @@ Current live-send details:
 - Final old-campaign queue state after cancellation: `63,553` succeeded, `122,592` canceled, `1` dead, `0` pending, `0` processing
 - Held follow-up email `aacdd257-4604-4f0c-b13d-54add0aff534`: `4,898` held pending, `102` canceled
 - Held follow-up email `7b57066b-6400-4216-8ef0-12faa967cbee`: `1,213` held pending, `5` canceled
-- Production health was green after the 2026-05-31 deployment with `0` critical failures and `0` warnings, `0` due pending, `0` processing, and `138,019` held pending rows. SES/SNS events are fresh. The deployed health route now surfaces queue count errors instead of silently rendering timed-out counts as zero.
-- Live-schema drift discovered during new-campaign preparation: `public.app_settings` is missing in some environments, so the app falls back to the checked-in 65,400 daily cap. The documented unique constraint for `mail_queue.dedupe_hash` is also missing, so the generic conflict-safe queue upsert path fails until the migration is applied. Apply `20260531_update_daily_send_limit.sql` with the settings-table repair.
+- Production health was green on 2026-06-15 with `0` critical failures and `0` warnings, `0` due pending, `0` processing, and `0` held pending rows. SES/SNS events are fresh.
+- Live-schema drift note: `public.app_settings` has been repaired live and returns `daily_send_limit = 65,400`. Verify `mail_queue.dedupe_hash` uniqueness before relying on the generic conflict-safe queue upsert path.
 - Release gotcha: `release_mail_queue_campaign` timed out when updating all 185,907 rows in one statement. The release schedule was applied in bounded chunks instead.
 - Drain gotcha: the initial unpaced worker loop hit transient SES `454 Maximum sending rate exceeded` responses. Those addresses succeeded on retry. Run local scoped worker calls with a 5-second pause between batches.
 - Continuation gotcha: the local `CRON_SECRET` does not authenticate the deployed worker endpoint, and this desktop session could not register a thread heartbeat. Resume through a local Next dev server and the local scoped `/api/email/send-monitor` endpoint.
 
 Next-send checklist:
 
-- Resume only the released LifeX email id `532a06ae-c296-4f93-8483-e250d803f08d` after each future UTC slice becomes due. Never run a global drain.
-- For the next slice, start after `2026-06-01T00:00:00Z` (`2026-05-31 20:00 EDT`). Start local Next dev, then POST only that `emailId` to local `/api/email/send-monitor` with a 5-second pause between batches.
-- Decide whether the two older held follow-up queues should be canceled or intentionally released.
-- Apply/repair the `app_settings` table migration and `mail_queue.dedupe_hash` unique constraint before relying on analytics cap editing or the generic UI queue-upsert path.
-- The checked-in 65,400 fallback is the current SES quota. Apply the settings-table repair migration in the Supabase Dashboard before relying on analytics cap editing in production. The direct DB connection is IPv6-only from this network and the tested shared pooler endpoints did not recognize this older project tenant.
-- Older unrelated queue rows should remain held (`available_at = 2999-12-31T23:59:59Z`). The released LifeX campaign now uses explicit UTC-day scheduling.
+- No LifeX slice needs to be resumed based on the 2026-06-15 live check.
+- Clean up stale parent email statuses if the UI still shows completed sends as queued. Known examples: LifeX `532a06ae...` and Paris `0949ffd6...` both have `0` pending and `0` processing rows but still show `emails.status = queued`.
+- Verify `mail_queue.dedupe_hash` uniqueness before relying on generic UI queue upserts.
+- Older unrelated queue rows no longer appear held in production health as of 2026-06-15.
 - Before opening `/email/monitor`, verify the target email id and queue counts so no unrelated campaign drains.
 
 ### Running Repair / Readiness Checklist
@@ -62,14 +62,17 @@ Update this section as work progresses so future agents do not re-derive the sta
 | Bound schedule page queue lookups | Done 2026-05-21 | `/email/schedule` no longer fetches every `mail_queue` row for visible emails just to render list badges; it samples at most 25 queue rows per email so a 186k queued campaign does not make the page pull a 186k-row result set. |
 | Surface queue due snapshot in health | Done 2026-05-31 | `/api/health` includes a warning check with global due pending, processing, and held pending queue counts so readiness reviews see accidental due work without opening the monitor. The deployed 2026-05-31 safety fix makes count-query errors surface instead of rendering timed-out counts as zero. |
 | Commit/persist this operator status | Pending | `README-AI.md` is modified locally until committed. |
-| Decide fate of held follow-up queues | Pending | `aacdd257...` has 4,898 held; `7b57066...` has 1,213 held. |
+| Decide fate of held follow-up queues | Done 2026-06-15 live check | Production health reports `0` held pending rows. `aacdd257...` has no email row/queue rows in the live check; `7b57066...` is `sent` with `1,206` succeeded, `1` dead, and `11` canceled. |
 | Prepare AI-native LifeX full-list campaign | Done 2026-05-31 | Fresh email `532a06ae...` has a hosted screenshot asset and the updated AI-native copy. |
 | Send first LifeX UTC-day slice | Done 2026-05-31 | Released exact email `532a06ae...`; 53,998 LifeX recipients were accepted by SES, 1 malformed address was marked dead, and 2 earlier tests counted toward that day's global quota. The current checked-in cap is now 65,400. |
-| Continue future LifeX slices | Pending | Resume exact email `532a06ae...` after each scheduled UTC boundary. Next: `2026-06-01T00:00:00Z`. Use local scoped worker calls with a 5-second pause. |
-| Repair live-schema queue/settings drift | Pending | `public.app_settings` is absent and the documented unique constraint for `mail_queue.dedupe_hash` is absent. The fallback and checked-in seed are now 65,400, and `20260531_update_daily_send_limit.sql` updates the setting. Apply the settings-table migration through the Supabase Dashboard: the stored direct DB hostname resolves IPv6-only from this network and the tested shared pooler endpoints did not recognize this older project tenant. Apply the queue-index repair before relying on generic UI queue upserts. |
+| Continue future LifeX slices | Done 2026-06-15 live check | `532a06ae...` has `0` pending and `0` processing rows. Its parent email status still reads `queued`, so clean that status if it confuses the UI. |
+| Repair live-schema queue/settings drift | Partially done 2026-06-15 | `public.app_settings` is live with `daily_send_limit = 65,400`. Verify the `mail_queue.dedupe_hash` uniqueness repair before relying on generic UI queue upserts. |
+| Apply Supabase security/IO repair | Needs Supabase Advisor verification | `app_settings` and `unsubscribe_requests` now exist live, and `/api/health` is green. Supabase Advisor RLS/Disk IO status is not visible through the app API; verify in the Supabase Dashboard. |
 | Verify SES/SNS event freshness | Done 2026-05-31 | Production health is green and fresh provider events were observed on 2026-05-30. |
 | Verify large-send RPCs in prod | Done 2026-05-21 | `/api/health` critical checks are green, including `claim_mail_queue_batch` and `release_mail_queue_campaign`. Re-check immediately before release. |
-| Confirm queue is not accidentally due | Needs live check | Production health on 2026-06-03 reported 122,782 due pending, 0 processing, and 6,091 held pending. Re-check immediately before monitor use and only run the intended `emailId`; the global monitor is read-only. |
+| Confirm queue is not accidentally due | Done 2026-06-15 live check | Production health reports `0` due pending, `0` processing, and `0` held pending. Re-check immediately before monitor use and only run the intended `emailId`; the global monitor is read-only. |
+| Prepare next two LifeX newsletters | Drafted 2026-06-11 | Local HTML files in `/Users/MrAnonymous/Documents/01 LifeX/Newsletter work/` were updated to use Supabase-hosted images and reply-based unsubscribe footer. Supabase draft ids: `08df2ed7-a8a2-4ec4-9542-990d3a43c0e6` for June 11 Part 1 and `00440fb7-59a6-4730-8bfe-605f5442f1ee` for the June 25 / July Part 2 draft. Both are still `draft`; live check showed `0` queue rows. |
+| Add reply-to unsubscribe logging | Table live 2026-06-15 | App code stores/sends `reply_to` and sets a mailto `List-Unsubscribe` header when reply-to is present. Live check confirms `unsubscribe_requests` exists. |
 | Run local checks after hardening | Partially done 2026-05-21 | `git diff --check` passed; conflict-marker scan is clean; code stale-reference scan no longer finds the old broad-drain UI/API paths; TypeScript `transpileModule` checks passed for touched TS/TSX files; direct `vitest run` passed 7 tests. Full `tsc --noEmit` runs but fails on the known stale Supabase generated types (`never` table rows across existing files), so regenerate `src/supabase/types.ts` before treating full typecheck as a release gate. `npm` is still not on PATH in this desktop shell; re-run `npm run lint`, `npm test`, and `npm run build` in a normal Node/npm shell before deploy. |
 
 Suggested verification commands once Node/npm are available:
@@ -87,8 +90,8 @@ curl -fsS https://knotable-props-mailer.vercel.app/api/health | jq '{ok, critica
 
 A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, queue them, send via Amazon SES (SMTP), manage mailing lists, and track analytics. There is no Cron automation — sends are initiated manually, then drained by keeping `/email/monitor` open in a browser tab.
 
-**Owner:** Amol (a@sarva.co)  
-**Repo:** GitHub → Vercel auto-deploy  
+**Owner:** Amol (a@sarva.co)
+**Repo:** GitHub → Vercel auto-deploy
 **Deployed at:** https://knotable-props-mailer.vercel.app (confirmed live; `props.knote.com` still points at the old Meteor app)
 
 ---
@@ -234,9 +237,11 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 
 - Passwordless magic-link via Supabase Auth (email OTP)
 - Login page at `(auth)/login/`; token handler at `/loginWithToken`
+- Signup page at `(auth)/signup/`; new accounts get a `profiles` row with `role = user` and `can_send = false`
 - Server components use `supabaseServer.ts` (cookie-based SSR client)
 - Edge middleware uses `authAccessEdge.ts`
-- All users are effectively admins (single role for now)
+- `a@sarva.co` is the owner admin and is forced to `role = admin`, `can_send = true`
+- Mail and list records are shared across authenticated users for drafting/review; server actions enforce `can_send` before queueing, test sends, release, requeue, or worker runs
 
 ---
 
@@ -284,6 +289,7 @@ See `.env.example` for full list.
 - **Supabase clients**: Use `supabaseAdmin` (service role) for server actions and queue worker. Use `supabaseServer` for SSR components that need user context. Never import `supabaseAdmin` in client components.
 - **Server actions** live in `actions.ts` co-located with their page directory.
 - **Zod** is used for all API input validation.
+- **Never send through Gmail**: Do not use Gmail, Gmail drafts, or the Gmail connector for any outbound project/campaign/list/newsletter/test/resend email. Use Props Mailer / SES flows only.
 - **No Cron**: Do not add Vercel Cron entries — queue draining is handled by the monitor page (`/email/monitor`), which fires the worker every 31s while open. `vercel.json` intentionally stays `{}`.
 - **Rate limiting**: Use `checkRateLimit(key, max, windowMs)` (async, DB-backed via `error_logs` sentinel rows) for any endpoint that needs cross-instance protection. Use `checkRateLimitSync` only where async is impossible (currently: login server action). The DB version writes rows with `source = 'rate_limit:<key>'` and `message = 'hit'` — don't mistake these for real errors when reading `error_logs`.
 - **Monitor page auth**: `/api/email/send-monitor` uses the same `CRON_SECRET` bearer token as `/api/email/queue`. The server component at `/email/monitor/page.tsx` passes `process.env.CRON_SECRET` to the client component so the browser can authenticate its polling calls. `CRON_SECRET` must be set in Vercel env vars or the monitor page will show a warning and refuse to fire.
