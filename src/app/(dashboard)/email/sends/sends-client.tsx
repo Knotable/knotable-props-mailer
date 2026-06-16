@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useTransition, useRef } from "react";
+import Link from "next/link";
+import { useState, useTransition } from "react";
 import { requeueDeadAction } from "../actions";
 import { ProgressStatus } from "@/components/progress-status";
 
@@ -9,11 +10,20 @@ type SendItem = {
   subject: string;
   from_address: string;
   status: string;
-  sent: number;
-  failed: number;
-  pending: number;
+  sent: number | null;
+  failed: number | null;
+  pending: number | null;
+  canceled: number | null;
   first_sent: string | null;
-  lists: { id: string; name: string; address: string; memberEmails?: string[] }[];
+  last_queued_at: string | null;
+  lists: {
+    id: string;
+    name: string;
+    address: string;
+    updated_at: string | null;
+    memberCount: number;
+    memberEmails: string[];
+  }[];
   created_at: string | null;
 };
 
@@ -25,6 +35,7 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
   const [sourceContent, setSourceContent] = useState<Record<string, string>>({});
   const [loadingSource, setLoadingSource] = useState<Record<string, boolean>>({});
   const [loadingPreview, setLoadingPreview] = useState<Record<string, boolean>>({});
+  const [openList, setOpenList] = useState<string | null>(null);
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => (prev === id ? null : id));
@@ -63,66 +74,138 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
       {sends.map((send) => {
         const isOpen = expanded === send.email_id;
         const mode = previewMode[send.email_id] ?? null;
-        const total = send.sent + send.failed + send.pending;
+        const knownCounts =
+          send.sent !== null &&
+          send.failed !== null &&
+          send.pending !== null &&
+          send.canceled !== null;
+        const total = knownCounts
+          ? (send.sent ?? 0) +
+            (send.failed ?? 0) +
+            (send.pending ?? 0) +
+            (send.canceled ?? 0)
+          : null;
 
         return (
           <div
             key={send.email_id}
-            className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden"
+            className="rounded-xl border border-slate-200 bg-white shadow-sm"
           >
             {/* ── Row header ── */}
-            <button
-              onClick={() => toggleExpand(send.email_id)}
-              className="w-full text-left px-5 py-4 flex items-start gap-4 hover:bg-slate-50 transition-colors"
-            >
-              <span className="mt-0.5 text-slate-400 shrink-0">
-                {isOpen ? "▾" : "▸"}
-              </span>
+            <div className="flex flex-col gap-4 px-5 py-4 transition-colors hover:bg-slate-50 lg:flex-row lg:items-start">
+              <a
+                href={`/api/email/preview/${send.email_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block h-28 w-full shrink-0 overflow-hidden rounded-md border border-slate-200 bg-white shadow-inner focus:outline-none focus:ring-2 focus:ring-slate-400 sm:w-40"
+                aria-label={`Open preview for ${send.subject}`}
+              >
+                <iframe
+                  src={`/api/email/preview/${send.email_id}`}
+                  loading="lazy"
+                  className="pointer-events-none origin-top-left scale-[0.24] border-0"
+                  style={{ width: "667px", height: "467px" }}
+                  title={`Thumbnail: ${send.subject}`}
+                  sandbox="allow-same-origin"
+                />
+              </a>
 
-              <div className="flex-1 min-w-0">
-                <p className="font-semibold text-slate-800 truncate">{send.subject}</p>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  From: {send.from_address}
-                  {send.first_sent && (
-                    <> · Sent {formatDate(send.first_sent)}</>
-                  )}
-                </p>
-                {send.lists.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {send.lists.map((l) => (
-                      <RecipientTooltip
-                        key={l.id}
-                        name={l.name}
-                        memberEmails={l.memberEmails}
-                      />
-                    ))}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start gap-2">
+                  <button
+                    onClick={() => toggleExpand(send.email_id)}
+                    className="mt-0.5 shrink-0 rounded p-1 text-slate-400 transition-colors hover:bg-slate-200 hover:text-slate-700"
+                    aria-expanded={isOpen}
+                    aria-label={isOpen ? "Collapse send details" : "Expand send details"}
+                  >
+                    {isOpen ? "▾" : "▸"}
+                  </button>
+                  <div className="min-w-0">
+                    <button
+                      onClick={() => toggleExpand(send.email_id)}
+                      className="block max-w-full truncate text-left font-semibold text-slate-800 hover:text-blue-700 hover:underline"
+                    >
+                      {send.subject}
+                    </button>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      From: {send.from_address || "unknown sender"}
+                      {send.first_sent && <> · Sent {formatDate(send.first_sent)}</>}
+                      {!send.first_sent && send.last_queued_at && (
+                        <> · Queued {formatDate(send.last_queued_at)}</>
+                      )}
+                    </p>
                   </div>
-                )}
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <a
+                    href={`/api/email/preview/${send.email_id}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:border-blue-300 hover:text-blue-700"
+                  >
+                    Open preview
+                  </a>
+                  <button
+                    onClick={() => {
+                      setExpanded(send.email_id);
+                      void setMode(send.email_id, "html");
+                    }}
+                    className="rounded-md border border-slate-300 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  >
+                    Inline preview
+                  </button>
+                  {send.lists.length === 0 && (
+                    <span className="text-xs text-slate-400">No list recorded</span>
+                  )}
+                  {send.lists.map((list) => (
+                    <ListDetailsPopover
+                      key={list.id}
+                      list={list}
+                      open={openList === `${send.email_id}:${list.id}`}
+                      onToggle={() =>
+                        setOpenList((prev) =>
+                          prev === `${send.email_id}:${list.id}`
+                            ? null
+                            : `${send.email_id}:${list.id}`,
+                        )
+                      }
+                    />
+                  ))}
+                </div>
               </div>
 
               <div className="shrink-0 text-right">
                 <div className="flex gap-3 text-xs">
                   <span className="text-green-700 font-medium">
-                    {send.sent.toLocaleString()} sent
+                    {formatCount(send.sent)} sent
                   </span>
-                  {send.failed > 0 && (
+                  {send.failed !== null && send.failed > 0 && (
                     <span className="text-red-600 font-medium">
                       {send.failed.toLocaleString()} failed
                     </span>
                   )}
-                  {send.pending > 0 && (
+                  {send.pending !== null && send.pending > 0 && (
                     <span className="text-amber-600 font-medium">
                       {send.pending.toLocaleString()} pending
                     </span>
                   )}
+                  {send.canceled !== null && send.canceled > 0 && (
+                    <span className="text-slate-500 font-medium">
+                      {send.canceled.toLocaleString()} canceled
+                    </span>
+                  )}
                 </div>
-                {total > 0 && (
+                {total !== null && total > 0 && (
                   <p className="text-xs text-slate-400 mt-0.5">
                     {total.toLocaleString()} total recipients
                   </p>
                 )}
+                {!knownCounts && (
+                  <p className="text-xs text-amber-600 mt-0.5">Queue counts unavailable</p>
+                )}
               </div>
-            </button>
+            </div>
 
             {/* ── Expanded panel ── */}
             {isOpen && (
@@ -197,14 +280,15 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                   <span>ID: <code className="font-mono text-slate-700">{send.email_id}</code></span>
                   <span>Status: <code className="font-mono text-slate-700">{send.status}</code></span>
                   {send.first_sent && <span>First sent: {send.first_sent}</span>}
-                  {send.lists.length > 0 && (
-                    <span>
-                      Lists: {send.lists.map((l) => `${l.name} (${l.address})`).join(", ")}
-                    </span>
-                  )}
+                  <span>
+                    Lists:{" "}
+                    {send.lists.length
+                      ? send.lists.map((l) => `${l.name} (${l.address})`).join(", ")
+                      : "none recorded"}
+                  </span>
 
                   {/* Requeue dead rows button — only shown when there are failures */}
-                  {send.failed > 0 && (
+                  {send.failed !== null && send.failed > 0 && (
                     <span className="ml-auto">
                       <RequeueDeadButton emailId={send.email_id} failedCount={send.failed} />
                     </span>
@@ -301,36 +385,74 @@ function formatDate(dateStr: string): string {
   }
 }
 
-function RecipientTooltip({
-  name,
-  memberEmails,
-}: {
-  name: string;
-  memberEmails?: string[];
-}) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLSpanElement>(null);
+function formatCount(value: number | null): string {
+  return value === null ? "..." : value.toLocaleString();
+}
 
+function ListDetailsPopover({
+  list,
+  open,
+  onToggle,
+}: {
+  list: SendItem["lists"][number];
+  open: boolean;
+  onToggle: () => void;
+}) {
   return (
-    <span
-      ref={ref}
-      className="relative inline-block"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-    >
-      <span className="inline-block text-xs bg-slate-100 text-slate-600 rounded px-2 py-0.5 cursor-default hover:bg-slate-200 transition-colors">
-        {name}
-      </span>
-      {open && memberEmails && memberEmails.length > 0 && (
-        <span className="absolute z-50 left-0 top-full mt-1 w-72 max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-xl p-3 text-left flex flex-col gap-0.5">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 mb-1">
-            Sample recipients
-          </span>
-          {memberEmails.map((email) => (
-            <span key={email} className="text-xs text-slate-700 truncate">
-              {email}
+    <span className="relative inline-block">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
+        aria-expanded={open}
+      >
+        {list.name}
+        <span className="text-slate-400">{list.memberCount.toLocaleString()}</span>
+      </button>
+      {open && (
+        <span className="absolute left-0 top-full z-50 mt-1 block w-80 rounded-lg border border-slate-200 bg-white p-3 text-left shadow-xl">
+          <span className="block min-w-0">
+            <span className="block truncate text-sm font-semibold text-slate-900">
+              {list.name}
             </span>
-          ))}
+            <span className="block truncate text-xs text-slate-500">{list.address}</span>
+          </span>
+          <span className="mt-3 grid grid-cols-2 gap-2 text-xs">
+            <span className="rounded-md bg-slate-50 p-2">
+              <span className="block text-slate-400">Active size</span>
+              <span className="font-semibold text-slate-800">
+                {list.memberCount.toLocaleString()}
+              </span>
+            </span>
+            <span className="rounded-md bg-slate-50 p-2">
+              <span className="block text-slate-400">Last updated</span>
+              <span className="font-semibold text-slate-800">
+                {list.updated_at ? formatDate(list.updated_at) : "Unknown"}
+              </span>
+            </span>
+          </span>
+          <span className="mt-3 block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Sample recipients
+            </span>
+            {list.memberEmails.length > 0 ? (
+              <span className="block max-h-36 overflow-y-auto">
+                {list.memberEmails.map((email) => (
+                  <span key={email} className="block truncate text-xs text-slate-700">
+                    {email}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span className="text-xs text-slate-400">No active recipients found.</span>
+            )}
+          </span>
+          <Link
+            href={`/lists/${list.id}`}
+            className="mt-3 inline-flex rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:border-blue-300 hover:text-blue-700"
+          >
+            Open list
+          </Link>
         </span>
       )}
     </span>
