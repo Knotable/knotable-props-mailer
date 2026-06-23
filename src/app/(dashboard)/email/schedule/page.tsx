@@ -171,6 +171,12 @@ export default async function SchedulePage() {
                       Edit
                     </Link>
                   )}
+                  <Link
+                    href={`/email/composer?cloneId=${item.id}`}
+                    className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Make new
+                  </Link>
                   <ScheduleActions
                     id={item.id}
                     subject={item.subject ?? ""}

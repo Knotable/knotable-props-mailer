@@ -255,6 +255,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
           ok: true,
           message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
         });
+        router.push("/email/sends");
       }
       router.push("/email/schedule");
     } catch (err) {
