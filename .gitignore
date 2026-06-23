@@ -16,6 +16,12 @@ env.keys
 private/
 *.private.*
 
+# Mailing-list / bounce / contact CSV-TXT exports at the repo root.
+# These contain real subscriber PII — keep them in private/ (already
+# ignored above), never commit them. See import_contacts.py / import_list.mjs.
+/*.csv
+/*.txt
+
 # Build artifacts
 supabase/.schema-hash
 .vercel/
