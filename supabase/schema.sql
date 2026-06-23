@@ -61,6 +61,7 @@ create table if not exists public.error_logs (
 );
 
 create index if not exists error_logs_correlation_idx on public.error_logs(correlation_id);
+create index if not exists error_logs_source_created_idx on public.error_logs(source, created_at desc);
 
 create table if not exists public.audit_logs (
   id uuid primary key default gen_random_uuid(),
@@ -102,6 +103,20 @@ create index if not exists mail_queue_campaign_label_idx on public.mail_queue(ca
 create index if not exists mail_queue_list_id_idx on public.mail_queue(list_id);
 create index if not exists mail_queue_ses_message_id_idx on public.mail_queue(ses_message_id);
 create unique index if not exists mail_queue_dedupe_hash_unique_idx on public.mail_queue(dedupe_hash);
+create index if not exists mail_queue_email_status_available_idx
+  on public.mail_queue (email_id, status, available_at)
+  where email_id is not null;
+create index if not exists mail_queue_email_updated_idx
+  on public.mail_queue (email_id, updated_at desc)
+  where email_id is not null;
+create index if not exists mail_queue_email_created_idx
+  on public.mail_queue (email_id, created_at desc)
+  where email_id is not null;
+create index if not exists mail_queue_email_status_send_date_idx
+  on public.mail_queue (email_id, status, send_date)
+  where email_id is not null;
+create index if not exists mail_queue_status_updated_idx
+  on public.mail_queue (status, updated_at desc);
 
 create table if not exists public.queue_metrics (
   id uuid primary key default gen_random_uuid(),
@@ -169,6 +184,32 @@ create table if not exists public.list_members (
 
 create index if not exists list_members_list_idx on public.list_members(list_id);
 create unique index if not exists list_members_list_email_idx on public.list_members(list_id, email);
+create index if not exists list_members_email_status_idx on public.list_members(email, status);
+
+create table if not exists public.unsubscribe_requests (
+  id uuid primary key default gen_random_uuid(),
+  email text not null,
+  source_email_id uuid references public.emails on delete set null,
+  list_id uuid references public.lists on delete set null,
+  request_type text not null default 'reply' check (request_type in ('reply','mailto','manual','complaint','bounce')),
+  status text not null default 'open' check (status in ('open','handled','ignored')),
+  raw_message_ref text,
+  notes text,
+  requested_at timestamptz default now(),
+  handled_at timestamptz,
+  handled_by uuid references auth.users on delete set null,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
+);
+
+create index if not exists unsubscribe_requests_email_status_idx
+  on public.unsubscribe_requests (lower(email), status, requested_at desc);
+create index if not exists unsubscribe_requests_source_email_idx
+  on public.unsubscribe_requests (source_email_id)
+  where source_email_id is not null;
+create index if not exists unsubscribe_requests_list_idx
+  on public.unsubscribe_requests (list_id)
+  where list_id is not null;
 
 create table if not exists public.app_settings (
   key text primary key,
@@ -189,6 +230,17 @@ create table if not exists public.provider_events (
   received_at timestamptz default now()
 );
 
+create index if not exists provider_events_message_event_idx
+  on public.provider_events (message_id, event_type)
+  where message_id is not null;
+create index if not exists provider_events_event_received_idx
+  on public.provider_events (event_type, received_at desc);
+create index if not exists provider_events_email_event_received_idx
+  on public.provider_events (email_id, event_type, received_at desc)
+  where email_id is not null;
+create index if not exists provider_events_received_at_idx
+  on public.provider_events (received_at desc);
+
 create or replace function public.claim_mail_queue_batch(
   p_limit integer,
   p_email_id uuid default null,
@@ -207,8 +259,10 @@ as $$
   with candidates as (
     select mq.id
     from public.mail_queue mq
+    join public.emails e on e.id = mq.email_id
     where mq.status = 'pending'
       and mq.available_at <= p_now
+      and e.status in ('queued', 'sending', 'sent')
       and (p_email_id is null or mq.email_id = p_email_id)
     order by mq.available_at asc, mq.created_at asc, mq.id asc
     for update skip locked
@@ -296,10 +350,16 @@ $$;
 create table if not exists public.profiles (
   id uuid references auth.users on delete cascade,
   email text not null,
-  role text not null default 'admin',
+  role text not null default 'user' check (role in ('admin', 'user')),
+  can_send boolean not null default false,
   created_at timestamptz default now(),
   primary key (id)
 );
+
+update public.profiles
+set role = 'admin',
+    can_send = true
+where lower(email) = 'a@sarva.co';
 
 -- Row-Level Security placeholders (enable manually in Supabase)
 alter table public.emails enable row level security;
@@ -317,69 +377,47 @@ alter table public.error_logs enable row level security;
 alter table public.admin_audit enable row level security;
 alter table public.files enable row level security;
 alter table public.app_settings enable row level security;
+alter table public.unsubscribe_requests enable row level security;
 
 drop policy if exists "emails: owner full access" on public.emails;
-create policy "emails: owner full access"
+drop policy if exists "emails: authenticated shared access" on public.emails;
+create policy "emails: authenticated shared access"
   on public.emails
   for all
-  using (auth.uid() = author_id)
-  with check (auth.uid() = author_id);
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
 
 drop policy if exists "email_recipients: owner full access" on public.email_recipients;
-create policy "email_recipients: owner full access"
+drop policy if exists "email_recipients: authenticated shared access" on public.email_recipients;
+create policy "email_recipients: authenticated shared access"
   on public.email_recipients
   for all
-  using (
-    exists (
-      select 1
-      from public.emails
-      where emails.id = email_recipients.email_id
-        and emails.author_id = auth.uid()
-    )
-  )
-  with check (
-    exists (
-      select 1
-      from public.emails
-      where emails.id = email_recipients.email_id
-        and emails.author_id = auth.uid()
-    )
-  );
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
 
 drop policy if exists "draft_snapshots: owner full access" on public.draft_snapshots;
-create policy "draft_snapshots: owner full access"
+drop policy if exists "draft_snapshots: authenticated shared access" on public.draft_snapshots;
+create policy "draft_snapshots: authenticated shared access"
   on public.draft_snapshots
   for all
-  using (auth.uid() = author_id)
-  with check (auth.uid() = author_id);
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
 
 drop policy if exists "lists: owner full access" on public.lists;
-create policy "lists: owner full access"
+drop policy if exists "lists: authenticated shared access" on public.lists;
+create policy "lists: authenticated shared access"
   on public.lists
   for all
-  using (auth.uid() = owner_id)
-  with check (auth.uid() = owner_id);
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
 
 drop policy if exists "list_members: owner full access" on public.list_members;
-create policy "list_members: owner full access"
+drop policy if exists "list_members: authenticated shared access" on public.list_members;
+create policy "list_members: authenticated shared access"
   on public.list_members
   for all
-  using (
-    exists (
-      select 1
-      from public.lists
-      where lists.id = list_members.list_id
-        and lists.owner_id = auth.uid()
-    )
-  )
-  with check (
-    exists (
-      select 1
-      from public.lists
-      where lists.id = list_members.list_id
-        and lists.owner_id = auth.uid()
-    )
-  );
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');
 
 drop policy if exists "profiles: own row" on public.profiles;
 create policy "profiles: own row"
@@ -393,3 +431,10 @@ create policy "feature_flags: authenticated read"
   on public.feature_flags
   for select
   using (auth.role() = 'authenticated');
+
+drop policy if exists "unsubscribe_requests: authenticated full access" on public.unsubscribe_requests;
+create policy "unsubscribe_requests: authenticated full access"
+  on public.unsubscribe_requests
+  for all
+  using (auth.role() = 'authenticated')
+  with check (auth.role() = 'authenticated');

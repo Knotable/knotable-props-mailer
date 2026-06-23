@@ -4,8 +4,9 @@ import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import {
-  ALLOWED_EMAIL,
   clearBypassSessionCookie,
+  ensureUserProfile,
+  ALLOWED_EMAIL,
   setBypassSessionCookie,
   verifyBypassPassword,
 } from "@/lib/authAccess";
@@ -64,17 +65,6 @@ export async function sendLoginCode(formData: FormData) {
     redirect(`/login?trace=${encodeURIComponent(correlationId)}&error=missing-email`);
   }
 
-  if (email !== ALLOWED_EMAIL) {
-    await logAuthTrace(correlationId, "Login code requested for unauthorized email", {
-      email,
-      ip,
-      userAgent,
-    });
-    redirect(
-      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=unauthorized`,
-    );
-  }
-
   await logAuthTrace(correlationId, "Login code request started", { email, ip, userAgent });
   const supabase = await createServerSupabaseClient();
   const { error } = await supabase.auth.signInWithOtp({
@@ -110,13 +100,82 @@ export async function sendLoginCode(formData: FormData) {
       );
     }
 
+    const errorCode = /signups not allowed|user not found|not found/i.test(error.message ?? "")
+      ? "account-not-found"
+      : "send-code";
     redirect(
-      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=send-code`,
+      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=${errorCode}`,
     );
   }
 
   await logAuthTrace(correlationId, "Login code sent", { email, ip, userAgent });
   redirect(`/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&sent=1`);
+}
+
+export async function sendSignupCode(formData: FormData) {
+  const correlationId = randomUUID();
+  const { ip, userAgent } = await getRequestMeta();
+  const { allowed, retryAfterMs } = checkRateLimit(`signup-code:${ip}`, 6, 5 * 60 * 1000);
+  const email = normalizeEmail(formData.get("email"));
+
+  if (!allowed) {
+    await logAuthTrace(correlationId, "Signup code request rate-limited", {
+      email,
+      ip,
+      userAgent,
+      retryAfterMs,
+    });
+    redirect(
+      `/signup?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=${encodeURIComponent(
+        `rate:${Math.ceil(retryAfterMs / 1000)}`,
+      )}`,
+    );
+  }
+
+  if (!email) {
+    await logAuthTrace(correlationId, "Signup code request missing email", { ip, userAgent });
+    redirect(`/signup?trace=${encodeURIComponent(correlationId)}&error=missing-email`);
+  }
+
+  await logAuthTrace(correlationId, "Signup code request started", { email, ip, userAgent });
+  const supabase = await createServerSupabaseClient();
+  const { error } = await supabase.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: true,
+    },
+  });
+
+  if (error) {
+    const retrySecondsMatch = error.message?.match(/after\s+(\d+)\s+second/i);
+    const retrySeconds = retrySecondsMatch ? parseInt(retrySecondsMatch[1], 10) : null;
+    const isRateLimit = error.status === 429 || retrySeconds !== null;
+
+    await logAuthTrace(correlationId, "Signup code send failed", {
+      email,
+      ip,
+      userAgent,
+      errorCode: error.status,
+      errorMessage: error.message,
+      isRateLimit,
+      retrySeconds,
+    });
+
+    if (isRateLimit) {
+      redirect(
+        `/signup?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=${encodeURIComponent(
+          `rate:${retrySeconds ?? 60}`,
+        )}`,
+      );
+    }
+
+    redirect(
+      `/signup?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=send-code`,
+    );
+  }
+
+  await logAuthTrace(correlationId, "Signup code sent", { email, ip, userAgent });
+  redirect(`/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&sent=1&signup=1`);
 }
 
 export async function verifyLoginCode(formData: FormData) {
@@ -137,17 +196,6 @@ export async function verifyLoginCode(formData: FormData) {
     );
   }
 
-  if (email !== ALLOWED_EMAIL) {
-    await logAuthTrace(correlationId, "Login code verify unauthorized email", {
-      email,
-      ip,
-      userAgent,
-    });
-    redirect(
-      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=unauthorized`,
-    );
-  }
-
   await logAuthTrace(correlationId, "Login code verify started", {
     email,
     ip,
@@ -155,7 +203,7 @@ export async function verifyLoginCode(formData: FormData) {
     tokenLength: token.length,
   });
   const supabase = await createServerSupabaseClient();
-  const { error } = await supabase.auth.verifyOtp({
+  const { data, error } = await supabase.auth.verifyOtp({
     email,
     token,
     type: "email",
@@ -172,6 +220,11 @@ export async function verifyLoginCode(formData: FormData) {
     redirect(
       `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&sent=1&error=invalid-code`,
     );
+  }
+
+  const verifiedUser = data.user ?? (await supabase.auth.getUser()).data.user;
+  if (verifiedUser?.id && verifiedUser.email) {
+    await ensureUserProfile(verifiedUser.id, verifiedUser.email);
   }
 
   await logAuthTrace(correlationId, "Login code verify succeeded", { email, ip, userAgent });

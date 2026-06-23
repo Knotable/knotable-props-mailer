@@ -13,6 +13,7 @@ type List = { id: string; name: string; address: string };
 type Draft = {
   id: string;
   from_address: string;
+  reply_to: string | null;
   subject: string;
   html: string;
   scheduled_at: string | null;
@@ -22,12 +23,18 @@ type Draft = {
   list_id: string | null;
 };
 
-type Props = { draft: Draft | null; lists: List[]; templateMode?: boolean };
+type Props = {
+  draft: Draft | null;
+  lists: List[];
+  templateMode?: boolean;
+  userEmail: string;
+  canSend: boolean;
+};
 
 type AutosaveState = "idle" | "pending" | "saving" | "saved" | "error";
 type WarningGroup = QueueCampaignConfirm["warningGroups"][number];
 
-export function ComposerForm({ draft, lists, templateMode = false }: Props) {
+export function ComposerForm({ draft, lists, templateMode = false, userEmail, canSend }: Props) {
   const router = useRouter();
   const initialList = draft?.list_id
     ? (lists.find((l) => l.id === draft.list_id) ?? null)
@@ -138,16 +145,19 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
 
   const handleSendTest = async () => {
     if (!formRef.current) return;
+    if (!canSend) {
+      setBanner({ ok: false, message: "An admin has not enabled sending for this account." });
+      return;
+    }
     cancelAutosave();
     setSendingTest(true);
     setBanner(null);
     setActionStatus("Sending a test email through SES...");
     try {
       const fd = new FormData(formRef.current);
-      // Override recipients with the logged-in user's address.
-      fd.set("recipients", "a@sarva.co");
+      fd.set("recipients", userEmail);
       const res = await sendTestAction(fd);
-      setBanner({ ok: true, message: `Test sent to a@sarva.co (${res.sent} email${res.sent !== 1 ? "s" : ""}).` });
+      setBanner({ ok: true, message: `Test sent to ${userEmail} (${res.sent} email${res.sent !== 1 ? "s" : ""}).` });
     } catch (err) {
       setBanner({ ok: false, message: getActionErrorMessage(err, "Test send failed.") });
     } finally {
@@ -258,6 +268,10 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
   // ── Queue / Send ───────────────────────────────────────────────────────────
   const handleSend = async () => {
     if (!formRef.current) return;
+    if (!canSend) {
+      setBanner({ ok: false, message: "An admin has not enabled sending for this account." });
+      return;
+    }
     cancelAutosave();
     setBanner(null);
     setDupWarning(null);
@@ -342,7 +356,16 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
             <input
               name="from"
               required
-              defaultValue={draft?.from_address ?? "Amol Sarva <a@sarva.co>"}
+              defaultValue={draft?.from_address ?? "Amol Sarva <amol@lifex.vc>"}
+              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="block text-sm font-medium text-slate-700">
+            Reply-To
+            <input
+              name="replyTo"
+              type="email"
+              defaultValue={draft?.reply_to ?? "amol@lifex.vc"}
               className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
             />
           </label>
@@ -489,6 +512,12 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
           />
         )}
 
+        {!canSend && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Sending is disabled for this account. You can still draft, edit, preview, and save shared mail.
+          </div>
+        )}
+
         {/* Duplicate-send confirmation */}
         {dupWarning && (
           <div className="rounded-md border border-amber-300 bg-amber-50 px-4 py-4 text-sm space-y-3">
@@ -576,7 +605,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
               >
                 Cancel
               </button>
-              {canQueueWithoutDuplicates && (
+              {canSend && canQueueWithoutDuplicates && (
                 <button
                   type="button"
                   onClick={handleSendWithoutDuplicates}
@@ -589,7 +618,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
               <button
                 type="button"
                 onClick={handleSendAnyway}
-                disabled={sending}
+                disabled={sending || !canSend}
                 className="rounded-md bg-amber-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
               >
                 {sending ? "Queueing…" : "Send anyway"}
@@ -619,7 +648,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
           <button
             type="button"
             onClick={handleSendTest}
-            disabled={sendingTest}
+            disabled={sendingTest || !canSend}
             className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             {sendingTest ? "Sending test…" : "Send Test"}
@@ -628,7 +657,7 @@ export function ComposerForm({ draft, lists, templateMode = false }: Props) {
           <button
             type="button"
             onClick={handleSend}
-            disabled={sending}
+            disabled={sending || !canSend}
             className="rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
           >
             {sending ? (selectedList ? "Queueing…" : "Sending…") : selectedList ? "Queue" : "Send"}

@@ -51,7 +51,7 @@ type WorkerResult = {
 type Props = {
   emailId?: string;
   autoStart?: boolean;
-  monitorSecret: string;
+  canRunWorker: boolean;
 };
 
 const POLL_MS = 31_000;
@@ -81,10 +81,10 @@ function formatError(error: unknown, fallback: string) {
   }
 }
 
-export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Props) {
+export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Props) {
   const scopedEmailId = emailId && UUID_RE.test(emailId) ? emailId : undefined;
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
-  const [autoRun, setAutoRun] = useState(autoStart && Boolean(scopedEmailId && monitorSecret));
+  const [autoRun, setAutoRun] = useState(autoStart && Boolean(scopedEmailId && canRunWorker));
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runState, setRunState] = useState<"idle" | "running">("idle");
@@ -94,11 +94,6 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   const [pending, startTransition] = useTransition();
   const [recipientLog, setRecipientLog] = useState<RecipientLogRow[]>([]);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const authHeaders = useCallback(() => {
-    if (!monitorSecret) throw new Error("Monitor secret is missing. Set CRON_SECRET in Vercel.");
-    return { Authorization: `Bearer ${monitorSecret}` };
-  }, [monitorSecret]);
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
@@ -111,7 +106,6 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
 
     const response = await fetch(`/api/email/send-monitor?${params.toString()}`, {
       method: "GET",
-      headers: authHeaders(),
       cache: "no-store",
     });
     const next = await readJson<QueueSnapshot>(response);
@@ -119,23 +113,25 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     setSnapshot(next);
     setProgressMessage("Queue snapshot loaded.");
     return next;
-  }, [authHeaders, scopedEmailId]);
+  }, [scopedEmailId]);
 
   const runOnce = useCallback(async () => {
-    if (!scopedEmailId) throw new Error("Worker controls require a specific emailId.");
     setError(null);
     setRunState("running");
     setLastRequestAt(new Date().toISOString());
-    setProgressMessage("Calling the scoped queue worker. This can take up to one Vercel function window.");
+    setProgressMessage(
+      scopedEmailId
+        ? "Calling the scoped queue worker. This can take up to one Vercel function window."
+        : "Calling the global queue worker for eligible queued/sending/sent campaigns.",
+    );
 
     try {
       const response = await fetch("/api/email/send-monitor", {
         method: "POST",
         headers: {
-          ...authHeaders(),
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ emailId: scopedEmailId }),
+        body: JSON.stringify(scopedEmailId ? { emailId: scopedEmailId } : {}),
       });
       const result = await readJson<WorkerResult>(response);
       setLastResponseAt(new Date().toISOString());
@@ -151,7 +147,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     } finally {
       setRunState("idle");
     }
-  }, [authHeaders, scopedEmailId, refresh]);
+  }, [scopedEmailId, refresh]);
 
   useEffect(() => {
     startTransition(async () => {
@@ -164,7 +160,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   }, [refresh]);
 
   useEffect(() => {
-    if (!autoRun || !scopedEmailId) return;
+    if (!autoRun) return;
 
     const tick = () => {
       startTransition(async () => {
@@ -187,7 +183,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [autoRun, scopedEmailId, runOnce]);
+  }, [autoRun, runOnce]);
 
   const total = snapshot?.total ?? 0;
   const done = snapshot?.resolved ?? 0;
@@ -195,7 +191,6 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
   const terminalFailures = snapshot?.terminalFailures ?? 0;
   const isCampaignScoped = Boolean(snapshot?.emailId);
   const isWorking = pending || runState === "running";
-  const canRunWorker = Boolean(scopedEmailId && monitorSecret);
   const terminalFailuresText = terminalFailures.toLocaleString();
   const statusTone =
     snapshot?.isDrained && terminalFailures === 0
@@ -231,7 +226,7 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
             disabled={isWorking || !canRunWorker}
             className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
-            {isWorking ? "Running scoped worker..." : "Run once"}
+            {isWorking ? (scopedEmailId ? "Running scoped worker..." : "Running global worker...") : "Run once"}
           </button>
           <button
             type="button"
@@ -250,14 +245,14 @@ export function MonitorClient({ emailId, autoStart = false, monitorSecret }: Pro
         </div>
       </header>
 
-      {!monitorSecret && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          Monitor secret is missing. Set CRON_SECRET before starting the worker.
+      {!canRunWorker && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          This account can view queue status, but an admin has not enabled sending.
         </div>
       )}
       {!scopedEmailId && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          This is a read-only global queue snapshot. Worker controls require a specific emailId in the URL.
+          Global drain is enabled for due rows whose parent email is queued, sending, or sent. Draft emails are skipped.
         </div>
       )}
       {error && (
