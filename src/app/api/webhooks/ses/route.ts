@@ -160,59 +160,6 @@ async function logWebhookFailure(message: string, payload: Record<string, unknow
   }
 }
 
-function expectedSnsTopicArn(): string | null {
-  return process.env.AWS_SES_SNS_TOPIC_ARN?.trim() || null;
-}
-
-function isExpectedTopic(body: Record<string, unknown>): boolean {
-  const expected = expectedSnsTopicArn();
-  if (!expected) return true;
-  return body["TopicArn"] === expected;
-}
-
-function toStringArray(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
-    : [];
-}
-
-function extractRecipient(sesEventType: string, sesEvent: Record<string, unknown>): string | null {
-  const mail = sesEvent["mail"] as Record<string, unknown> | undefined;
-  const destination = toStringArray(mail?.["destination"]);
-
-  if (sesEventType === "Delivery") {
-    const delivery = sesEvent["delivery"] as Record<string, unknown> | undefined;
-    return toStringArray(delivery?.["recipients"])[0] ?? destination[0] ?? null;
-  }
-
-  if (sesEventType === "Bounce") {
-    const bounce = sesEvent["bounce"] as Record<string, unknown> | undefined;
-    const recipients = bounce?.["bouncedRecipients"] as Array<Record<string, unknown>> | undefined;
-    return (recipients?.[0]?.["emailAddress"] as string | undefined) ?? destination[0] ?? null;
-  }
-
-  if (sesEventType === "Complaint") {
-    const complaint = sesEvent["complaint"] as Record<string, unknown> | undefined;
-    const recipients = complaint?.["complainedRecipients"] as Array<Record<string, unknown>> | undefined;
-    return (recipients?.[0]?.["emailAddress"] as string | undefined) ?? destination[0] ?? null;
-  }
-
-  const commonHeaders = mail?.["commonHeaders"] as Record<string, unknown> | undefined;
-  return toStringArray(commonHeaders?.["to"])[0] ?? destination[0] ?? null;
-}
-
-async function logWebhookFailure(message: string, payload: Record<string, unknown>) {
-  try {
-    await logError({
-      source: "ses-webhook",
-      message,
-      payload,
-    });
-  } catch (err) {
-    console.warn("[ses-webhook] failed to write error log", err);
-  }
-}
-
 const SES_EVENT_MAP: Record<string, string> = {
   Send: "sent",
   Delivery: "delivered",
