@@ -287,7 +287,12 @@ export type QueueCampaignConfirm = {
   }[];
   listName?: string;
 };
-export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm;
+export type QueueCampaignError = {
+  ok: false;
+  requiresConfirmation: false;
+  error: string;
+};
+export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm | QueueCampaignError;
 
 const normalizeEmailAddress = (value: string | null | undefined) =>
   value?.trim().toLowerCase() ?? "";
@@ -702,96 +707,106 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     hasMore,
   };
   } catch (err) {
-    throw new Error(toActionErrorMessage(err, "Unable to queue this campaign. Please verify the list and try again."));
+    return {
+      ok: false,
+      requiresConfirmation: false,
+      error: toActionErrorMessage(err, "Unable to queue this campaign. Please verify the list and try again."),
+    };
   }
 }
 
-export async function sendTestAction(formData: FormData) {
+export async function sendTestAction(formData: FormData): Promise<{ sent: number; error?: string }> {
   const userId = await requireAuthUserId();
 
-  const parsed = SendTestSchema.safeParse({
-    id: formData.get("id") || null,
-    from: formData.get("from"),
-    subject: formData.get("subject"),
-    html: formData.get("html"),
-    recipients: formData.get("recipients"),
-    text: formData.get("text") || null,
-    tags: formData.get("tags") || null,
-    campaigns: formData.get("campaigns") || null,
-  });
-  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
+  try {
+    const parsed = SendTestSchema.safeParse({
+      id: formData.get("id") || null,
+      from: formData.get("from"),
+      subject: formData.get("subject"),
+      html: formData.get("html"),
+      recipients: formData.get("recipients"),
+      text: formData.get("text") || null,
+      tags: formData.get("tags") || null,
+      campaigns: formData.get("campaigns") || null,
+    });
+    if (!parsed.success) return { sent: 0, error: parsed.error.issues[0]?.message ?? "Invalid input" };
 
-  const id = parsed.data.id ?? null;
-  const from = parsed.data.from;
-  const subject = parsed.data.subject;
-  const html = parsed.data.html;
-  const text = parsed.data.text ?? undefined;
-  const tags = parsed.data.tags?.split(",").map((t) => t.trim()).filter(Boolean);
-  const campaigns = parsed.data.campaigns?.split(",").map((c) => c.trim()).filter(Boolean);
+    const id = parsed.data.id ?? null;
+    const from = parsed.data.from;
+    const subject = parsed.data.subject;
+    const html = parsed.data.html;
+    const text = parsed.data.text ?? undefined;
+    const tags = parsed.data.tags?.split(",").map((t) => t.trim()).filter(Boolean);
+    const campaigns = parsed.data.campaigns?.split(",").map((c) => c.trim()).filter(Boolean);
 
-  const recipients = parseRecipients(parsed.data.recipients);
-  if (!recipients.length) throw new Error("Need at least one valid recipient email address");
+    const recipients = parseRecipients(parsed.data.recipients);
+    if (!recipients.length) return { sent: 0, error: "Need at least one valid recipient email address" };
 
-  // Send individually so recipients never see each other.
-  const results = await Promise.allSettled(
-    recipients.map(async (recipient) => {
-      const result = await sendEmail({ from, to: [recipient], subject, html, text, tags, campaigns, testMode: true });
-      return { recipient, sesMessageId: result.sesMessageId };
-    })
-  );
-
-  const succeeded = results.filter(
-    (r): r is PromiseFulfilledResult<{ recipient: string; sesMessageId: string | null }> =>
-      r.status === "fulfilled",
-  );
-  const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
-
-  // Log successful sends to mail_queue so they appear in Past Sends.
-  if (id && succeeded.length > 0) {
-    const supabase = getSupabaseAdmin();
-    const today = todayUTC();
-    const queueRows = succeeded.map(({ value }) => ({
-      email_id: id,
-      list_id: null as string | null,
-      payload: { from, to: value.recipient, subject } as Json,
-      status: "succeeded" as const,
-      available_at: new Date().toISOString(),
-      send_date: today,
-      ses_message_id: value.sesMessageId ?? null,
-      campaign_label: `test:${id}:${today}`,
-    }));
-    const { error: qErr } = await supabase.from("mail_queue").insert(queueRows);
-    if (qErr) console.error("[sendTestAction] mail_queue insert error", qErr);
-  }
-
-  // Check failures BEFORE updating email status — only mark sent when all succeed.
-  if (failed.length > 0) {
-    const firstMsg = failed[0].reason instanceof Error
-      ? failed[0].reason.message
-      : String(failed[0].reason);
-    throw new Error(
-      failed.length === recipients.length
-        ? `Send failed: ${firstMsg}`
-        : `${succeeded.length} sent, ${failed.length} failed — ${firstMsg}`,
+    // Send individually so recipients never see each other.
+    const results = await Promise.allSettled(
+      recipients.map(async (recipient) => {
+        const result = await sendEmail({ from, to: [recipient], subject, html, text, tags, campaigns, testMode: true });
+        return { recipient, sesMessageId: result.sesMessageId };
+      })
     );
+
+    const succeeded = results.filter(
+      (r): r is PromiseFulfilledResult<{ recipient: string; sesMessageId: string | null }> =>
+        r.status === "fulfilled",
+    );
+    const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+
+    // Log successful sends to mail_queue so they appear in Past Sends.
+    if (id && succeeded.length > 0) {
+      const supabase = getSupabaseAdmin();
+      const today = todayUTC();
+      const queueRows = succeeded.map(({ value }) => ({
+        email_id: id,
+        list_id: null as string | null,
+        payload: { from, to: value.recipient, subject } as Json,
+        status: "succeeded" as const,
+        available_at: new Date().toISOString(),
+        send_date: today,
+        ses_message_id: value.sesMessageId ?? null,
+        campaign_label: `test:${id}:${today}`,
+      }));
+      const { error: qErr } = await supabase.from("mail_queue").insert(queueRows);
+      if (qErr) console.error("[sendTestAction] mail_queue insert error", qErr);
+    }
+
+    // Check failures BEFORE updating email status — only mark sent when all succeed.
+    if (failed.length > 0) {
+      const firstMsg = failed[0].reason instanceof Error
+        ? failed[0].reason.message
+        : String(failed[0].reason);
+      return {
+        sent: succeeded.length,
+        error:
+          failed.length === recipients.length
+            ? `Send failed: ${firstMsg}`
+            : `${succeeded.length} sent, ${failed.length} failed — ${firstMsg}`,
+      };
+    }
+
+    // All succeeded — mark the draft as sent.
+    if (id) {
+      const supabase = getSupabaseAdmin();
+      await supabase.from("emails").update({ status: "sent" }).eq("id", id);
+      revalidatePath("/email/sends");
+
+      logAudit({
+        userId,
+        action: "email.test_sent",
+        entity: "emails",
+        entityId: id,
+        payload: { recipients, sent: succeeded.length },
+      }).catch(console.error);
+    }
+
+    return { sent: succeeded.length };
+  } catch (err) {
+    return { sent: 0, error: toActionErrorMessage(err, "Test send failed.") };
   }
-
-  // All succeeded — mark the draft as sent.
-  if (id) {
-    const supabase = getSupabaseAdmin();
-    await supabase.from("emails").update({ status: "sent" }).eq("id", id);
-    revalidatePath("/email/sends");
-
-    logAudit({
-      userId,
-      action: "email.test_sent",
-      entity: "emails",
-      entityId: id,
-      payload: { recipients, sent: succeeded.length },
-    }).catch(console.error);
-  }
-
-  return { sent: succeeded.length };
 }
 
 // ── Manually trigger the queue worker ───────────────────────────────────────
