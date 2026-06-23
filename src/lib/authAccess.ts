@@ -17,7 +17,17 @@ export type ServerAuthContext = {
   userId: string;
   email: string;
   isBypass: boolean;
+  role: "admin" | "user";
+  canSend: boolean;
+  canManageUsers: boolean;
 } | null;
+
+type ProfileAccess = {
+  userId: string;
+  email: string;
+  role: "admin" | "user";
+  canSend: boolean;
+};
 
 const sha256Hex = (value: string) => createHash("sha256").update(value, "utf8").digest("hex");
 
@@ -52,6 +62,119 @@ export const isValidBypassCookieValue = (rawValue: string | undefined) => {
 export const requestHasBypassAccess = (request: NextRequest) =>
   isValidBypassCookieValue(request.cookies.get(BYPASS_COOKIE_NAME)?.value);
 
+const normalizeEmail = (email: string | null | undefined) => String(email ?? "").trim().toLowerCase();
+
+const isOwnerEmail = (email: string | null | undefined) => normalizeEmail(email) === normalizeEmail(ALLOWED_EMAIL);
+
+const normalizeRole = (role: string | null | undefined): "admin" | "user" =>
+  role === "admin" ? "admin" : "user";
+
+async function selectProfileById(userId: string): Promise<ProfileAccess | null> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, email, role, can_send")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) {
+    // Keep auth usable during the deploy window before the can_send migration
+    // has been applied. Once the column exists this fallback is not used.
+    const { data: fallback, error: fallbackError } = await supabase
+      .from("profiles")
+      .select("id, email, role")
+      .eq("id", userId)
+      .maybeSingle();
+    if (fallbackError || !fallback?.id) return null;
+    return {
+      userId: fallback.id,
+      email: fallback.email,
+      role: normalizeRole(fallback.role),
+      canSend: isOwnerEmail(fallback.email),
+    };
+  }
+
+  if (!data?.id) return null;
+  const role = normalizeRole(data.role);
+  return {
+    userId: data.id,
+    email: data.email,
+    role,
+    canSend: isOwnerEmail(data.email) || Boolean((data as { can_send?: boolean | null }).can_send),
+  };
+}
+
+export async function ensureUserProfile(userId: string, email: string): Promise<ProfileAccess> {
+  const supabase = getSupabaseAdmin();
+  const normalizedEmail = normalizeEmail(email);
+  const owner = isOwnerEmail(normalizedEmail);
+  const existing = await selectProfileById(userId);
+
+  if (existing) {
+    if (owner && (existing.role !== "admin" || !existing.canSend || existing.email !== normalizedEmail)) {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ email: normalizedEmail, role: "admin", can_send: true })
+        .eq("id", userId);
+      if (error) {
+        await supabase
+          .from("profiles")
+          .update({ email: normalizedEmail, role: "admin" })
+          .eq("id", userId);
+      }
+      return {
+        userId,
+        email: normalizedEmail,
+        role: "admin",
+        canSend: true,
+      };
+    }
+
+    if (existing.email !== normalizedEmail) {
+      await supabase.from("profiles").update({ email: normalizedEmail }).eq("id", userId);
+      return { ...existing, email: normalizedEmail };
+    }
+
+    return existing;
+  }
+
+  const insertWithPermissions = {
+    id: userId,
+    email: normalizedEmail,
+    role: owner ? "admin" : "user",
+    can_send: owner,
+  };
+  const { error } = await supabase.from("profiles").insert(insertWithPermissions);
+  if (error) {
+    const { error: fallbackError } = await supabase.from("profiles").insert({
+      id: userId,
+      email: normalizedEmail,
+      role: owner ? "admin" : "user",
+    });
+    if (fallbackError) throw fallbackError;
+  }
+
+  return {
+    userId,
+    email: normalizedEmail,
+    role: owner ? "admin" : "user",
+    canSend: owner,
+  };
+}
+
+function toAuthContext(profile: ProfileAccess, isBypass: boolean): NonNullable<ServerAuthContext> {
+  const role = isOwnerEmail(profile.email) ? "admin" : profile.role;
+  const canSend = isOwnerEmail(profile.email) || profile.canSend;
+  return {
+    userId: profile.userId,
+    email: profile.email,
+    isBypass,
+    role,
+    canSend,
+    canManageUsers: role === "admin",
+  };
+}
+
 export async function setBypassSessionCookie() {
   const cookieStore = await cookies();
   cookieStore.set({
@@ -78,16 +201,16 @@ export async function clearBypassSessionCookie() {
   });
 }
 
-async function resolveAllowedProfile() {
+async function resolveAllowedProfile(): Promise<ProfileAccess> {
   const supabase = getSupabaseAdmin();
   const { data: profile, error } = await supabase
     .from("profiles")
-    .select("id, email")
+    .select("id, email, role, can_send")
     .eq("email", ALLOWED_EMAIL)
     .maybeSingle();
 
   if (!error && profile?.id) {
-    return { userId: profile.id, email: profile.email };
+    return ensureUserProfile(profile.id, profile.email);
   }
 
   // No profile row yet — upsert the hardcoded bypass user so bypass auth
@@ -95,15 +218,28 @@ async function resolveAllowedProfile() {
   const BYPASS_USER_ID = "00000000-0000-0000-0000-000000000001";
   const { data: upserted, error: upsertError } = await supabase
     .from("profiles")
-    .upsert({ id: BYPASS_USER_ID, email: ALLOWED_EMAIL, role: "admin" }, { onConflict: "id" })
-    .select("id, email")
+    .upsert({ id: BYPASS_USER_ID, email: ALLOWED_EMAIL, role: "admin", can_send: true }, { onConflict: "id" })
+    .select("id, email, role, can_send")
     .single();
 
   if (upsertError || !upserted?.id) {
-    throw new Error(`Allowed profile not found for ${ALLOWED_EMAIL}`);
+    const { data: fallback, error: fallbackError } = await supabase
+      .from("profiles")
+      .upsert({ id: BYPASS_USER_ID, email: ALLOWED_EMAIL, role: "admin" }, { onConflict: "id" })
+      .select("id, email")
+      .single();
+    if (fallbackError || !fallback?.id) {
+      throw new Error(`Allowed profile not found for ${ALLOWED_EMAIL}`);
+    }
+    return { userId: fallback.id, email: fallback.email, role: "admin" as const, canSend: true };
   }
 
-  return { userId: upserted.id, email: upserted.email };
+  return {
+    userId: upserted.id,
+    email: upserted.email,
+    role: "admin",
+    canSend: true,
+  };
 }
 
 export async function createServerAppClient() {
@@ -147,7 +283,7 @@ export async function getServerAuthContext(): Promise<ServerAuthContext> {
   const cookieStore = await cookies();
   if (isValidBypassCookieValue(cookieStore.get(BYPASS_COOKIE_NAME)?.value)) {
     const profile = await resolveAllowedProfile();
-    return { ...profile, isBypass: true };
+    return toAuthContext(profile, true);
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -178,6 +314,27 @@ export async function getServerAuthContext(): Promise<ServerAuthContext> {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user?.id || user.email !== ALLOWED_EMAIL) return null;
-  return { userId: user.id, email: user.email, isBypass: false };
+  if (!user?.id || !user.email) return null;
+  const profile = await ensureUserProfile(user.id, user.email);
+  return toAuthContext(profile, false);
+}
+
+export async function requireServerAuthContext(): Promise<NonNullable<ServerAuthContext>> {
+  const auth = await getServerAuthContext();
+  if (!auth?.userId) throw new Error("Unauthorized");
+  return auth;
+}
+
+export async function requireAdminAuthContext(): Promise<NonNullable<ServerAuthContext>> {
+  const auth = await requireServerAuthContext();
+  if (!auth.canManageUsers) throw new Error("Admin access required");
+  return auth;
+}
+
+export async function requireCanSendAuthContext(): Promise<NonNullable<ServerAuthContext>> {
+  const auth = await requireServerAuthContext();
+  if (!auth.canSend) {
+    throw new Error("This account can draft and review mail, but an admin has not enabled sending.");
+  }
+  return auth;
 }

@@ -2,10 +2,14 @@
  * import_list.mjs
  * Run from the project root: node import_list.mjs
  *
- * Creates the list "Amols202604" in Supabase and imports all contacts
- * from AMOLPERS-bounceclean-2026-04-14.csv as list_members.
+ * Creates a list in Supabase and imports all contacts from a CSV as
+ * list_members.
+ *
+ * Place your export at private/<file>.csv (the private/ directory is
+ * gitignored) — never at the repo root, where it would get tracked by git.
  *
  * Requirements: node >=18, @supabase/supabase-js installed (already in package.json)
+ * Env vars: SUPABASE_PROJECT_URL, SUPABASE_SERVICE_ROLE_KEY (required)
  */
 
 import { createClient } from '@supabase/supabase-js';
@@ -17,13 +21,18 @@ import { dirname, join } from 'path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const SUPABASE_URL        = process.env.SUPABASE_PROJECT_URL  || 'https://yxmnqlxdxrtfnpcvvoww.supabase.co';
+const SUPABASE_URL        = process.env.SUPABASE_PROJECT_URL;
 const SERVICE_ROLE_KEY    = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const ADMIN_USER_ID       = '00000000-0000-0000-0000-000000000001';
 const LIST_NAME           = 'Amols202604';
 const LIST_ADDRESS        = 'amols202604@props.sarva.co';
-const CSV_PATH            = join(__dirname, 'AMOLPERS-bounceclean-2026-04-14.csv');
+const CSV_PATH            = join(__dirname, 'private', 'AMOLPERS-bounceclean-2026-04-14.csv');
 const BATCH_SIZE          = 500;
+
+if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
+  console.error('Set SUPABASE_PROJECT_URL and SUPABASE_SERVICE_ROLE_KEY before running.');
+  process.exit(1);
+}
 // ─────────────────────────────────────────────────────────────────────────────
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY);

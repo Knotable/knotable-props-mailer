@@ -1,0 +1,886 @@
+{
+  "generated_at": "2026-06-05T15:45:57.780Z",
+  "source_window": {
+    "imports": "CSV files dated 2026-06-05",
+    "database_snapshot": "Live Supabase reads during report generation"
+  },
+  "imports": [
+    {
+      "list_name": "Family Offices 2026 06 05",
+      "display_name": "Family Offices 2026 06 05",
+      "source_file": "Family Offices 2026 06 05.csv",
+      "csv_rows": 20897,
+      "rows_with_recipient": 18298,
+      "extracted_email_occurrences": 18298,
+      "unique_emails": 18233,
+      "duplicate_email_occurrences": 65,
+      "rows_without_recipient": 2599
+    },
+    {
+      "list_name": "High Net Worth Amols Friends 2026 06 05",
+      "display_name": "High Net Worth Amols Friends 2026 06 05",
+      "source_file": "High Net Worth Amols Friends 2026 06 05.csv",
+      "csv_rows": 387,
+      "rows_with_recipient": 385,
+      "extracted_email_occurrences": 385,
+      "unique_emails": 383,
+      "duplicate_email_occurrences": 2,
+      "rows_without_recipient": 2
+    },
+    {
+      "list_name": "LP Pipeline 2026 06 05",
+      "display_name": "Limited Partner Pipeline 2026 06 05",
+      "source_file": "LP Pipeline 2026 06 05.csv",
+      "csv_rows": 1258,
+      "rows_with_recipient": 1162,
+      "extracted_email_occurrences": 1851,
+      "unique_emails": 1754,
+      "duplicate_email_occurrences": 97,
+      "rows_without_recipient": 96
+    }
+  ],
+  "lists": [
+    {
+      "id": "1a5d810a-bfb5-4e3c-b014-a454942aa7ed",
+      "name": "Amol's Test List",
+      "address": "weekly@sarva.co",
+      "created_at": "2026-04-17T19:11:44.896127+00:00",
+      "total_members": 4,
+      "active_members": 4,
+      "unsubscribed_members": 0,
+      "net_members": 4,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0,
+      "top_domains": [
+        {
+          "name": "sarva.co",
+          "count": 2
+        },
+        {
+          "name": "drwn.com",
+          "count": 1
+        },
+        {
+          "name": "lifex.vc",
+          "count": 1
+        }
+      ],
+      "top_countries": []
+    },
+    {
+      "id": "dbd52a08-9a38-4573-bf06-09e401015ae9",
+      "name": "Amols202604",
+      "address": "amols202604@props.sarva.co",
+      "created_at": "2026-04-19T07:02:04.562814+00:00",
+      "total_members": 186146,
+      "active_members": 185757,
+      "unsubscribed_members": 389,
+      "net_members": 185757,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0.0020897575021757114,
+      "top_domains": [
+        {
+          "name": "gmail.com",
+          "count": 17404
+        },
+        {
+          "name": "cbre.com",
+          "count": 4734
+        },
+        {
+          "name": "yahoo.com",
+          "count": 2325
+        },
+        {
+          "name": "cushwake.com",
+          "count": 2020
+        },
+        {
+          "name": "colliers.com",
+          "count": 1885
+        },
+        {
+          "name": "hotmail.com",
+          "count": 1855
+        },
+        {
+          "name": "am.jll.com",
+          "count": 1695
+        },
+        {
+          "name": "ngkf.com",
+          "count": 846
+        }
+      ],
+      "top_countries": []
+    },
+    {
+      "id": "82af752b-6db1-4761-bc59-70f8400f1b00",
+      "name": "Amols 5k",
+      "address": "amols-5k@props.sarva.co",
+      "created_at": "2026-05-02T22:12:59.509911+00:00",
+      "total_members": 5000,
+      "active_members": 4884,
+      "unsubscribed_members": 116,
+      "net_members": 4884,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0.0232,
+      "top_domains": [
+        {
+          "name": "gmail.com",
+          "count": 1095
+        },
+        {
+          "name": "knotel.com",
+          "count": 95
+        },
+        {
+          "name": "knotable.com",
+          "count": 74
+        },
+        {
+          "name": "columbia.edu",
+          "count": 70
+        },
+        {
+          "name": "substack.com",
+          "count": 60
+        },
+        {
+          "name": "yahoo.com",
+          "count": 56
+        },
+        {
+          "name": "mckinsey.com",
+          "count": 23
+        },
+        {
+          "name": "google.com",
+          "count": 20
+        }
+      ],
+      "top_countries": []
+    },
+    {
+      "id": "076a2304-52c4-4b00-9501-8bd2d5de1a08",
+      "name": "humanswhoreply",
+      "address": "humanswhoreply@props.sarva.co",
+      "created_at": "2026-05-12T16:41:34.217159+00:00",
+      "total_members": 157,
+      "active_members": 156,
+      "unsubscribed_members": 1,
+      "net_members": 156,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0.006369426751592357,
+      "top_domains": [
+        {
+          "name": "gmail.com",
+          "count": 59
+        },
+        {
+          "name": "columbia.edu",
+          "count": 3
+        },
+        {
+          "name": "yahoo.com",
+          "count": 3
+        },
+        {
+          "name": "0g.ai",
+          "count": 1
+        },
+        {
+          "name": "360fashion.net",
+          "count": 1
+        },
+        {
+          "name": "aa.com",
+          "count": 1
+        },
+        {
+          "name": "akrenyc.com",
+          "count": 1
+        },
+        {
+          "name": "alexjacobson.com",
+          "count": 1
+        }
+      ],
+      "top_countries": []
+    },
+    {
+      "id": "f277cd3e-2d1b-4574-85a8-d86ef90ce5a8",
+      "name": "AmolsParis",
+      "address": "amolsparis@props.sarva.co",
+      "created_at": "2026-05-31T17:56:38.160512+00:00",
+      "total_members": 517,
+      "active_members": 514,
+      "unsubscribed_members": 3,
+      "net_members": 514,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0.005802707930367505,
+      "top_domains": [
+        {
+          "name": "gmail.com",
+          "count": 37
+        },
+        {
+          "name": "cbre.fr",
+          "count": 19
+        },
+        {
+          "name": "eu.jll.com",
+          "count": 12
+        },
+        {
+          "name": "cdpq.com",
+          "count": 8
+        },
+        {
+          "name": "sofinnovapartners.com",
+          "count": 8
+        },
+        {
+          "name": "bpifrance.fr",
+          "count": 7
+        },
+        {
+          "name": "bryangarnier.com",
+          "count": 7
+        },
+        {
+          "name": "ext.bpifrance.fr",
+          "count": 7
+        }
+      ],
+      "top_countries": [
+        {
+          "name": "France",
+          "count": 517
+        }
+      ]
+    },
+    {
+      "id": "5e216ab9-9883-40c9-a019-75d4a8de685c",
+      "name": "Family Offices 2026 06 05",
+      "address": "family-offices-2026-06-05@props.sarva.co",
+      "created_at": "2026-06-05T15:10:11.490207+00:00",
+      "total_members": 18233,
+      "active_members": 18233,
+      "unsubscribed_members": 0,
+      "net_members": 18233,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0,
+      "top_domains": [
+        {
+          "name": "gmail.com",
+          "count": 446
+        },
+        {
+          "name": "cppib.com",
+          "count": 187
+        },
+        {
+          "name": "firstrepublic.com",
+          "count": 157
+        },
+        {
+          "name": "harbourvest.com",
+          "count": 142
+        },
+        {
+          "name": "cdpq.com",
+          "count": 136
+        },
+        {
+          "name": "bofa.com",
+          "count": 110
+        },
+        {
+          "name": "otpp.com",
+          "count": 110
+        },
+        {
+          "name": "nb.com",
+          "count": 102
+        }
+      ],
+      "top_countries": [
+        {
+          "name": "United States",
+          "count": 12430
+        },
+        {
+          "name": "Canada",
+          "count": 1091
+        },
+        {
+          "name": "United Kingdom",
+          "count": 708
+        },
+        {
+          "name": "Germany",
+          "count": 172
+        },
+        {
+          "name": "Switzerland",
+          "count": 135
+        },
+        {
+          "name": "China",
+          "count": 110
+        },
+        {
+          "name": "France",
+          "count": 93
+        },
+        {
+          "name": "India",
+          "count": 81
+        }
+      ]
+    },
+    {
+      "id": "7fc778c3-683a-43f8-9493-18805e989e58",
+      "name": "High Net Worth Amols Friends 2026 06 05",
+      "address": "high-net-worth-amols-friends-2026-06-05@props.sarva.co",
+      "created_at": "2026-06-05T15:10:31.341331+00:00",
+      "total_members": 383,
+      "active_members": 383,
+      "unsubscribed_members": 0,
+      "net_members": 383,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0,
+      "top_domains": [
+        {
+          "name": "gmail.com",
+          "count": 105
+        },
+        {
+          "name": "mckinsey.com",
+          "count": 5
+        },
+        {
+          "name": "yahoo.com",
+          "count": 5
+        },
+        {
+          "name": "icloud.com",
+          "count": 3
+        },
+        {
+          "name": "senatorlp.com",
+          "count": 3
+        },
+        {
+          "name": "temasek.com.sg",
+          "count": 3
+        },
+        {
+          "name": "adia.ae",
+          "count": 2
+        },
+        {
+          "name": "aol.com",
+          "count": 2
+        }
+      ],
+      "top_countries": [
+        {
+          "name": "United States",
+          "count": 254
+        },
+        {
+          "name": "United Kingdom",
+          "count": 24
+        },
+        {
+          "name": "Switzerland",
+          "count": 9
+        },
+        {
+          "name": "Germany",
+          "count": 8
+        },
+        {
+          "name": "India",
+          "count": 7
+        },
+        {
+          "name": "China",
+          "count": 3
+        },
+        {
+          "name": "Australia",
+          "count": 2
+        },
+        {
+          "name": "Hong Kong",
+          "count": 2
+        }
+      ]
+    },
+    {
+      "id": "a7fc1350-96b6-43bf-b060-353e777129b0",
+      "name": "LP Pipeline 2026 06 05",
+      "address": "lp-pipeline-2026-06-05@props.sarva.co",
+      "created_at": "2026-06-05T15:10:32.069758+00:00",
+      "total_members": 1754,
+      "active_members": 1754,
+      "unsubscribed_members": 0,
+      "net_members": 1754,
+      "other_status_members": 0,
+      "unsubscribe_rate": 0,
+      "top_domains": [
+        {
+          "name": "gmail.com",
+          "count": 241
+        },
+        {
+          "name": "starrcompanies.com",
+          "count": 16
+        },
+        {
+          "name": "bbva.com",
+          "count": 15
+        },
+        {
+          "name": "mckinsey.com",
+          "count": 11
+        },
+        {
+          "name": "sfgov.org",
+          "count": 11
+        },
+        {
+          "name": "cathay.fr",
+          "count": 10
+        },
+        {
+          "name": "accoladepartners.com",
+          "count": 9
+        },
+        {
+          "name": "horsleybridge.com",
+          "count": 9
+        }
+      ],
+      "top_countries": []
+    }
+  ],
+  "provider_events": {
+    "total_events": 1219,
+    "by_type": [
+      {
+        "event_type": "sent",
+        "count": 404,
+        "unique_recipients": 403
+      },
+      {
+        "event_type": "delivered",
+        "count": 334,
+        "unique_recipients": 333
+      },
+      {
+        "event_type": "opened",
+        "count": 244,
+        "unique_recipients": 236
+      },
+      {
+        "event_type": "clicked",
+        "count": 146,
+        "unique_recipients": 30
+      },
+      {
+        "event_type": "bounced",
+        "count": 83,
+        "unique_recipients": 83
+      },
+      {
+        "event_type": "deliverydelay",
+        "count": 8,
+        "unique_recipients": 8
+      }
+    ],
+    "note": "Most stored provider events do not have an email identifier, so event counts are useful as overall engagement signals but cannot reliably be attributed to individual campaigns."
+  },
+  "queue_status": {
+    "pending": {
+      "label": "pending",
+      "count": 81699,
+      "error": null
+    },
+    "processing": {
+      "label": "processing",
+      "count": 105,
+      "error": null
+    },
+    "succeeded": {
+      "label": "succeeded",
+      "count": 182368,
+      "error": null
+    },
+    "failed": {
+      "label": "failed",
+      "count": 0,
+      "error": null
+    },
+    "dead": {
+      "label": "dead",
+      "count": 3,
+      "error": null
+    },
+    "canceled": {
+      "label": "canceled",
+      "count": 122758,
+      "error": null
+    }
+  },
+  "campaigns": [
+    {
+      "label": "LifeX is getting loud: exits, London, and useful little machines",
+      "email_id": "532a06ae-c296-4f93-8483-e250d803f08d",
+      "list_id": "dbd52a08-9a38-4573-bf06-09e401015ae9",
+      "list_name": "Amols202604",
+      "queued_at": "2026-05-31",
+      "counts": {
+        "pending": 75608,
+        "processing": 75,
+        "succeeded": 110185,
+        "failed": 0,
+        "dead": 1,
+        "canceled": null
+      },
+      "counts_error": {
+        "canceled": "{\"message\":\"\"}"
+      }
+    },
+    {
+      "label": "NY: birthday + LifeX Fund 2",
+      "email_id": "696a333a-4909-41e8-ad3e-81c2e11b39db",
+      "list_id": "dbd52a08-9a38-4573-bf06-09e401015ae9",
+      "list_name": "Amols202604",
+      "queued_at": "2026-05-07",
+      "fallback_counts": {
+        "succeeded": 63553,
+        "canceled": 122592,
+        "dead": 1,
+        "pending": 0,
+        "processing": 0,
+        "failed": 0
+      },
+      "fallback_note": "The exact live succeeded count timed out during report generation; this count is from the checked-in operator status and matched the prior campaign cancellation audit.",
+      "counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 63553,
+        "failed": 0,
+        "dead": 1,
+        "canceled": 122592
+      },
+      "counts_error": {
+        "succeeded": "{\"message\":\"\"}"
+      }
+    },
+    {
+      "label": "London and NY: join me (birthday)",
+      "email_id": "83cd5759-c4fe-46f2-a450-9badbff4b8c3",
+      "list_id": "dbd52a08-9a38-4573-bf06-09e401015ae9",
+      "list_name": "Amols202604",
+      "queued_at": "2026-04-21",
+      "counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 146,
+        "failed": 0,
+        "dead": 0,
+        "canceled": 0
+      }
+    },
+    {
+      "label": "NY: you survived + LifeX Fund 2",
+      "email_id": "aacdd257-4604-4f0c-b13d-54add0aff534",
+      "list_id": "82af752b-6db1-4761-bc59-70f8400f1b00",
+      "list_name": "Amols 5k",
+      "queued_at": "2026-05-11",
+      "counts": {
+        "pending": 4884,
+        "processing": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "dead": 0,
+        "canceled": 116
+      }
+    },
+    {
+      "label": "come to my birthday next week // may 9",
+      "email_id": "97827d0d-df11-4267-ae8e-289bffc5b86f",
+      "list_id": "82af752b-6db1-4761-bc59-70f8400f1b00",
+      "list_name": "Amols 5k",
+      "queued_at": "2026-05-02",
+      "counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 5000,
+        "failed": 0,
+        "dead": 0,
+        "canceled": 0
+      }
+    },
+    {
+      "label": "Paris this week: founders meetup on Thursday",
+      "email_id": "0949ffd6-044c-42e9-97ba-585a72281c6a",
+      "list_id": "f277cd3e-2d1b-4574-85a8-d86ef90ce5a8",
+      "list_name": "AmolsParis",
+      "queued_at": "2026-05-31",
+      "counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 516,
+        "failed": 0,
+        "dead": 0,
+        "canceled": 1
+      }
+    },
+    {
+      "label": "Alive in Tokyo: a funeral, an app store, and two new tools",
+      "email_id": "f67b717c-eea4-4d24-a55a-8bdb0c68d301",
+      "list_id": "1a5d810a-bfb5-4e3c-b014-a454942aa7ed",
+      "list_name": "Amol's Test List",
+      "queued_at": "2026-05-30",
+      "counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 4,
+        "failed": 0,
+        "dead": 0,
+        "canceled": 0
+      }
+    },
+    {
+      "label": "NY: birthday + LifeX Fund 2",
+      "email_id": "e1c5bbd1-5f25-44fc-83db-9a024dc1f165",
+      "list_id": "1a5d810a-bfb5-4e3c-b014-a454942aa7ed",
+      "list_name": "Amol's Test List",
+      "queued_at": "2026-05-06",
+      "counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 4,
+        "failed": 0,
+        "dead": 0,
+        "canceled": 0
+      }
+    },
+    {
+      "label": "NY: birthday + LifeX Fund 2",
+      "email_id": "1065a3c3-efb8-4b91-8593-de918919ac0a",
+      "list_id": "1a5d810a-bfb5-4e3c-b014-a454942aa7ed",
+      "list_name": "Amol's Test List",
+      "queued_at": "2026-04-30",
+      "counts": {
+        "pending": 0,
+        "processing": 0,
+        "succeeded": 4,
+        "failed": 0,
+        "dead": 0,
+        "canceled": 0
+      }
+    }
+  ],
+  "emails": {
+    "total": 30,
+    "by_status": [
+      {
+        "name": "sent",
+        "count": 23
+      },
+      {
+        "name": "queued",
+        "count": 4
+      },
+      {
+        "name": "draft",
+        "count": 2
+      },
+      {
+        "name": "canceled",
+        "count": 1
+      }
+    ],
+    "by_month": [
+      {
+        "name": "2026-04",
+        "count": 9
+      },
+      {
+        "name": "2026-05",
+        "count": 21
+      }
+    ]
+  },
+  "recent_mailings_by_list": {
+    "Amol's Test List": [
+      {
+        "label": "Alive in Tokyo: a funeral, an app store, and two new tools",
+        "email_id": "f67b717c-eea4-4d24-a55a-8bdb0c68d301",
+        "list_id": "1a5d810a-bfb5-4e3c-b014-a454942aa7ed",
+        "list_name": "Amol's Test List",
+        "queued_at": "2026-05-30",
+        "counts": {
+          "pending": 0,
+          "processing": 0,
+          "succeeded": 4,
+          "failed": 0,
+          "dead": 0,
+          "canceled": 0
+        }
+      },
+      {
+        "label": "NY: birthday + LifeX Fund 2",
+        "email_id": "e1c5bbd1-5f25-44fc-83db-9a024dc1f165",
+        "list_id": "1a5d810a-bfb5-4e3c-b014-a454942aa7ed",
+        "list_name": "Amol's Test List",
+        "queued_at": "2026-05-06",
+        "counts": {
+          "pending": 0,
+          "processing": 0,
+          "succeeded": 4,
+          "failed": 0,
+          "dead": 0,
+          "canceled": 0
+        }
+      },
+      {
+        "label": "NY: birthday + LifeX Fund 2",
+        "email_id": "1065a3c3-efb8-4b91-8593-de918919ac0a",
+        "list_id": "1a5d810a-bfb5-4e3c-b014-a454942aa7ed",
+        "list_name": "Amol's Test List",
+        "queued_at": "2026-04-30",
+        "counts": {
+          "pending": 0,
+          "processing": 0,
+          "succeeded": 4,
+          "failed": 0,
+          "dead": 0,
+          "canceled": 0
+        }
+      }
+    ],
+    "Amols202604": [
+      {
+        "label": "LifeX is getting loud: exits, London, and useful little machines",
+        "email_id": "532a06ae-c296-4f93-8483-e250d803f08d",
+        "list_id": "dbd52a08-9a38-4573-bf06-09e401015ae9",
+        "list_name": "Amols202604",
+        "queued_at": "2026-05-31",
+        "counts": {
+          "pending": 75608,
+          "processing": 75,
+          "succeeded": 110185,
+          "failed": 0,
+          "dead": 1,
+          "canceled": null
+        },
+        "counts_error": {
+          "canceled": "{\"message\":\"\"}"
+        }
+      },
+      {
+        "label": "NY: birthday + LifeX Fund 2",
+        "email_id": "696a333a-4909-41e8-ad3e-81c2e11b39db",
+        "list_id": "dbd52a08-9a38-4573-bf06-09e401015ae9",
+        "list_name": "Amols202604",
+        "queued_at": "2026-05-07",
+        "fallback_counts": {
+          "succeeded": 63553,
+          "canceled": 122592,
+          "dead": 1,
+          "pending": 0,
+          "processing": 0,
+          "failed": 0
+        },
+        "fallback_note": "The exact live succeeded count timed out during report generation; this count is from the checked-in operator status and matched the prior campaign cancellation audit.",
+        "counts": {
+          "pending": 0,
+          "processing": 0,
+          "succeeded": 63553,
+          "failed": 0,
+          "dead": 1,
+          "canceled": 122592
+        },
+        "counts_error": {
+          "succeeded": "{\"message\":\"\"}"
+        }
+      },
+      {
+        "label": "London and NY: join me (birthday)",
+        "email_id": "83cd5759-c4fe-46f2-a450-9badbff4b8c3",
+        "list_id": "dbd52a08-9a38-4573-bf06-09e401015ae9",
+        "list_name": "Amols202604",
+        "queued_at": "2026-04-21",
+        "counts": {
+          "pending": 0,
+          "processing": 0,
+          "succeeded": 146,
+          "failed": 0,
+          "dead": 0,
+          "canceled": 0
+        }
+      }
+    ],
+    "Amols 5k": [
+      {
+        "label": "NY: you survived + LifeX Fund 2",
+        "email_id": "aacdd257-4604-4f0c-b13d-54add0aff534",
+        "list_id": "82af752b-6db1-4761-bc59-70f8400f1b00",
+        "list_name": "Amols 5k",
+        "queued_at": "2026-05-11",
+        "counts": {
+          "pending": 4884,
+          "processing": 0,
+          "succeeded": 0,
+          "failed": 0,
+          "dead": 0,
+          "canceled": 116
+        }
+      },
+      {
+        "label": "come to my birthday next week // may 9",
+        "email_id": "97827d0d-df11-4267-ae8e-289bffc5b86f",
+        "list_id": "82af752b-6db1-4761-bc59-70f8400f1b00",
+        "list_name": "Amols 5k",
+        "queued_at": "2026-05-02",
+        "counts": {
+          "pending": 0,
+          "processing": 0,
+          "succeeded": 5000,
+          "failed": 0,
+          "dead": 0,
+          "canceled": 0
+        }
+      }
+    ],
+    "humanswhoreply": [],
+    "AmolsParis": [
+      {
+        "label": "Paris this week: founders meetup on Thursday",
+        "email_id": "0949ffd6-044c-42e9-97ba-585a72281c6a",
+        "list_id": "f277cd3e-2d1b-4574-85a8-d86ef90ce5a8",
+        "list_name": "AmolsParis",
+        "queued_at": "2026-05-31",
+        "counts": {
+          "pending": 0,
+          "processing": 0,
+          "succeeded": 516,
+          "failed": 0,
+          "dead": 0,
+          "canceled": 1
+        }
+      }
+    ],
+    "Family Offices 2026 06 05": [],
+    "High Net Worth Amols Friends 2026 06 05": [],
+    "LP Pipeline 2026 06 05": []
+  }
+}

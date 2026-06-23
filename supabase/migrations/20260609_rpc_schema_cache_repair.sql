@@ -1,10 +1,8 @@
--- Big-send queue safety helpers.
+-- Repair queue RPC drift and force Supabase/PostgREST to refresh its schema.
 --
--- 1. claim_mail_queue_batch atomically claims due rows with FOR UPDATE SKIP LOCKED
---    so concurrent monitor tabs cannot send the same recipient twice.
--- 2. release_mail_queue_campaign releases one campaign across UTC send days,
---    using today's remaining quota first and scheduling future rows for
---    midnight UTC on subsequent send days.
+-- Apply this after 20260609_security_io_repair.sql if /api/health reports
+-- claim_mail_queue_batch or release_mail_queue_campaign as missing or not
+-- executable. It is safe to re-run.
 
 create or replace function public.claim_mail_queue_batch(
   p_limit integer,
@@ -110,3 +108,11 @@ as $$
     count(*) filter (where not is_due_now)::integer as scheduled_future
   from updated;
 $$;
+
+grant execute on function public.claim_mail_queue_batch(integer, uuid, timestamptz)
+  to anon, authenticated, service_role;
+
+grant execute on function public.release_mail_queue_campaign(uuid, timestamptz, integer, integer)
+  to anon, authenticated, service_role;
+
+notify pgrst, 'reload schema';

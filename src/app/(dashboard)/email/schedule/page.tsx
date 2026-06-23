@@ -1,16 +1,14 @@
 import Link from "next/link";
-import { createServerAppClient } from "@/lib/authAccess";
+import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
 
 export default async function SchedulePage() {
-  // Auth-gated client for the emails query (respects RLS)
-  const supabase = await createServerAppClient();
-  // Admin client for joining tables that aren't in the auth schema types
+  const auth = await requireServerAuthContext();
   const admin = getSupabaseAdmin();
 
-  const { data: emails } = await supabase
+  const { data: emails } = await admin
     .from("emails")
     .select("id, subject, status, updated_at")
     .in("status", ["draft", "queued", "sending"])
@@ -173,10 +171,17 @@ export default async function SchedulePage() {
                       Edit
                     </Link>
                   )}
+                  <Link
+                    href={`/email/composer?cloneId=${item.id}`}
+                    className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Make new
+                  </Link>
                   <ScheduleActions
                     id={item.id}
                     subject={item.subject ?? ""}
                     status={item.status}
+                    canSend={auth.canSend}
                   />
                 </div>
               </div>

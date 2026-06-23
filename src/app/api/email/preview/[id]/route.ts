@@ -4,11 +4,12 @@
  *
  * Renders a stored email's HTML directly (for iframe preview) or returns the
  * raw HTML as plain text (for source view). Only accessible to authenticated
- * admin sessions.
+ * app sessions.
  */
 
 import { NextResponse } from "next/server";
-import { createServerAppClient } from "@/lib/authAccess";
+import { requireServerAuthContext } from "@/lib/authAccess";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 export async function GET(
   request: Request,
@@ -18,7 +19,8 @@ export async function GET(
   const { searchParams } = new URL(request.url);
   const mode = searchParams.get("mode"); // "source" | null
 
-  const supabase = await createServerAppClient();
+  await requireServerAuthContext();
+  const supabase = getSupabaseAdmin();
 
   const { data: email, error } = await supabase
     .from("emails")

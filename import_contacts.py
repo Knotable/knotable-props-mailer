@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-Bulk-imports AMOLPERS-bounceclean-2026-04-14.csv into Supabase list_members.
+Bulk-imports a bounce-clean CSV into Supabase list_members.
 Run from project root: python3 import_contacts.py
+
+Place your export at private/AMOLPERS-bounceclean-2026-04-14.csv (the
+private/ directory is gitignored) — never at the repo root, where it would
+get tracked by git. list_members has RLS enabled, so this needs the
+service-role key, not the anon key; set SUPABASE_PROJECT_URL,
+SUPABASE_SERVICE_ROLE_KEY, and LIST_ID as env vars before running.
 """
 import csv, json, urllib.request, urllib.error, os, sys
 
-SUPABASE_URL   = 'https://yxmnqlxdxrtfnpcvvoww.supabase.co'
-ANON_KEY       = 'sb_publishable_7t0JdS34n-dkifql3_u4UQ_YA6cg2xK'
-LIST_ID        = 'dbd52a08-9a38-4573-bf06-09e401015ae9'
-CSV_PATH       = os.path.join(os.path.dirname(__file__), 'AMOLPERS-bounceclean-2026-04-14.csv')
+SUPABASE_URL   = os.environ['SUPABASE_PROJECT_URL']
+SERVICE_KEY    = os.environ['SUPABASE_SERVICE_ROLE_KEY']
+LIST_ID        = os.environ['LIST_ID']
+CSV_PATH       = os.path.join(os.path.dirname(__file__), 'private', 'AMOLPERS-bounceclean-2026-04-14.csv')
 BATCH_SIZE     = 500
 
 def insert_batch(batch):
@@ -17,8 +23,8 @@ def insert_batch(batch):
         f'{SUPABASE_URL}/rest/v1/list_members',
         data=data,
         headers={
-            'apikey': ANON_KEY,
-            'Authorization': f'Bearer {ANON_KEY}',
+            'apikey': SERVICE_KEY,
+            'Authorization': f'Bearer {SERVICE_KEY}',
             'Content-Type': 'application/json',
             'Prefer': 'resolution=ignore-duplicates',
         },

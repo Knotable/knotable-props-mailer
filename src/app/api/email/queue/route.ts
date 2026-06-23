@@ -3,8 +3,8 @@
  *
  * Queue worker — manual/debug endpoint. No automatic cron is used.
  *
- * POST requires a specific emailId. Global runs are intentionally rejected so a
- * broad API call cannot accidentally drain unrelated due rows.
+ * POST may include a specific emailId. Without one it drains due rows only for
+ * campaigns whose parent email is queued, sending, or sent.
  *
  * Each invocation:
  *   1. Reclaims stuck "processing" rows (worker crash / timeout recovery).
@@ -35,17 +35,21 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let emailId: string | null = null;
+  let emailId: string | null | undefined;
   try {
     const body = (await request.json()) as { emailId?: unknown };
-    emailId = parseUuid(body.emailId);
+    if (body.emailId == null) {
+      emailId = null;
+    } else {
+      emailId = parseUuid(body.emailId) ?? undefined;
+    }
   } catch {
-    // Handled below.
+    emailId = null;
   }
 
-  if (!emailId) {
+  if (emailId === undefined) {
     return NextResponse.json(
-      { error: "emailId is required. Global queue worker runs are disabled for operator safety." },
+      { error: "emailId must be a valid UUID when provided." },
       { status: 400 },
     );
   }
@@ -82,21 +86,21 @@ export async function GET(request: Request) {
     await Promise.all([
       supabase
         .from("mail_queue")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .eq("status", "pending"),
       supabase
         .from("mail_queue")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .eq("status", "pending")
         .lte("available_at", nowIso),
       supabase
         .from("mail_queue")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .eq("status", "pending")
         .gt("available_at", nowIso),
       supabase
         .from("mail_queue")
-        .select("id", { count: "exact", head: true })
+        .select("id", { count: "planned", head: true })
         .eq("status", "processing"),
     ]);
 

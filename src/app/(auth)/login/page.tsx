@@ -1,4 +1,5 @@
 import { bypassLogin, sendLoginCode, verifyLoginCode } from "./actions";
+import Link from "next/link";
 
 type LoginPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
@@ -13,6 +14,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const sent = pickParam(params.sent) === "1";
   const error = pickParam(params.error);
   const trace = pickParam(params.trace);
+  const signup = pickParam(params.signup) === "1";
   const rateLimitMatch = error.match(/^rate:(\d+)$/);
 
   const errorMessage =
@@ -20,8 +22,8 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       ? "Enter your email address first."
       : rateLimitMatch
       ? `Too many sign-in attempts. Try again in ${rateLimitMatch[1]} seconds.`
-      : error === "unauthorized"
-      ? "This tool is restricted to the authorized email address."
+      : error === "account-not-found"
+      ? "No account exists for that email yet. Create an account first."
       : error === "send-code"
       ? "We couldn’t send the sign-in code. Check the address and try again."
       : error === "missing-code"
@@ -41,7 +43,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           <p className="text-xs uppercase tracking-wide text-slate-400">Knotable Props</p>
           <h1 className="text-2xl font-semibold text-slate-900">Sign in</h1>
           <p className="text-sm text-slate-500">
-            We email you a one-time code. Paste that code here to sign in to the real app.
+            We email you a one-time code. New accounts can draft and review mail, but sending stays off until an admin enables it.
           </p>
         </div>
 
@@ -53,7 +55,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
 
         {sent ? (
           <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            Sign-in code sent to <span className="font-medium">{email}</span>.
+            {signup ? "Account code" : "Sign-in code"} sent to <span className="font-medium">{email}</span>.
             {trace ? <p className="mt-1 text-xs text-emerald-800/80">Trace: {trace}</p> : null}
           </div>
         ) : null}
@@ -69,9 +71,9 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
               name="email"
               type="email"
               required
-              defaultValue={email || "a@sarva.co"}
+              defaultValue={email}
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
-              placeholder="a@sarva.co"
+              placeholder="you@example.com"
             />
           </label>
           <button className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
@@ -80,7 +82,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         </form>
 
         <form action={verifyLoginCode} className="space-y-4 border-t border-slate-200 pt-4">
-          <input type="hidden" name="email" value={email || "a@sarva.co"} />
+          <input type="hidden" name="email" value={email} />
           <label className="block text-sm font-medium text-slate-700">
             Sign-in code
             <input
@@ -97,6 +99,13 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             Verify code
           </button>
         </form>
+
+        <p className="text-center text-sm text-slate-500">
+          Need access?{" "}
+          <Link href={`/signup${email ? `?email=${encodeURIComponent(email)}` : ""}`} className="font-medium text-slate-900 underline underline-offset-4">
+            Create an account
+          </Link>
+        </p>
 
         <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4">
           <p className="text-sm font-semibold text-slate-900">Bypass</p>

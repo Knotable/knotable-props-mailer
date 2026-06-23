@@ -54,6 +54,7 @@ function isPermanentSmtpFailure(error: unknown): boolean {
 
 const MailQueuePayloadSchema = z.object({
   from: z.string().min(1).max(320).optional(),
+  replyTo: z.string().min(1).max(320).optional(),
   to: z.string().min(1).max(320),
   toName: z.string().min(1).max(320).optional(),
   subject: z.string().min(1).max(998).optional(),
@@ -70,6 +71,8 @@ const MailQueuePayloadSchema = z.object({
 const WORKER_BATCH_SIZE = 200;
 const WORKER_CONCURRENCY = 5; // must match emailProvider maxConnections
 const STUCK_PROCESSING_TTL_MS = 15 * 60 * 1000;
+const GLOBAL_DRAIN_ELIGIBLE_EMAIL_STATUSES = ["queued", "sending", "sent"] as const;
+const GLOBAL_DRAIN_HOLD_AT = "2999-12-31T23:59:59.000Z";
 
 export type QueueWorkerResult = {
   ok: true;
@@ -84,11 +87,12 @@ export type QueueWorkerResult = {
 };
 
 type RunQueueWorkerOptions = {
-  emailId: string;
+  emailId?: string | null;
 };
 
 type EmailTemplate = {
   from_address: string;
+  reply_to: string | null;
   subject: string;
   html: string;
   text: string | null;
@@ -221,8 +225,9 @@ async function loadTemplates(emailIds: string[]) {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
     .from("emails")
-    .select("id, from_address, subject, html, text, tags, campaigns")
-    .in("id", [...new Set(emailIds)]);
+    .select("id, from_address, reply_to, subject, html, text, tags, campaigns, status")
+    .in("id", [...new Set(emailIds)])
+    .in("status", GLOBAL_DRAIN_ELIGIBLE_EMAIL_STATUSES);
 
   if (error) throw new Error(error.message);
 
@@ -231,6 +236,7 @@ async function loadTemplates(emailIds: string[]) {
       row.id,
       {
         from_address: row.from_address,
+        reply_to: row.reply_to ?? null,
         subject: row.subject,
         html: row.html,
         text: row.text ?? null,
@@ -242,10 +248,9 @@ async function loadTemplates(emailIds: string[]) {
 }
 
 export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<QueueWorkerResult> {
-  const emailId = parseUuid(options.emailId);
-  if (!emailId) {
-    throw new Error("runQueueWorker requires a valid emailId. Global queue worker runs are disabled.");
-  }
+  const emailId = options.emailId == null ? null : parseUuid(options.emailId);
+  if (options.emailId != null && !emailId) throw new Error("runQueueWorker requires a valid emailId.");
+  const isGlobalRun = !emailId;
 
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
@@ -253,7 +258,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
   const dailySendLimit = await getDailySendLimit();
 
   const staleLockedBefore = new Date(now.getTime() - STUCK_PROCESSING_TTL_MS).toISOString();
-  const { data: reclaimed } = await supabase
+  let reclaimQuery = supabase
     .from("mail_queue")
     .update({
       status: "pending",
@@ -261,9 +266,9 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       updated_at: now.toISOString(),
     })
     .eq("status", "processing")
-    .eq("email_id", emailId)
-    .lt("locked_at", staleLockedBefore)
-    .select("id");
+    .lt("locked_at", staleLockedBefore);
+  if (emailId) reclaimQuery = reclaimQuery.eq("email_id", emailId);
+  const { data: reclaimed } = await reclaimQuery.select("id");
 
   const reclaimedCount = reclaimed?.length ?? 0;
   if (reclaimedCount > 0) {
@@ -306,13 +311,14 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
   if (fetchError) throw new Error(fetchError.message);
 
   if (!items || items.length === 0) {
-    await reconcileEmailStatuses([emailId]);
+    if (emailId) await reconcileEmailStatuses([emailId]);
 
-    const { count: pendingCount } = await supabase
+    let pendingQuery = supabase
       .from("mail_queue")
       .select("id", { count: "exact", head: true })
-      .eq("status", "pending")
-      .eq("email_id", emailId);
+      .eq("status", "pending");
+    if (emailId) pendingQuery = pendingQuery.eq("email_id", emailId);
+    const { count: pendingCount } = await pendingQuery;
 
     await writeMetrics({ queueDepth: pendingCount ?? 0, processed: 0, failed: 0 });
     return {
@@ -324,7 +330,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       sentToday,
       remaining,
       dailyCap: dailySendLimit,
-      message: "No pending items.",
+      message: isGlobalRun ? "No eligible pending items." : "No pending items.",
     };
   }
 
@@ -348,6 +354,19 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       .eq("id", itemId);
   }
 
+  async function skipIneligible(itemId: string, message: string) {
+    await supabase
+      .from("mail_queue")
+      .update({
+        status: "pending",
+        available_at: GLOBAL_DRAIN_HOLD_AT,
+        locked_at: null,
+        last_error: message,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", itemId);
+  }
+
   /**
    * Process one queue item: validate payload, send via SES, write result back.
    * Returns "succeeded" | "failed" so the caller can tally counts.
@@ -364,8 +383,22 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     }
 
     const payload = payloadParsed.data;
+    if (!item.email_id) {
+      await skipIneligible(item.id, "Skipped by global queue worker because the row has no email_id.");
+      return "failed";
+    }
+
     const template = item.email_id ? templates.get(item.email_id) : undefined;
+    if (!template) {
+      await skipIneligible(
+        item.id,
+        "Skipped by queue worker because the email is not queued, sending, or sent.",
+      );
+      return "failed";
+    }
+
     const from = payload.from ?? template?.from_address;
+    const replyTo = payload.replyTo ?? template?.reply_to ?? undefined;
     const subject = payload.subject ?? template?.subject;
     const html = payload.html ?? template?.html;
     const text = payload.text ?? template?.text ?? undefined;
@@ -378,6 +411,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     try {
       const result = await sendEmail({
         from,
+        replyTo,
         to: [formatRecipientAddress(payload.to, payload.toName)],
         subject,
         html,
@@ -485,5 +519,8 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     sentToday: sentToday + succeeded,
     remaining: remaining - succeeded,
     dailyCap: dailySendLimit,
+    message: isGlobalRun
+      ? "Global drain processed eligible queued/sending/sent campaigns only."
+      : undefined,
   };
 }

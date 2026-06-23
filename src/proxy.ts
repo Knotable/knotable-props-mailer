@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
-import { ALLOWED_EMAIL, requestHasBypassAccess } from "@/lib/authAccessEdge";
+import { requestHasBypassAccess } from "@/lib/authAccessEdge";
 
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next({
@@ -41,7 +41,7 @@ export async function proxy(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
 
-  if (!user || user.email !== ALLOWED_EMAIL) {
+  if (!user?.email) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.search = "";
@@ -55,6 +55,6 @@ export async function proxy(request: NextRequest) {
 // API routes handle their own auth (cron secret, webhooks, etc.).
 export const config = {
   matcher: [
-    "/((?!login|loginWithToken|api|_next/static|_next/image|favicon.ico).*)",
+    "/((?!login|signup|loginWithToken|api|_next/static|_next/image|favicon.ico).*)",
   ],
 };

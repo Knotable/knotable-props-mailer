@@ -1,4 +1,5 @@
-import { createServerAppClient } from "@/lib/authAccess";
+import { requireServerAuthContext } from "@/lib/authAccess";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ComposerForm } from "./composer-form";
 
 type Props = {
@@ -9,12 +10,14 @@ export default async function ComposerPage({ searchParams }: Props) {
   const { id, cloneId } = await searchParams;
   const sourceId = cloneId ?? id;
   const templateMode = Boolean(cloneId);
-  const supabase = await createServerAppClient();
+  const auth = await requireServerAuthContext();
+  const supabase = getSupabaseAdmin();
 
   // Fetch draft if editing
   let draft: {
     id: string;
     from_address: string;
+    reply_to: string | null;
     subject: string;
     html: string;
     scheduled_at: string | null;
@@ -35,7 +38,7 @@ export default async function ComposerPage({ searchParams }: Props) {
       await Promise.all([
         supabase
           .from("emails")
-          .select("id, from_address, subject, html, scheduled_at, campaigns, tags")
+          .select("id, from_address, reply_to, subject, html, scheduled_at, campaigns, tags")
           .eq("id", sourceId)
           .single(),
         supabase
@@ -78,6 +81,8 @@ export default async function ComposerPage({ searchParams }: Props) {
       draft={draft}
       lists={lists ?? []}
       templateMode={templateMode}
+      userEmail={auth.email}
+      canSend={auth.canSend}
     />
   );
 }

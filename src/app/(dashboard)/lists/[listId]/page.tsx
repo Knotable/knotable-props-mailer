@@ -1,4 +1,5 @@
-import { createServerAppClient } from "@/lib/authAccess";
+import { requireServerAuthContext } from "@/lib/authAccess";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -62,7 +63,8 @@ export default async function ListDetailPage({
   const page = Math.max(1, parseInt(pageStr ?? "1", 10));
   const offset = (page - 1) * PAGE_SIZE;
 
-  const supabase = await createServerAppClient();
+  await requireServerAuthContext();
+  const supabase = getSupabaseAdmin();
 
   // Fetch list details + total member count
   const { data: list } = await supabase

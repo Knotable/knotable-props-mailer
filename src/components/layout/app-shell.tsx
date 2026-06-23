@@ -64,6 +64,8 @@ type AppShellProps = PropsWithChildren<{
   userEmail: string | null;
   isBypass?: boolean;
   buildInfo: BuildInfo;
+  canSend?: boolean;
+  canManageUsers?: boolean;
 }>;
 
 const formatBuildDate = (value: string | null) => {
@@ -86,8 +88,11 @@ export const AppShell = ({
   userEmail,
   isBypass = false,
   buildInfo,
+  canSend = false,
+  canManageUsers = false,
 }: AppShellProps) => {
   const pathname = usePathname();
+  const navItems = dashboardNav.filter((item) => item.href !== "/users" || canManageUsers);
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -104,6 +109,9 @@ export const AppShell = ({
                 <p className="font-medium text-slate-700">
                   {userEmail}
                   {isBypass ? " (bypass)" : ""}
+                </p>
+                <p className={canSend ? "text-emerald-700" : "text-amber-700"}>
+                  {canSend ? "Sending enabled" : "Sending disabled"}
                 </p>
                 <LogoutButton />
               </>
@@ -126,7 +134,7 @@ export const AppShell = ({
           aria-label="Dashboard"
           className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white/70 p-2 shadow-sm"
         >
-          {dashboardNav.map((item) => (
+          {navItems.map((item) => (
             <NavLink key={item.href} {...item} pathname={pathname} />
           ))}
         </nav>

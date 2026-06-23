@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { getServerAuthContext } from "@/lib/authAccess";
+import { getServerAuthContext, requireCanSendAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
@@ -28,6 +28,7 @@ function makeDedupeHash(emailId: string, recipientEmail: string): string {
 const SaveDraftSchema = z.object({
   id: z.string().uuid().optional().nullable(),
   from: z.string().min(1).max(320),
+  replyTo: z.string().max(320).optional().nullable(),
   subject: z.string().min(1).max(998),
   html: z.string().min(1).max(5_000_000),
   recipients: z.string().max(200_000),
@@ -47,6 +48,7 @@ const QueueCampaignSchema = z.object({
 const SendTestSchema = z.object({
   id: z.string().uuid().optional().nullable(),
   from: z.string().min(1).max(320),
+  replyTo: z.string().max(320).optional().nullable(),
   subject: z.string().min(1).max(998),
   html: z.string().min(1).max(5_000_000),
   recipients: z.string().min(1).max(200_000),
@@ -76,26 +78,21 @@ async function requireAuthContext() {
   return auth;
 }
 
-// Verifies email ownership. In bypass mode we skip the author_id filter
-// because the bypass itself proves identity — the author_id may differ if
-// the profile was recreated after the email was drafted.
+// Verifies a shared email exists. Mail records are intentionally collaborative
+// across accounts; send permission is enforced separately.
 async function assertEmailOwned(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
-  userId: string,
-  isBypass: boolean,
+  _userId: string,
+  _isBypass: boolean,
 ): Promise<boolean> {
-  // In bypass mode we only check the email exists — author_id may differ if
-  // the profile was recreated after the email was drafted.
-  // Note: must reassign `query` for the conditional filter to take effect.
-  let query = supabase.from("emails").select("id").eq("id", emailId);
-  if (!isBypass) query = query.eq("author_id", userId);
-  const { data } = await query.maybeSingle();
+  const { data } = await supabase.from("emails").select("id").eq("id", emailId).maybeSingle();
   return !!data;
 }
 
 type DraftPayload = {
   from: string;
+  replyTo?: string;
   subject: string;
   html: string;
   recipients: string;
@@ -137,6 +134,7 @@ export async function saveDraftAction(formData: FormData) {
   const parsed = SaveDraftSchema.safeParse({
     id: formData.get("id") || null,
     from: formData.get("from"),
+    replyTo: formData.get("replyTo") || null,
     subject: formData.get("subject"),
     html: formData.get("html"),
     recipients: formData.get("recipients") ?? "",
@@ -149,6 +147,7 @@ export async function saveDraftAction(formData: FormData) {
   const id = parsed.data.id ?? null;
   const payload: DraftPayload = {
     from: parsed.data.from,
+    replyTo: parsed.data.replyTo?.trim() || undefined,
     subject: parsed.data.subject,
     html: parsed.data.html,
     recipients: parsed.data.recipients,
@@ -161,6 +160,7 @@ export async function saveDraftAction(formData: FormData) {
 
   const emailFields = {
     from_address: payload.from,
+    reply_to: payload.replyTo ?? null,
     subject: payload.subject,
     html: payload.html,
     text: payload.html.replace(/<[^>]+>/g, " "),
@@ -176,8 +176,7 @@ export async function saveDraftAction(formData: FormData) {
     const { error } = await supabase
       .from("emails")
       .update(emailFields)
-      .eq("id", id)
-      .eq("author_id", userId);
+      .eq("id", id);
     if (error) throw error;
     emailId = id;
 
@@ -499,7 +498,8 @@ async function buildQueueWarningSummary(
  */
 export async function queueCampaignAction(formData: FormData): Promise<QueueCampaignResult> {
   try {
-    const userId = await requireAuthUserId();
+    const auth = await requireCanSendAuthContext();
+    const userId = auth.userId;
     const parsed = QueueCampaignSchema.safeParse({
       emailId: formData.get("emailId"),
       listId: formData.get("listId"),
@@ -532,7 +532,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   // another user's draft (defense-in-depth; RLS covers the DB layer).
   const { data: email, error: emailError } = await supabase
     .from("emails")
-    .select("from_address, subject, html, text, tags, campaigns, scheduled_at")
+    .select("from_address, reply_to, subject, html, text, tags, campaigns, scheduled_at")
     .eq("id", emailId)
     .eq("author_id", userId)
     .single();
@@ -707,11 +707,13 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
 }
 
 export async function sendTestAction(formData: FormData) {
-  const userId = await requireAuthUserId();
+  const auth = await requireCanSendAuthContext();
+  const userId = auth.userId;
 
   const parsed = SendTestSchema.safeParse({
     id: formData.get("id") || null,
     from: formData.get("from"),
+    replyTo: formData.get("replyTo") || null,
     subject: formData.get("subject"),
     html: formData.get("html"),
     recipients: formData.get("recipients"),
@@ -723,6 +725,7 @@ export async function sendTestAction(formData: FormData) {
 
   const id = parsed.data.id ?? null;
   const from = parsed.data.from;
+  const replyTo = parsed.data.replyTo?.trim() || undefined;
   const subject = parsed.data.subject;
   const html = parsed.data.html;
   const text = parsed.data.text ?? undefined;
@@ -735,7 +738,7 @@ export async function sendTestAction(formData: FormData) {
   // Send individually so recipients never see each other.
   const results = await Promise.allSettled(
     recipients.map(async (recipient) => {
-      const result = await sendEmail({ from, to: [recipient], subject, html, text, tags, campaigns, testMode: true });
+      const result = await sendEmail({ from, replyTo, to: [recipient], subject, html, text, tags, campaigns, testMode: true });
       return { recipient, sesMessageId: result.sesMessageId };
     })
   );
@@ -753,7 +756,7 @@ export async function sendTestAction(formData: FormData) {
     const queueRows = succeeded.map(({ value }) => ({
       email_id: id,
       list_id: null as string | null,
-      payload: { from, to: value.recipient, subject } as Json,
+      payload: { from, replyTo, to: value.recipient, subject } as Json,
       status: "succeeded" as const,
       available_at: new Date().toISOString(),
       send_date: today,
@@ -796,7 +799,7 @@ export async function sendTestAction(formData: FormData) {
 
 // ── Manually trigger the queue worker ───────────────────────────────────────
 export async function triggerQueueAction(emailId: string): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
-  await requireAuthUserId();
+  await requireCanSendAuthContext();
   const parsed = EmailIdSchema.safeParse({ id: emailId });
   if (!parsed.success) throw new Error("Invalid email id");
 
@@ -972,7 +975,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
   error?: string;
 }> {
   try {
-    const auth = await requireAuthContext();
+    const auth = await requireCanSendAuthContext();
 
     const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
     if (!parsed.success) return { error: "Invalid email id" };
@@ -1172,7 +1175,8 @@ export async function editQueuedEmailAction(
 // ── Requeue dead (permanently failed) items for one email ───────────────────
 // Resets up to 500 dead queue rows back to pending so the worker retries them.
 export async function requeueDeadAction(formData: FormData) {
-  const userId = await requireAuthUserId();
+  const auth = await requireCanSendAuthContext();
+  const userId = auth.userId;
 
   const parsed = RequeueDeadSchema.safeParse({ emailId: formData.get("emailId") });
   if (!parsed.success) throw new Error("Invalid emailId");

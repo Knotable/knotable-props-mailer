@@ -53,8 +53,8 @@ function buildStringToSign(msg: Record<string, unknown>): string {
 
   return fields
     .filter((k) => msg[k] !== undefined && msg[k] !== null)
-    .map((k) => `${k}\n${msg[k]}\n`)
-    .join("");
+    .map((k) => `${k}\n${msg[k]}`)
+    .join("\n");
 }
 
 function buildLegacyStringToSign(msg: Record<string, unknown>): string {
@@ -314,6 +314,19 @@ export async function POST(request: Request) {
       .eq("ses_message_id", messageId)
       .maybeSingle();
     emailId = queueRow?.email_id ?? null;
+  }
+
+  if (!emailId) {
+    const commonHeaders = mail?.["commonHeaders"] as Record<string, unknown> | undefined;
+    const subject = commonHeaders?.["subject"];
+    if (typeof subject === "string" && subject.trim()) {
+      const { data: matches } = await supabase
+        .from("emails")
+        .select("id")
+        .eq("subject", subject.trim())
+        .limit(2);
+      if (matches?.length === 1) emailId = matches[0].id;
+    }
   }
 
   // ── Insert event ───────────────────────────────────────────────────────────

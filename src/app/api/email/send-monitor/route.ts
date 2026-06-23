@@ -6,14 +6,16 @@
  *
  * POST /api/email/send-monitor
  *
- * Fires the queue worker for a specific emailId. This is what the monitor page
- * hits on each tick. Global worker runs are intentionally rejected so a monitor
- * tab cannot accidentally drain unrelated due rows.
+ * Fires the queue worker. When emailId is omitted it drains due rows only for
+ * campaigns whose parent email is queued, sending, or sent.
  *
- * Auth: same CRON_SECRET bearer token as /api/email/queue.
+ * Auth: browser requests use the signed-in user session. GET requires any
+ * account; POST requires can_send. CRON_SECRET bearer auth is still accepted
+ * for manual/debug calls.
  */
 
 import { NextResponse } from "next/server";
+import { requireCanSendAuthContext, requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { todayUTC } from "@/lib/dailyQuota";
 import { getDailySendLimit } from "@/lib/appSettings";
@@ -46,6 +48,26 @@ function authCheck(request: Request): boolean {
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret) return false;
   return request.headers.get("authorization") === `Bearer ${cronSecret}`;
+}
+
+async function hasReadAccess(request: Request) {
+  if (authCheck(request)) return true;
+  try {
+    await requireServerAuthContext();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function hasWorkerAccess(request: Request) {
+  if (authCheck(request)) return true;
+  try {
+    await requireCanSendAuthContext();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function optionalEmailId(request: Request): { emailId?: string; error?: string } {
@@ -291,7 +313,7 @@ async function buildMonitorSnapshot(emailId?: string) {
 }
 
 export async function GET(request: Request) {
-  if (!authCheck(request)) {
+  if (!(await hasReadAccess(request))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -307,21 +329,25 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (!authCheck(request)) {
+  if (!(await hasWorkerAccess(request))) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let emailId: string | null = null;
+  let emailId: string | null | undefined;
   try {
     const body = (await request.json()) as { emailId?: unknown };
-    emailId = parseUuid(body.emailId);
+    if (body.emailId == null) {
+      emailId = null;
+    } else {
+      emailId = parseUuid(body.emailId) ?? undefined;
+    }
   } catch {
-    // Handled below so missing/invalid JSON cannot fall through to a global run.
+    emailId = null;
   }
 
-  if (!emailId) {
+  if (emailId === undefined) {
     return NextResponse.json(
-      { error: "emailId is required. Global queue worker runs are disabled for operator safety." },
+      { error: "emailId must be a valid UUID when provided." },
       { status: 400 },
     );
   }
