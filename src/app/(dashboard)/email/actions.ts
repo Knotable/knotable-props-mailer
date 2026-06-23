@@ -534,6 +534,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     .from("emails")
     .select("from_address, reply_to, subject, html, text, tags, campaigns, scheduled_at")
     .eq("id", emailId)
+    .eq("author_id", userId)
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
 
