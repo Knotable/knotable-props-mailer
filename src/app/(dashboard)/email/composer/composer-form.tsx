@@ -157,7 +157,11 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
       const fd = new FormData(formRef.current);
       fd.set("recipients", userEmail);
       const res = await sendTestAction(fd);
-      setBanner({ ok: true, message: `Test sent to ${userEmail} (${res.sent} email${res.sent !== 1 ? "s" : ""}).` });
+      if (res.error) {
+        setBanner({ ok: false, message: res.error });
+      } else {
+        setBanner({ ok: true, message: `Test sent to ${userEmail} (${res.sent} email${res.sent !== 1 ? "s" : ""}).` });
+      }
     } catch (err) {
       setBanner({ ok: false, message: getActionErrorMessage(err, "Test send failed.") });
     } finally {
@@ -232,7 +236,11 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
 
         const res = await queueCampaignAction(fd);
         if (!res.ok) {
-          setDupWarning(res);
+          if (res.requiresConfirmation) {
+            setDupWarning(res);
+          } else {
+            setBanner({ ok: false, message: res.error });
+          }
           return;
         }
 
@@ -304,6 +312,10 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
       setActionStatus("Sending email through SES...");
       try {
         const res = await sendTestAction(fd);
+        if (res.error) {
+          setBanner({ ok: false, message: res.error });
+          return;
+        }
         const n = res.sent;
         setBanner({
           ok: true,
