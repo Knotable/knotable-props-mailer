@@ -2,6 +2,8 @@
 
 > **For AI agents**: Read this file at the start of every task on this project. It is the authoritative, human-maintained snapshot of what this codebase is, how it's structured, and the conventions you must follow. It supersedes re-deriving structure from scratch. Update it when you learn something new or make a significant structural change.
 
+> **Commit and push edits**: When an AI agent makes repo edits, commit the intentional changes and push the branch to GitHub so the live Vercel deployment can pick them up, unless the user explicitly says not to. Stage only the files changed for the task; never sweep unrelated local work into the commit.
+
 ---
 
 ## OPERATOR STATUS - READ THIS FIRST

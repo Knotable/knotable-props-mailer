@@ -4,6 +4,9 @@ import { sendEmail } from "@/lib/emailProvider";
 import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
 import { getDailySendLimit } from "@/lib/appSettings";
 import { parseUuid } from "@/lib/ids";
+import { isBlockedRecipientEmail } from "@/lib/blockList";
+import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
+import { env } from "@/lib/env";
 
 /**
  * Extract the SMTP numeric response code from a nodemailer error.
@@ -219,6 +222,19 @@ function formatRecipientAddress(email: string, displayName: string | undefined):
   return `"${escapedName}" <${email}>`;
 }
 
+function appendOpenTrackingPixel(html: string, queueId: string): string {
+  const baseUrl = env.appBaseUrl.replace(/\/+$/, "");
+  const trackingUrl = `${baseUrl}/api/email/open/${encodeURIComponent(queueId)}`;
+  if (html.includes(trackingUrl)) return html;
+
+  const pixel = `<img src="${trackingUrl}" width="1" height="1" alt="" style="border:0;width:1px;height:1px;display:block;opacity:0;" aria-hidden="true" />`;
+  if (/<\/body\s*>/i.test(html)) {
+    return html.replace(/<\/body\s*>/i, `${pixel}</body>`);
+  }
+
+  return `${html}\n${pixel}`;
+}
+
 async function loadTemplates(emailIds: string[]) {
   if (emailIds.length === 0) return new Map<string, EmailTemplate>();
 
@@ -367,6 +383,18 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       .eq("id", itemId);
   }
 
+  async function cancelBlocked(itemId: string, message: string) {
+    await supabase
+      .from("mail_queue")
+      .update({
+        status: "canceled",
+        locked_at: null,
+        last_error: message,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", itemId);
+  }
+
   /**
    * Process one queue item: validate payload, send via SES, write result back.
    * Returns "succeeded" | "failed" so the caller can tally counts.
@@ -383,6 +411,11 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     }
 
     const payload = payloadParsed.data;
+    if (isBlockedRecipientEmail(payload.to)) {
+      await cancelBlocked(item.id, "Canceled by global Block List domain rule.");
+      return "failed";
+    }
+
     if (!item.email_id) {
       await skipIneligible(item.id, "Skipped by global queue worker because the row has no email_id.");
       return "failed";
@@ -408,14 +441,22 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       return "failed";
     }
 
+    const personalized = personalizeEmailContent(
+      { subject, html, text },
+      buildRecipientPersonalization({
+        email: payload.to,
+        displayName: payload.toName,
+      }),
+    );
+
     try {
       const result = await sendEmail({
         from,
         replyTo,
         to: [formatRecipientAddress(payload.to, payload.toName)],
-        subject,
-        html,
-        text,
+        subject: personalized.subject,
+        html: appendOpenTrackingPixel(personalized.html, item.id),
+        text: personalized.text,
         tags: payload.tags ?? template?.tags ?? undefined,
         campaigns: payload.campaigns ?? template?.campaigns ?? undefined,
       });
