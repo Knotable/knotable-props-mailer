@@ -14,6 +14,14 @@ type SendItem = {
   failed: number | null;
   pending: number | null;
   canceled: number | null;
+  opens: number | null;
+  opensStale: boolean;
+  countStale: {
+    sent: boolean;
+    failed: boolean;
+    pending: boolean;
+    canceled: boolean;
+  };
   first_sent: string | null;
   last_queued_at: string | null;
   lists: {
@@ -24,6 +32,13 @@ type SendItem = {
     memberCount: number;
     memberEmails: string[];
   }[];
+  recipientSamples: {
+    email: string;
+    status: string | null;
+    sendDate: string | null;
+    lastError: string | null;
+  }[];
+  recipientSamplesPartial: boolean;
   created_at: string | null;
 };
 
@@ -35,7 +50,7 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
   const [sourceContent, setSourceContent] = useState<Record<string, string>>({});
   const [loadingSource, setLoadingSource] = useState<Record<string, boolean>>({});
   const [loadingPreview, setLoadingPreview] = useState<Record<string, boolean>>({});
-  const [openList, setOpenList] = useState<string | null>(null);
+  const [openRecipients, setOpenRecipients] = useState<string | null>(null);
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => (prev === id ? null : id));
@@ -85,6 +100,7 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
             (send.pending ?? 0) +
             (send.canceled ?? 0)
           : null;
+        const totalStale = Object.values(send.countStale).some(Boolean);
 
         return (
           <div
@@ -155,54 +171,64 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                   >
                     Inline preview
                   </button>
-                  {send.lists.length === 0 && (
-                    <span className="text-xs text-slate-400">No list recorded</span>
-                  )}
-                  {send.lists.map((list) => (
-                    <ListDetailsPopover
-                      key={list.id}
-                      list={list}
-                      open={openList === `${send.email_id}:${list.id}`}
-                      onToggle={() =>
-                        setOpenList((prev) =>
-                          prev === `${send.email_id}:${list.id}`
-                            ? null
-                            : `${send.email_id}:${list.id}`,
-                        )
+                  {send.lists.length > 0 || send.recipientSamples.length > 0 || total !== null ? (
+                    <RecipientDetailsPopover
+                      send={send}
+                      total={total}
+                      open={openRecipients === send.email_id}
+                      onOpen={() => setOpenRecipients(send.email_id)}
+                      onClose={() =>
+                        setOpenRecipients((prev) => (prev === send.email_id ? null : prev))
                       }
                     />
-                  ))}
+                  ) : (
+                    <span className="text-xs text-slate-400">No recipients recorded</span>
+                  )}
                 </div>
               </div>
 
               <div className="shrink-0 text-right">
                 <div className="flex gap-3 text-xs">
-                  <span className="text-green-700 font-medium">
-                    {formatCount(send.sent)} sent
-                  </span>
-                  {send.failed !== null && send.failed > 0 && (
-                    <span className="text-red-600 font-medium">
-                      {send.failed.toLocaleString()} failed
-                    </span>
-                  )}
-                  {send.pending !== null && send.pending > 0 && (
-                    <span className="text-amber-600 font-medium">
-                      {send.pending.toLocaleString()} pending
-                    </span>
-                  )}
-                  {send.canceled !== null && send.canceled > 0 && (
-                    <span className="text-slate-500 font-medium">
-                      {send.canceled.toLocaleString()} canceled
-                    </span>
-                  )}
+                  <CountMetric
+                    value={send.sent}
+                    stale={send.countStale.sent}
+                    label="sent"
+                    className="text-green-700"
+                    alwaysShow
+                  />
+                  <CountMetric
+                    value={send.opens}
+                    stale={send.opensStale}
+                    label="opened"
+                    className="text-blue-700"
+                    alwaysShow
+                    title="Unique recipients with an open event. Older sends before tracking was added can show 0."
+                  />
+                  <CountMetric
+                    value={send.failed}
+                    stale={send.countStale.failed}
+                    label="failed"
+                    className="text-red-600"
+                  />
+                  <CountMetric
+                    value={send.pending}
+                    stale={send.countStale.pending}
+                    label="pending"
+                    className="text-amber-600"
+                  />
+                  <CountMetric
+                    value={send.canceled}
+                    stale={send.countStale.canceled}
+                    label="canceled"
+                    className="text-slate-500"
+                  />
                 </div>
                 {total !== null && total > 0 && (
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    {total.toLocaleString()} total recipients
+                  <p className="mt-0.5 inline-flex items-center justify-end gap-1 text-xs text-slate-400">
+                    <span>{total.toLocaleString()}</span>
+                    {totalStale && <InlineSpinner />}
+                    <span>total recipients</span>
                   </p>
-                )}
-                {!knownCounts && (
-                  <p className="text-xs text-amber-600 mt-0.5">Queue counts unavailable</p>
                 )}
               </div>
             </div>
@@ -286,6 +312,13 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                       ? send.lists.map((l) => `${l.name} (${l.address})`).join(", ")
                       : "none recorded"}
                   </span>
+                  <span>
+                    Recipients sampled:{" "}
+                    <code className="font-mono text-slate-700">
+                      {send.recipientSamples.length.toLocaleString()}
+                    </code>
+                    {send.recipientSamplesPartial && " (partial)"}
+                  </span>
 
                   {/* Requeue dead rows button — only shown when there are failures */}
                   {send.failed !== null && send.failed > 0 && (
@@ -301,6 +334,166 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
       })}
     </div>
   );
+}
+
+function RecipientDetailsPopover({
+  send,
+  total,
+  open,
+  onOpen,
+  onClose,
+}: {
+  send: SendItem;
+  total: number | null;
+  open: boolean;
+  onOpen: () => void;
+  onClose: () => void;
+}) {
+  const remainder =
+    total !== null ? Math.max(0, total - send.recipientSamples.length) : null;
+
+  return (
+    <span
+      className="relative inline-block"
+      onMouseEnter={onOpen}
+      onMouseLeave={onClose}
+      onFocus={onOpen}
+      onBlur={(event) => {
+        const nextTarget = event.relatedTarget;
+        if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+        onClose();
+      }}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 transition-colors hover:bg-blue-50 hover:text-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-200"
+        aria-expanded={open}
+      >
+        Recipients
+        {total !== null && <span className="text-slate-400">{total.toLocaleString()}</span>}
+      </button>
+      {open && (
+        <span className="absolute left-0 top-full z-50 mt-1 block w-[28rem] max-w-[calc(100vw-2rem)] rounded-lg border border-slate-200 bg-white p-3 text-left shadow-xl">
+          <span className="flex items-start justify-between gap-3">
+            <span className="block">
+              <span className="block text-sm font-semibold text-slate-900">Recipients</span>
+              <span className="block text-xs text-slate-500">
+                {total !== null
+                  ? `${total.toLocaleString()} queued recipient${total === 1 ? "" : "s"}`
+                  : "Queued recipient sample"}
+              </span>
+            </span>
+            {send.lists.length > 0 && (
+              <span className="rounded bg-slate-50 px-2 py-1 text-xs font-medium text-slate-600">
+                {send.lists.length.toLocaleString()} list{send.lists.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </span>
+
+          <span className="mt-3 block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Lists
+            </span>
+            {send.lists.length > 0 ? (
+              <span className="block space-y-2">
+                {send.lists.map((list) => {
+                  const remainingMembers = Math.max(0, list.memberCount - list.memberEmails.length);
+
+                  return (
+                    <span key={list.id} className="block rounded-md border border-slate-100 bg-slate-50 p-2">
+                      <span className="flex items-start justify-between gap-2">
+                        <span className="min-w-0">
+                          <Link
+                            href={`/lists/${list.id}`}
+                            className="block truncate text-xs font-semibold text-slate-800 hover:text-blue-700 hover:underline"
+                          >
+                            {list.name}
+                          </Link>
+                          <span className="block truncate text-[11px] text-slate-500">
+                            {list.address}
+                          </span>
+                        </span>
+                        <span className="shrink-0 text-xs font-semibold text-slate-700">
+                          {list.memberCount.toLocaleString()}
+                        </span>
+                      </span>
+                      {list.memberEmails.length > 0 ? (
+                        <span className="mt-2 block max-h-24 overflow-y-auto">
+                          {list.memberEmails.map((email) => (
+                            <span key={email} className="block truncate text-[11px] text-slate-600">
+                              {email}
+                            </span>
+                          ))}
+                          {remainingMembers > 0 && (
+                            <span className="block text-[11px] text-slate-400">
+                              +{remainingMembers.toLocaleString()} more
+                            </span>
+                          )}
+                        </span>
+                      ) : (
+                        <span className="mt-2 block text-[11px] text-slate-400">
+                          No active recipient sample found.
+                        </span>
+                      )}
+                    </span>
+                  );
+                })}
+              </span>
+            ) : (
+              <span className="text-xs text-slate-400">No source list recorded for this send.</span>
+            )}
+          </span>
+
+          <span className="mt-3 block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+              Actual queued recipients
+            </span>
+            {send.recipientSamples.length > 0 ? (
+              <span className="block max-h-44 overflow-y-auto">
+                {send.recipientSamples.map((sample, index) => (
+                  <span
+                    key={`${sample.email}:${sample.status ?? "unknown"}:${index}`}
+                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 py-0.5 text-xs"
+                  >
+                    <span className="truncate text-slate-700">{sample.email}</span>
+                    <span className={statusClassName(sample.status)}>
+                      {sample.status ?? "unknown"}
+                    </span>
+                    {sample.lastError && (
+                      <span className="col-span-2 truncate text-red-600">
+                        {sample.lastError}
+                      </span>
+                    )}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              <span className="text-xs text-slate-400">No queue recipient sample loaded.</span>
+            )}
+          </span>
+          {remainder !== null && remainder > 0 && (
+            <span className="mt-2 block text-xs text-slate-400">
+              +{remainder.toLocaleString()} more
+            </span>
+          )}
+          {send.recipientSamplesPartial && (
+            <span className="mt-2 block text-xs text-amber-600">
+              Recipient sample query timed out before all details loaded.
+            </span>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function statusClassName(status: string | null) {
+  if (status === "succeeded") return "font-medium text-green-700";
+  if (status === "failed" || status === "dead") return "font-medium text-red-600";
+  if (status === "pending" || status === "processing") return "font-medium text-amber-600";
+  if (status === "canceled") return "font-medium text-slate-500";
+  return "font-medium text-slate-400";
 }
 
 function RequeueDeadButton({ emailId, failedCount }: { emailId: string; failedCount: number }) {
@@ -389,72 +582,37 @@ function formatCount(value: number | null): string {
   return value === null ? "..." : value.toLocaleString();
 }
 
-function ListDetailsPopover({
-  list,
-  open,
-  onToggle,
+function CountMetric({
+  value,
+  stale,
+  label,
+  className,
+  alwaysShow = false,
+  title,
 }: {
-  list: SendItem["lists"][number];
-  open: boolean;
-  onToggle: () => void;
+  value: number | null;
+  stale: boolean;
+  label: string;
+  className: string;
+  alwaysShow?: boolean;
+  title?: string;
 }) {
+  if (!alwaysShow && !stale && (value === null || value <= 0)) return null;
+
   return (
-    <span className="relative inline-block">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="inline-flex items-center gap-1 rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 transition-colors hover:bg-blue-50 hover:text-blue-700"
-        aria-expanded={open}
-      >
-        {list.name}
-        <span className="text-slate-400">{list.memberCount.toLocaleString()}</span>
-      </button>
-      {open && (
-        <span className="absolute left-0 top-full z-50 mt-1 block w-80 rounded-lg border border-slate-200 bg-white p-3 text-left shadow-xl">
-          <span className="block min-w-0">
-            <span className="block truncate text-sm font-semibold text-slate-900">
-              {list.name}
-            </span>
-            <span className="block truncate text-xs text-slate-500">{list.address}</span>
-          </span>
-          <span className="mt-3 grid grid-cols-2 gap-2 text-xs">
-            <span className="rounded-md bg-slate-50 p-2">
-              <span className="block text-slate-400">Active size</span>
-              <span className="font-semibold text-slate-800">
-                {list.memberCount.toLocaleString()}
-              </span>
-            </span>
-            <span className="rounded-md bg-slate-50 p-2">
-              <span className="block text-slate-400">Last updated</span>
-              <span className="font-semibold text-slate-800">
-                {list.updated_at ? formatDate(list.updated_at) : "Unknown"}
-              </span>
-            </span>
-          </span>
-          <span className="mt-3 block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-              Sample recipients
-            </span>
-            {list.memberEmails.length > 0 ? (
-              <span className="block max-h-36 overflow-y-auto">
-                {list.memberEmails.map((email) => (
-                  <span key={email} className="block truncate text-xs text-slate-700">
-                    {email}
-                  </span>
-                ))}
-              </span>
-            ) : (
-              <span className="text-xs text-slate-400">No active recipients found.</span>
-            )}
-          </span>
-          <Link
-            href={`/lists/${list.id}`}
-            className="mt-3 inline-flex rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:border-blue-300 hover:text-blue-700"
-          >
-            Open list
-          </Link>
-        </span>
-      )}
+    <span className={`inline-flex items-center gap-1 font-medium ${className}`} title={title}>
+      {value !== null ? <span>{formatCount(value)}</span> : !stale && <span>...</span>}
+      {stale && <InlineSpinner />}
+      <span>{label}</span>
     </span>
+  );
+}
+
+function InlineSpinner() {
+  return (
+    <span
+      aria-label="Updating"
+      className="inline-block size-3 animate-spin rounded-full border-2 border-amber-500 border-t-transparent align-[-1px]"
+    />
   );
 }

@@ -89,7 +89,7 @@ Common errors and fixes:
 | `Message rejected: Email address is not verified` | Sandbox mode + unverified recipient | Verify recipient or request production access |
 | `454 Throttling failure` | Sending too fast or over quota | Reduce rate or request production quota increase |
 
-## Delivery, bounce, and complaint tracking
+## Delivery, bounce, complaint, and open tracking
 
 The app sends through the SES SMTP interface. SES only publishes per-message
 events for SMTP sends when the message uses a configuration set. The app adds
@@ -98,6 +98,12 @@ that header automatically when `AWS_SES_CONFIGURATION_SET` is set:
 ```text
 X-SES-CONFIGURATION-SET: knotable-tracking
 ```
+
+For opens, the app also appends a first-party 1x1 tracking image to future HTML
+sends. Hits to `/api/email/open/[queueId]` are stored in `provider_events` with
+`event_type = opened` and `provider = props`, then surfaced on Past Sends as
+unique opened recipients. SES can also publish Open and Click events through the
+configuration set below; those still arrive through `/api/webhooks/ses`.
 
 Required production setup:
 
