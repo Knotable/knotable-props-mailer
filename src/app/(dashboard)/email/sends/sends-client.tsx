@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { requeueDeadAction } from "../actions";
 import { ProgressStatus } from "@/components/progress-status";
 
@@ -44,13 +44,87 @@ type SendItem = {
 
 type PreviewMode = "html" | "source" | null;
 
+type FreshSendStats = Pick<
+  SendItem,
+  "email_id" | "sent" | "failed" | "pending" | "canceled" | "first_sent" | "last_queued_at"
+>;
+
+const freshQueueCountStale = () => ({
+  sent: false,
+  failed: false,
+  pending: false,
+  canceled: false,
+});
+
+function hasStaleQueueCounts(send: SendItem) {
+  return Object.values(send.countStale).some(Boolean);
+}
+
 export function SendsClient({ sends }: { sends: SendItem[] }) {
+  const [visibleSends, setVisibleSends] = useState(sends);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState<Record<string, PreviewMode>>({});
   const [sourceContent, setSourceContent] = useState<Record<string, string>>({});
   const [loadingSource, setLoadingSource] = useState<Record<string, boolean>>({});
   const [loadingPreview, setLoadingPreview] = useState<Record<string, boolean>>({});
   const [openRecipients, setOpenRecipients] = useState<string | null>(null);
+  const [refreshingStats, setRefreshingStats] = useState(false);
+  const [statsRefreshError, setStatsRefreshError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setVisibleSends(sends);
+    setStatsRefreshError(null);
+  }, [sends]);
+
+  useEffect(() => {
+    const staleEmailIds = sends.filter(hasStaleQueueCounts).map((send) => send.email_id);
+    if (staleEmailIds.length === 0) return;
+
+    const controller = new AbortController();
+    setRefreshingStats(true);
+    setStatsRefreshError(null);
+
+    fetch(`/api/email/sends/fresh-stats?ids=${encodeURIComponent(staleEmailIds.join(","))}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+        return response.json() as Promise<{ stats?: FreshSendStats[] }>;
+      })
+      .then((data) => {
+        const statsByEmailId = new Map(
+          (data.stats ?? []).map((stats) => [stats.email_id, stats]),
+        );
+        setVisibleSends((current) =>
+          current.map((send) => {
+            const stats = statsByEmailId.get(send.email_id);
+            if (!stats) return send;
+            return {
+              ...send,
+              sent: stats.sent,
+              failed: stats.failed,
+              pending: stats.pending,
+              canceled: stats.canceled,
+              first_sent: stats.first_sent ?? send.first_sent,
+              last_queued_at: stats.last_queued_at ?? send.last_queued_at,
+              countStale: freshQueueCountStale(),
+            };
+          }),
+        );
+      })
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return;
+        setStatsRefreshError(
+          error instanceof Error ? error.message : "Unable to refresh older send counts.",
+        );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRefreshingStats(false);
+      });
+
+    return () => controller.abort();
+  }, [sends]);
 
   const toggleExpand = (id: string) => {
     setExpanded((prev) => (prev === id ? null : id));
@@ -86,7 +160,18 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
 
   return (
     <div className="space-y-3">
-      {sends.map((send) => {
+      {refreshingStats && (
+        <div className="inline-flex items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700">
+          <InlineSpinner />
+          Updating older send counts...
+        </div>
+      )}
+      {!refreshingStats && statsRefreshError && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Some older send counts could not be refreshed automatically. The visible counts may be partial until the page is opened again.
+        </div>
+      )}
+      {visibleSends.map((send) => {
         const isOpen = expanded === send.email_id;
         const mode = previewMode[send.email_id] ?? null;
         const knownCounts =
@@ -226,7 +311,7 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                 {total !== null && total > 0 && (
                   <p className="mt-0.5 inline-flex items-center justify-end gap-1 text-xs text-slate-400">
                     <span>{total.toLocaleString()}</span>
-                    {totalStale && <InlineSpinner />}
+                    {totalStale && <span title="Count refresh is still pending">partial</span>}
                     <span>total recipients</span>
                   </p>
                 )}
@@ -600,9 +685,11 @@ function CountMetric({
   if (!alwaysShow && !stale && (value === null || value <= 0)) return null;
 
   return (
-    <span className={`inline-flex items-center gap-1 font-medium ${className}`} title={title}>
-      {value !== null ? <span>{formatCount(value)}</span> : !stale && <span>...</span>}
-      {stale && <InlineSpinner />}
+    <span
+      className={`inline-flex items-center gap-1 font-medium ${className}`}
+      title={stale ? "This count may be partial." : title}
+    >
+      <span>{value !== null ? formatCount(value) : "..."}</span>
       <span>{label}</span>
     </span>
   );

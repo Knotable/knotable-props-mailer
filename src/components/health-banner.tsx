@@ -1,5 +1,6 @@
 "use client";
 
+import { Activity, AlertTriangle, ChevronDown, ChevronUp, CircleAlert, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { HealthCheck, HealthReport } from "@/app/api/health/route";
 
@@ -7,6 +8,7 @@ const DISMISSED_KEY = "health_banner_dismissed_v1";
 const REPORT_CACHE_KEY = "health_banner_report_v1";
 const REPORT_TTL_MS = 5 * 60 * 1000;
 const HEALTH_FETCH_DELAY_MS = 1200;
+const HEALTH_WARNING_RECHECK_MS = 30 * 1000;
 
 type CachedReport = {
   savedAt: number;
@@ -47,7 +49,7 @@ export function HealthBanner() {
     const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
     const controller = new AbortController();
     const load = () => {
-      fetch("/api/health", { signal: controller.signal })
+      fetch("/api/health", { cache: "no-store", signal: controller.signal })
         .then((r) => r.json())
         .then((data: HealthReport) => {
           setReport(data);
@@ -71,6 +73,33 @@ export function HealthBanner() {
     };
   }, [initialState.hasFreshCache]);
 
+  useEffect(() => {
+    if (!report || dismissed || (report.ok && report.warnings === 0)) return;
+
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => {
+      const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
+      fetch("/api/health", { cache: "no-store", signal: controller.signal })
+        .then((r) => r.json())
+        .then((data: HealthReport) => {
+          setReport(data);
+          sessionStorage.setItem(
+            REPORT_CACHE_KEY,
+            JSON.stringify({ savedAt: Date.now(), report: data }),
+          );
+          if (prev && data.critical <= (prev.critical ?? 0)) {
+            setDismissed(true);
+          }
+        })
+        .catch(() => undefined);
+    }, HEALTH_WARNING_RECHECK_MS);
+
+    return () => {
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [dismissed, report]);
+
   const handleDismiss = () => {
     setDismissed(true);
     sessionStorage.setItem(
@@ -83,9 +112,9 @@ export function HealthBanner() {
     return (
       <div className="border-b border-blue-100 bg-blue-50 text-sm text-blue-900">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2">
-          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-600" />
-          <span className="font-medium">Checking production health...</span>
-          <span className="text-xs text-blue-700">
+          <Activity aria-hidden="true" className="size-4 shrink-0 animate-pulse text-blue-700" />
+          <span className="font-medium">Health check</span>
+          <span className="hidden text-xs text-blue-700 sm:inline">
             Waiting for queue, settings, and webhook readiness checks.
           </span>
         </div>
@@ -110,8 +139,12 @@ export function HealthBanner() {
       }`}
     >
       {/* ── Summary row ── */}
-      <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2">
-        <span className="text-base">{hasCritical ? "🔴" : "🟡"}</span>
+      <div className="mx-auto flex max-w-6xl items-center gap-2 px-4 py-2 sm:gap-3">
+        {hasCritical ? (
+          <CircleAlert aria-hidden="true" className="size-4 shrink-0 text-red-700" />
+        ) : (
+          <AlertTriangle aria-hidden="true" className="size-4 shrink-0 text-amber-700" />
+        )}
         <span className="flex-1 font-medium">
           {hasCritical
             ? `${criticals.length} critical issue${criticals.length !== 1 ? "s" : ""} — some features will fail`
@@ -119,16 +152,19 @@ export function HealthBanner() {
         </span>
         <button
           onClick={() => setExpanded((e) => !e)}
-          className="rounded px-2 py-0.5 text-xs font-medium underline underline-offset-2 hover:no-underline"
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium underline underline-offset-2 hover:no-underline"
+          aria-label={expanded ? "Hide health details" : "Show health details"}
         >
-          {expanded ? "Hide details" : "Show details"}
+          {expanded ? <ChevronUp aria-hidden="true" className="size-3.5" /> : <ChevronDown aria-hidden="true" className="size-3.5" />}
+          <span className="hidden sm:inline">{expanded ? "Hide details" : "Show details"}</span>
         </button>
         <button
           onClick={handleDismiss}
-          className="ml-1 rounded px-2 py-0.5 text-xs opacity-60 hover:opacity-100"
+          className="ml-1 inline-flex items-center rounded px-2 py-1 text-xs opacity-60 hover:opacity-100"
           title="Dismiss until next critical issue"
         >
-          ✕
+          <X aria-hidden="true" className="size-3.5" />
+          <span className="sr-only">Dismiss</span>
         </button>
       </div>
 
@@ -193,6 +229,17 @@ function IssueRow({ check, color }: { check: HealthCheck; color: "red" | "amber"
           <span className="font-medium">{check.label}</span>
           <span className="mx-2 opacity-40">·</span>
           <span className="opacity-80">{check.message}</span>
+          {check.id === "queue_due_snapshot" && (
+            <>
+              <span className="mx-2 opacity-40">·</span>
+              <a
+                href="/email/schedule"
+                className="font-medium underline underline-offset-2 hover:no-underline"
+              >
+                view queue
+              </a>
+            </>
+          )}
         </div>
         {check.fix && (
           <button
