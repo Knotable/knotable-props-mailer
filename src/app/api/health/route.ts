@@ -16,6 +16,9 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export type HealthCheck = {
   id: string;
   label: string;
@@ -338,17 +341,17 @@ export async function GET() {
     ] = await Promise.all([
       db
         .from("mail_queue")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("status", "pending")
         .lte("available_at", nowIso),
       db
         .from("mail_queue")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("status", "pending")
         .gt("available_at", nowIso),
       db
         .from("mail_queue")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("status", "processing"),
     ]);
 
@@ -366,7 +369,11 @@ export async function GET() {
       fix:
         dueCount === 0 && processingCount === 0
           ? undefined
-          : "Before releasing or creating another campaign, inspect /email/monitor?emailId=<uuid> for the intended campaign and confirm no unrelated rows are due.",
+          : [
+              "Open /email/schedule. Campaigns with unsent due, processing, or held queue rows are listed first.",
+              "Use the row's Monitor button to inspect /email/monitor?emailId=<uuid> for that exact campaign.",
+              "Do not use the unscoped/global monitor unless you are intentionally repairing unrelated due rows.",
+            ].join("\n"),
     });
   } catch (error) {
     const errorMessage =
@@ -394,7 +401,7 @@ export async function GET() {
     ] = await Promise.all([
       db
         .from("provider_events")
-        .select("id", { count: "planned", head: true }),
+        .select("id", { count: "exact", head: true }),
       db
         .from("provider_events")
         .select("received_at")
@@ -403,7 +410,7 @@ export async function GET() {
         .maybeSingle(),
       db
         .from("provider_events")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .gte("received_at", new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()),
       db
         .from("error_logs")
@@ -489,10 +496,17 @@ export async function GET() {
   const critical = failing.filter((c) => c.severity === "critical").length;
   const warnings = failing.filter((c) => c.severity === "warning").length;
 
-  return NextResponse.json({
-    ok: critical === 0,
-    critical,
-    warnings,
-    checks,
-  } satisfies HealthReport);
+  return NextResponse.json(
+    {
+      ok: critical === 0,
+      critical,
+      warnings,
+      checks,
+    } satisfies HealthReport,
+    {
+      headers: {
+        "Cache-Control": "no-store",
+      },
+    },
+  );
 }
