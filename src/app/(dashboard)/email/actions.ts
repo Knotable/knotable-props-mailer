@@ -11,6 +11,8 @@ import { getDailySendLimit } from "@/lib/appSettings";
 import { logAudit } from "@/lib/logger";
 import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/queueReleaseGuard";
 import { runQueueWorker } from "@/lib/queueWorker";
+import { isBlockedRecipientEmail } from "@/lib/blockList";
+import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import type { Json } from "@/supabase/types";
 
 /**
@@ -22,6 +24,12 @@ import type { Json } from "@/supabase/types";
 function makeDedupeHash(emailId: string, recipientEmail: string): string {
   return createHash("sha256")
     .update(`${emailId}:${recipientEmail.toLowerCase().trim()}`)
+    .digest("hex");
+}
+
+function makeSenderCopyDedupeHash(emailId: string, senderEmail: string): string {
+  return createHash("sha256")
+    .update(`${emailId}:sender-copy:${senderEmail.toLowerCase().trim()}`)
     .digest("hex");
 }
 
@@ -291,6 +299,15 @@ export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm;
 const normalizeEmailAddress = (value: string | null | undefined) =>
   value?.trim().toLowerCase() ?? "";
 
+function extractEmailAddress(value: string | null | undefined) {
+  const trimmed = value?.trim() ?? "";
+  if (!trimmed) return null;
+
+  const angleMatch = trimmed.match(/<([^<>@\s]+@[^<>@\s]+\.[^<>@\s]+)>/);
+  const candidate = (angleMatch?.[1] ?? trimmed).trim().toLowerCase();
+  return EMAIL_RE.test(candidate) ? candidate : null;
+}
+
 type WarningAccumulator = {
   key: string;
   emailId: string | null;
@@ -337,7 +354,7 @@ function listMemberToName(metadata: Json | null | undefined) {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
 
   const record = metadata as Record<string, unknown>;
-  for (const key of ["toName", "display_name", "displayName"]) {
+  for (const key of ["toName", "display_name", "displayName", "full_name", "fullName"]) {
     const value = record[key];
     if (typeof value === "string" && value.trim()) return value.trim();
   }
@@ -605,7 +622,9 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
 
   const memberPage = await loadActiveListMemberPage(supabase, listId, offset);
   const membersToQueue = memberPage.filter(
-    (member) => !excludedRecipients.has(normalizeEmailAddress(member.email)),
+    (member) =>
+      !excludedRecipients.has(normalizeEmailAddress(member.email)) &&
+      !isBlockedRecipientEmail(member.email),
   );
 
   if (membersToQueue.length === 0) {
@@ -623,7 +642,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   // "Send Now" for this email.
   const queueRows: {
     email_id: string;
-    list_id: string;
+    list_id: string | null;
     payload: Json;
     status: "pending";
     available_at: string;
@@ -648,6 +667,27 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       campaign_label: campaignLabel,
       dedupe_hash: makeDedupeHash(emailId, member.email),
     });
+  }
+
+  if (offset === 0) {
+    const senderEmail = extractEmailAddress(email.from_address);
+    if (senderEmail && !isBlockedRecipientEmail(senderEmail)) {
+      queueRows.push({
+        email_id: emailId,
+        list_id: null,
+        payload: {
+          to: senderEmail,
+          subject: `[SENDER COPY] ${email.subject}`,
+          tags: email.tags ?? [],
+          campaigns: [...(email.campaigns ?? []), "sender-copy"],
+        },
+        status: "pending",
+        available_at: QUEUE_HOLD_AT,
+        send_date: null,
+        campaign_label,
+        dedupe_hash: makeSenderCopyDedupeHash(emailId, senderEmail),
+      });
+    }
   }
 
   // Upsert in batches of 500 to stay within Supabase payload limits.
@@ -737,13 +777,27 @@ export async function sendTestAction(formData: FormData) {
   // Send individually so recipients never see each other.
   const results = await Promise.allSettled(
     recipients.map(async (recipient) => {
-      const result = await sendEmail({ from, replyTo, to: [recipient], subject, html, text, tags, campaigns, testMode: true });
-      return { recipient, sesMessageId: result.sesMessageId };
+      const personalized = personalizeEmailContent(
+        { subject, html, text },
+        buildRecipientPersonalization({ email: recipient }),
+      );
+      const result = await sendEmail({
+        from,
+        replyTo,
+        to: [recipient],
+        subject: personalized.subject,
+        html: personalized.html,
+        text: personalized.text,
+        tags,
+        campaigns,
+        testMode: true,
+      });
+      return { recipient, sesMessageId: result.sesMessageId, subject: personalized.subject };
     })
   );
 
   const succeeded = results.filter(
-    (r): r is PromiseFulfilledResult<{ recipient: string; sesMessageId: string | null }> =>
+    (r): r is PromiseFulfilledResult<{ recipient: string; sesMessageId: string | null; subject: string }> =>
       r.status === "fulfilled",
   );
   const failed = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
@@ -755,7 +809,7 @@ export async function sendTestAction(formData: FormData) {
     const queueRows = succeeded.map(({ value }) => ({
       email_id: id,
       list_id: null as string | null,
-      payload: { from, replyTo, to: value.recipient, subject } as Json,
+      payload: { from, replyTo, to: value.recipient, subject: value.subject } as Json,
       status: "succeeded" as const,
       available_at: new Date().toISOString(),
       send_date: today,

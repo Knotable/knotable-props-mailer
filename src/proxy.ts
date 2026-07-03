@@ -55,6 +55,6 @@ export async function proxy(request: NextRequest) {
 // API routes handle their own auth (cron secret, webhooks, etc.).
 export const config = {
   matcher: [
-    "/((?!login|signup|loginWithToken|api|_next/static|_next/image|favicon.ico).*)",
+    "/((?!login|signup|reset-password|loginWithToken|api|_next/static|_next/image|favicon.ico).*)",
   ],
 };

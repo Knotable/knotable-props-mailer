@@ -43,9 +43,17 @@ export function ImportMembersForm({ listId }: { listId: string }) {
         <textarea
           name="members"
           rows={3}
-          required
           placeholder="address@example.com"
           className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
+        />
+      </label>
+      <label className="block text-sm font-medium text-slate-700">
+        Or upload CSV
+        <input
+          name="membersFile"
+          type="file"
+          accept=".csv,text/csv,text/plain"
+          className="mt-1 block w-full text-xs text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-slate-700 hover:file:bg-slate-200"
         />
       </label>
       <div className="flex flex-wrap items-center gap-2">
@@ -69,7 +77,7 @@ export function ImportMembersForm({ listId }: { listId: string }) {
       {pending && (
         <ProgressStatus
           title="Importing members into Supabase"
-          detail="Parsing pasted rows, skipping invalid addresses, and upserting valid members."
+          detail="Parsing pasted/uploaded rows, skipping invalid addresses, adding a@sarva.co, and upserting valid members."
           tone="slate"
         />
       )}

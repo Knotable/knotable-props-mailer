@@ -36,6 +36,11 @@ export const dashboardNav: NavItem[] = [
     description: "Members and imports",
   },
   {
+    label: "Account",
+    href: "/account",
+    description: "Password and email",
+  },
+  {
     label: "Users",
     href: "/users",
     description: "Admin access",

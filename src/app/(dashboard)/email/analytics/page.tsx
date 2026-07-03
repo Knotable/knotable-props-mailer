@@ -1,9 +1,11 @@
+import Link from "next/link";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
 import { getServerAuthContext } from "@/lib/authAccess";
 import { getDailySendLimit, setDailySendLimit } from "@/lib/appSettings";
 import { isoDaysAgo } from "@/lib/dateWindows";
+import { DataFreshness } from "@/components/data-freshness";
 
 async function updateDailySendLimitAction(formData: FormData) {
   "use server";
@@ -34,25 +36,25 @@ export default async function AnalyticsPage() {
   ] = await Promise.all([
     supabase
       .from("mail_queue")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("status", "succeeded"),
     supabase
       .from("mail_queue")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("status", "succeeded")
       .gte("send_date", last7Date),
     supabase
       .from("mail_queue")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .in("status", ["failed", "dead"]),
     supabase
       .from("mail_queue")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .in("status", ["failed", "dead"])
       .gte("updated_at", last7Timestamp),
     supabase
       .from("mail_queue")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .in("status", ["pending", "processing"]),
   ]);
 
@@ -70,197 +72,200 @@ export default async function AnalyticsPage() {
     { count: opensLast7Days },
     { count: clicksLast7Days },
     { count: bouncesLast7Days },
+    { count: deliveredAllTimeEvents },
+    { count: complaintsAllTime },
     { count: opensAllTime },
     { count: clicksAllTime },
     { count: bouncesAllTime },
   ] = await Promise.all([
     supabase
       .from("provider_events")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("event_type", "opened")
       .gte("received_at", last7Timestamp),
     supabase
       .from("provider_events")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("event_type", "clicked")
       .gte("received_at", last7Timestamp),
     supabase
       .from("provider_events")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("event_type", "bounced")
       .gte("received_at", last7Timestamp),
     supabase
       .from("provider_events")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "delivered"),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("event_type", "complained"),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
       .eq("event_type", "opened"),
     supabase
       .from("provider_events")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("event_type", "clicked"),
     supabase
       .from("provider_events")
-      .select("id", { count: "planned", head: true })
+      .select("id", { count: "exact", head: true })
       .eq("event_type", "bounced"),
   ]);
 
   const recentOpens = opensLast7Days ?? 0;
   const recentClicks = clicksLast7Days ?? 0;
   const recentBounces = bouncesLast7Days ?? 0;
+  const allTimeProviderDeliveries = deliveredAllTimeEvents ?? 0;
+  const allTimeComplaints = complaintsAllTime ?? 0;
   const allTimeOpens = opensAllTime ?? 0;
   const allTimeClicks = clicksAllTime ?? 0;
   const allTimeBounces = bouncesAllTime ?? 0;
-  const hasSnsEvents = allTimeOpens + allTimeClicks + allTimeBounces > 0;
+  const hasSnsEvents =
+    allTimeProviderDeliveries + allTimeComplaints + allTimeOpens + allTimeClicks + allTimeBounces > 0;
 
-  // ── Per-campaign breakdown — uses campaign_stats VIEW (DB-level GROUP BY) ────
-  // Falls back to an empty list with an advisory message if the migration has
-  // not been applied yet.
-  type CampaignStat = {
-    campaign_label: string;
-    email_id: string;
-    list_id: string | null;
-      sent: number;
-      failed: number;
-      pending: number;
-      started_at: string | null;
-  };
-
-  type RecentSendStatsRpcRow = {
+  // ── Per-campaign breakdown — pages from emails, then does exact indexed
+  // counts for only the visible campaigns in Postgres.
+  type CampaignAnalyticsRow = {
     email_id: string;
     subject: string;
     from_address: string;
     status: string;
     created_at: string | null;
-    list_ids: string[] | null;
+    list_ids: string[];
     sent: number;
     failed: number;
     pending: number;
+    canceled: number;
+    delivered: number;
+    bounced: number;
+    complained: number;
+    opened: number;
+    clicked: number;
     first_sent: string | null;
     last_queued_at: string | null;
+    latest_event_at: string | null;
     total_count: number | null;
   };
 
-  type RecentSendStatsRpcClient = {
+  type AnalyticsRpcClient = {
     rpc(
-      fn: "get_recent_email_send_stats",
+      fn: "get_recent_email_analytics_stats",
       args: { p_limit: number; p_offset: number },
-    ): Promise<{ data: RecentSendStatsRpcRow[] | null; error: { message?: string } | null }>;
+    ): Promise<{ data: CampaignAnalyticsRow[] | null; error: { message?: string } | null }>;
   };
 
-  let campaignStats: CampaignStat[] = [];
-  let viewMissing = false;
+  let campaignStats: CampaignAnalyticsRow[] = [];
+  let analyticsRpcMissing = false;
 
-  const { data: recentSendStats, error: recentSendStatsError } = await (
-    supabase as unknown as RecentSendStatsRpcClient
-  ).rpc("get_recent_email_send_stats", {
+  const { data: recentAnalyticsStats, error: recentAnalyticsStatsError } = await (
+    supabase as unknown as AnalyticsRpcClient
+  ).rpc("get_recent_email_analytics_stats", {
     p_limit: 50,
     p_offset: 0,
   });
 
-  if (recentSendStatsError) {
-    viewMissing = true;
+  if (recentAnalyticsStatsError) {
+    analyticsRpcMissing = true;
 
     const { data: recentEmails } = await supabase
       .from("emails")
-      .select("id, created_at")
+      .select("id, subject, from_address, status, created_at")
       .neq("status", "draft")
       .order("created_at", { ascending: false })
       .limit(50);
 
-    campaignStats = ((recentEmails ?? []) as { id: string; created_at: string | null }[]).map((email) => ({
-        campaign_label: email.id,
+    campaignStats = ((recentEmails ?? []) as {
+      id: string;
+      subject: string;
+      from_address: string;
+      status: string;
+      created_at: string | null;
+    }[]).map((email) => ({
         email_id: email.id,
-        list_id: null,
+        subject: email.subject,
+        from_address: email.from_address,
+        status: email.status,
+        created_at: email.created_at,
+        list_ids: [],
         sent: 0,
         failed: 0,
         pending: 0,
-        started_at: email.created_at,
+        canceled: 0,
+        delivered: 0,
+        bounced: 0,
+        complained: 0,
+        opened: 0,
+        clicked: 0,
+        first_sent: null,
+        last_queued_at: email.created_at,
+        latest_event_at: null,
+        total_count: null,
       }));
   } else {
-    campaignStats = ((recentSendStats ?? []) as RecentSendStatsRpcRow[]).map((row) => ({
-      campaign_label: row.email_id,
+    campaignStats = ((recentAnalyticsStats ?? []) as CampaignAnalyticsRow[]).map((row) => ({
       email_id: row.email_id,
-      list_id: row.list_ids?.[0] ?? null,
+      subject: row.subject,
+      from_address: row.from_address,
+      status: row.status,
+      created_at: row.created_at,
+      list_ids: row.list_ids ?? [],
       sent: Number(row.sent),
       failed: Number(row.failed),
       pending: Number(row.pending),
-      started_at: row.last_queued_at ?? row.created_at,
+      canceled: Number(row.canceled),
+      delivered: Number(row.delivered),
+      bounced: Number(row.bounced),
+      complained: Number(row.complained),
+      opened: Number(row.opened),
+      clicked: Number(row.clicked),
+      first_sent: row.first_sent,
+      last_queued_at: row.last_queued_at ?? row.created_at,
+      latest_event_at: row.latest_event_at,
+      total_count: Number(row.total_count ?? 0),
     }));
   }
 
-  // Fetch email subjects + list names for the campaigns we have.
-  const emailIds = [...new Set(campaignStats.map((c) => c.email_id))];
-  const listIds = [...new Set(campaignStats.map((c) => c.list_id).filter(Boolean) as string[])];
+  // Fetch list names for the campaigns we have.
+  const listIds = [...new Set(campaignStats.flatMap((c) => c.list_ids).filter(Boolean))];
 
-  const [{ data: emailRows }, { data: listRows }, { data: eventRows }, { data: queueRows }] =
-    await Promise.all([
-      emailIds.length
-        ? supabase.from("emails").select("id, subject").in("id", emailIds)
-        : Promise.resolve({ data: [] as { id: string; subject: string }[] }),
-      listIds.length
-        ? supabase.from("lists").select("id, name").in("id", listIds)
-        : Promise.resolve({ data: [] as { id: string; name: string }[] }),
-      // Per-campaign event samples — bounded so Analytics cannot scan every
-      // event row when a high-volume campaign is selected.
-      emailIds.length
-        ? supabase
-            .from("provider_events")
-            .select("email_id, event_type")
-            .in("email_id", emailIds)
-            .in("event_type", ["opened", "clicked", "bounced"])
-            .gte("received_at", isoDaysAgo(90))
-            .limit(20000)
-        : Promise.resolve({ data: [] as { email_id: string; event_type: string }[] }),
-      emailIds.length
-        ? supabase
-            .from("mail_queue")
-            .select("email_id, status, ses_message_id")
-            .in("email_id", emailIds)
-            .eq("status", "succeeded")
-            .not("ses_message_id", "is", null)
-            .limit(20000)
-        : Promise.resolve({ data: [] as { email_id: string; status: string; ses_message_id: string | null }[] }),
-    ]);
-
-  const emailSubjects = new Map((emailRows ?? []).map((e) => [e.id, e.subject]));
+  const { data: listRows } = listIds.length
+    ? await supabase.from("lists").select("id, name").in("id", listIds)
+    : { data: [] as { id: string; name: string }[] };
   const listNames = new Map((listRows ?? []).map((l) => [l.id, l.name]));
 
-  const eventsByEmail = new Map<string, { opens: number; clicks: number; bounces: number }>();
-  for (const ev of eventRows ?? []) {
-    if (!ev.email_id) continue;
-    const entry = eventsByEmail.get(ev.email_id) ?? { opens: 0, clicks: 0, bounces: 0 };
-    if (ev.event_type === "opened") entry.opens++;
-    else if (ev.event_type === "clicked") entry.clicks++;
-    else if (ev.event_type === "bounced") entry.bounces++;
-    eventsByEmail.set(ev.email_id, entry);
-  }
-
-  const sendConfirmationByEmail = new Map<string, { sent: number; amazonAccepted: number }>();
-  for (const row of queueRows ?? []) {
-    if (!row.email_id) continue;
-    const entry = sendConfirmationByEmail.get(row.email_id) ?? { sent: 0, amazonAccepted: 0 };
-    entry.amazonAccepted++;
-    sendConfirmationByEmail.set(row.email_id, entry);
-  }
-
   const campaigns = campaignStats.map((c) => {
-    const evts = eventsByEmail.get(c.email_id) ?? { opens: 0, clicks: 0, bounces: 0 };
-    const confirmation = sendConfirmationByEmail.get(c.email_id) ?? { sent: c.sent, amazonAccepted: 0 };
+    const engagementRate = c.sent > 0 ? Math.round((c.opened / c.sent) * 1000) / 10 : null;
+    const clickRate = c.sent > 0 ? Math.round((c.clicked / c.sent) * 1000) / 10 : null;
+    const bounceRate = c.sent > 0 ? Math.round((c.bounced / c.sent) * 1000) / 10 : null;
+
     return {
       ...c,
-      subject: emailSubjects.get(c.email_id) ?? null,
-      list_name: c.list_id ? (listNames.get(c.list_id) ?? null) : null,
-      amazonAccepted: confirmation.amazonAccepted,
-      opens: evts.opens,
-      clicks: evts.clicks,
-      bounces: evts.bounces,
+      list_name:
+        c.list_ids.length > 0
+          ? c.list_ids.map((listId) => listNames.get(listId) ?? "Unknown list").join(", ")
+          : null,
+      engagementRate,
+      clickRate,
+      bounceRate,
     };
   });
+  const generatedAt = new Date().toISOString();
 
   return (
     <div className="space-y-8">
       <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">Insights</p>
-        <h2 className="text-2xl font-semibold text-slate-900">Analytics</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-2xl font-semibold text-slate-900">Analytics</h2>
+          <DataFreshness timestamp={generatedAt} />
+        </div>
+        <p className="mt-1 max-w-3xl text-sm text-slate-500">
+          Queue acceptance, provider confirmations, and engagement for recent campaigns. Counts are
+          generated server-side so the mobile view and desktop table use the same source.
+        </p>
         {!hasSnsEvents && (
           <p className="mt-1 text-sm text-amber-600">
             Bounce/complaint/delivery tracking requires SES → SNS →{" "}
@@ -344,6 +349,30 @@ export default async function AnalyticsPage() {
         />
       </div>
 
+      <section className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm sm:grid-cols-3">
+        <ConfidenceItem
+          label="Queue truth"
+          value="SES accepted rows"
+          detail="Sent counts come from mail_queue succeeded rows, not from open pixels."
+        />
+        <ConfidenceItem
+          label="Provider truth"
+          value={hasSnsEvents ? "Events present" : "Awaiting events"}
+          detail="Delivered, bounced, complaints, opens, and clicks depend on SES/SNS."
+          tone={hasSnsEvents ? "green" : "amber"}
+        />
+        <ConfidenceItem
+          label="Campaign rows"
+          value={analyticsRpcMissing ? "Fallback mode" : "Exact recent counts"}
+          detail={
+            analyticsRpcMissing
+              ? "Apply the 20260702 analytics RPC migration for full campaign stats."
+              : "Recent rows are counted in Postgres without page-level sampling."
+          }
+          tone={analyticsRpcMissing ? "amber" : "green"}
+        />
+      </section>
+
       {/* ── Daily capacity ── */}
       <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
         <form action={updateDailySendLimitAction} className="flex flex-wrap items-end gap-3">
@@ -375,14 +404,14 @@ export default async function AnalyticsPage() {
           <span className="font-normal text-slate-400">(most recent 50)</span>
         </h3>
 
-        {viewMissing && (
+        {analyticsRpcMissing && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 mb-3">
-            <span className="font-medium">Showing recent emails without queue totals.</span>{" "}
+            <span className="font-medium">Showing recent emails without exact analytics totals.</span>{" "}
             Run{" "}
             <code className="rounded bg-amber-100 px-1">
-              supabase/migrations/20260615_send_history_rpc.sql
+              supabase/migrations/20260702_recent_analytics_rpc.sql
             </code>{" "}
-            for fast campaign totals.
+            for exact queue and provider-event campaign totals.
           </div>
         )}
         {campaigns.length === 0 ? (
@@ -390,22 +419,78 @@ export default async function AnalyticsPage() {
             No campaigns sent yet.
           </div>
         ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-200">
+          <>
+          <div className="space-y-3 md:hidden">
+            {campaigns.map((c) => (
+              <article
+                key={c.email_id}
+                className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h4 className="break-words text-sm font-semibold text-slate-900">
+                      {c.subject || "Untitled campaign"}
+                    </h4>
+                    <p className="mt-1 truncate text-xs text-slate-500">
+                      {c.list_name ?? "No list recorded"}
+                    </p>
+                  </div>
+                  <StatusBadge status={c.status} />
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  <MiniMetric label="sent" value={c.sent} tone="green" />
+                  <MiniMetric label="opened" value={c.opened} tone="blue" />
+                  <MiniMetric label="clicked" value={c.clicked} tone="blue" />
+                  <MiniMetric label="pending" value={c.pending} tone="amber" />
+                  <MiniMetric label="failed" value={c.failed} tone="red" />
+                  <MiniMetric label="bounced" value={c.bounced} tone="amber" />
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  <RatePill label="open" value={c.engagementRate} />
+                  <RatePill label="click" value={c.clickRate} />
+                  <RatePill label="bounce" value={c.bounceRate} tone={c.bounceRate && c.bounceRate > 0 ? "amber" : "slate"} />
+                </div>
+
+                <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs">
+                  <span className="min-w-0 truncate text-slate-500">
+                    {c.latest_event_at
+                      ? `Latest event ${formatDate(c.latest_event_at)}`
+                      : c.last_queued_at
+                        ? `Queued ${formatDate(c.last_queued_at)}`
+                        : "No activity timestamp"}
+                  </span>
+                  <Link
+                    href={`/email/sends?emailId=${c.email_id}`}
+                    className="shrink-0 rounded-md border border-slate-200 px-2.5 py-1.5 font-medium text-slate-700"
+                  >
+                    History
+                  </Link>
+                </div>
+              </article>
+            ))}
+          </div>
+
+          <div className="hidden overflow-x-auto rounded-xl border border-slate-200 md:block">
             <table className="w-full text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-4 py-3">Subject</th>
                   <th className="px-4 py-3">List</th>
-                  <th className="px-4 py-3 text-right">Campaign sent</th>
+                  <th className="px-4 py-3 text-right">SES accepted</th>
+                  <th className="px-4 py-3 text-right">Delivered</th>
+                  <th className="px-4 py-3 text-right">Pending</th>
                   <th className="px-4 py-3 text-right">Failed</th>
                   <th className="px-4 py-3 text-right">Opens</th>
                   <th className="px-4 py-3 text-right">Clicks</th>
                   <th className="px-4 py-3 text-right">Bounces</th>
+                  <th className="px-4 py-3 text-right">Complaints</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {campaigns.map((c) => (
-                  <tr key={c.campaign_label} className="bg-white hover:bg-slate-50">
+                  <tr key={c.email_id} className="bg-white hover:bg-slate-50">
                     <td className="max-w-xs truncate px-4 py-3 font-medium text-slate-800">
                       {c.subject ?? (
                         <span className="italic text-slate-400">untitled</span>
@@ -418,18 +503,28 @@ export default async function AnalyticsPage() {
                       <span
                         className="inline-flex items-center justify-end gap-1"
                         title={
-                          c.sent > 0 && c.amazonAccepted === c.sent
-                            ? "Amazon SES accepted every sent row and returned message IDs."
-                            : `${c.amazonAccepted.toLocaleString()} sampled sent rows have SES message IDs.`
+                          c.sent > 0
+                            ? "Accepted by SES according to mail_queue succeeded rows."
+                            : "No succeeded queue rows yet."
                         }
                       >
-                        {c.sent > 0 && c.amazonAccepted === c.sent && (
+                        {c.sent > 0 && (
                           <span className="font-semibold text-green-600" aria-label="SES accepted">
                             ✓
                           </span>
                         )}
                         {c.sent.toLocaleString()}
                       </span>
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+                      {hasSnsEvents ? c.delivered.toLocaleString() : "—"}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right tabular-nums ${
+                        c.pending > 0 ? "text-blue-700" : "text-slate-400"
+                      }`}
+                    >
+                      {c.pending > 0 ? c.pending.toLocaleString() : "—"}
                     </td>
                     <td
                       className={`px-4 py-3 text-right tabular-nums ${
@@ -439,19 +534,30 @@ export default async function AnalyticsPage() {
                       {c.failed > 0 ? c.failed.toLocaleString() : "—"}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? c.opens.toLocaleString() : "—"}
+                      {hasSnsEvents ? c.opened.toLocaleString() : "—"}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? c.clicks.toLocaleString() : "—"}
+                      {hasSnsEvents ? c.clicked.toLocaleString() : "—"}
                     </td>
                     <td
                       className={`px-4 py-3 text-right tabular-nums ${
-                        c.bounces > 0 ? "text-amber-600" : "text-slate-400"
+                        c.bounced > 0 ? "text-amber-600" : "text-slate-400"
                       }`}
                     >
                       {hasSnsEvents
-                        ? c.bounces > 0
-                          ? c.bounces.toLocaleString()
+                        ? c.bounced > 0
+                          ? c.bounced.toLocaleString()
+                          : "—"
+                        : "—"}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right tabular-nums ${
+                        c.complained > 0 ? "text-red-600" : "text-slate-400"
+                      }`}
+                    >
+                      {hasSnsEvents
+                        ? c.complained > 0
+                          ? c.complained.toLocaleString()
                           : "—"
                         : "—"}
                     </td>
@@ -460,6 +566,7 @@ export default async function AnalyticsPage() {
               </tbody>
             </table>
           </div>
+          </>
         )}
       </section>
     </div>
@@ -490,4 +597,109 @@ function StatCard({
       <p className="mt-1 text-xs text-slate-500">{sub}</p>
     </div>
   );
+}
+
+function ConfidenceItem({
+  label,
+  value,
+  detail,
+  tone = "slate",
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "slate" | "green" | "amber";
+}) {
+  const toneClasses = {
+    slate: "bg-slate-100 text-slate-700",
+    green: "bg-emerald-50 text-emerald-700",
+    amber: "bg-amber-50 text-amber-700",
+  };
+
+  return (
+    <div className="min-w-0">
+      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
+      <p className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses[tone]}`}>
+        {value}
+      </p>
+      <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
+    </div>
+  );
+}
+
+function MiniMetric({
+  label,
+  value,
+  tone,
+}: {
+  label: string;
+  value: number;
+  tone: "green" | "blue" | "amber" | "red";
+}) {
+  const toneClasses = {
+    green: "text-emerald-700",
+    blue: "text-blue-700",
+    amber: "text-amber-700",
+    red: "text-red-700",
+  };
+
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 px-2 py-2">
+      <p className={`text-base font-semibold tabular-nums ${toneClasses[tone]}`}>
+        {value.toLocaleString()}
+      </p>
+      <p className="text-[11px] uppercase tracking-wide text-slate-400">{label}</p>
+    </div>
+  );
+}
+
+function RatePill({
+  label,
+  value,
+  tone = "slate",
+}: {
+  label: string;
+  value: number | null;
+  tone?: "slate" | "amber";
+}) {
+  const toneClasses = {
+    slate: "border-slate-200 bg-slate-50 text-slate-600",
+    amber: "border-amber-200 bg-amber-50 text-amber-700",
+  };
+
+  return (
+    <span className={`rounded-full border px-2 py-1 font-medium ${toneClasses[tone]}`}>
+      {label} {value === null ? "—" : `${value}%`}
+    </span>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const statusClass =
+    status === "sent"
+      ? "bg-emerald-50 text-emerald-700"
+      : status === "queued" || status === "sending"
+        ? "bg-blue-50 text-blue-700"
+        : status === "failed"
+          ? "bg-red-50 text-red-700"
+          : "bg-slate-100 text-slate-600";
+
+  return (
+    <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold uppercase tracking-wide ${statusClass}`}>
+      {status}
+    </span>
+  );
+}
+
+function formatDate(dateStr: string) {
+  try {
+    return new Date(dateStr).toLocaleString("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  } catch {
+    return dateStr;
+  }
 }

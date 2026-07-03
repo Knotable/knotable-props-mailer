@@ -9,6 +9,8 @@ const MAX_GLOBAL_ACTIVE_QUEUE_ROWS = 20_000;
 const DIRECT_RECIPIENTS_ID = "__direct_recipients__";
 const ACTIVE_QUEUE_STATUSES = ["pending", "processing"] as const;
 
+const currentTimestampMs = () => Date.now();
+
 type ScheduleQueueRow = {
   id: string;
   email_id: string | null;
@@ -164,7 +166,7 @@ export default async function SchedulePage() {
     string,
     { pendingDue: number; pendingHeld: number; processing: number }
   >();
-  const nowMs = Date.now();
+  const nowMs = currentTimestampMs();
   for (const row of queueRows) {
     if (!row.email_id) continue;
     const groupId = row.list_id ?? DIRECT_RECIPIENTS_ID;

@@ -1,3 +1,5 @@
+import { Loader2 } from "lucide-react";
+
 type ProgressStatusProps = {
   title: string;
   detail?: string;
@@ -39,10 +41,19 @@ export function ProgressStatus({
       role="status"
       aria-live="polite"
       className={`overflow-hidden rounded-lg border ${color.border} ${color.bg}`}
+      title={detail ? `${title}. ${detail}` : title}
     >
-      <div className="px-4 py-3">
-        <p className={`text-sm font-semibold ${color.text}`}>{title}</p>
-        {detail && <p className={`mt-1 text-xs ${color.muted}`}>{detail}</p>}
+      <div className="px-3 py-3 sm:px-4">
+        <div className="flex items-center gap-3">
+          <span className={`grid size-8 shrink-0 place-items-center rounded-full bg-white/70 ${color.text}`}>
+            <Loader2 aria-hidden="true" className="size-4 animate-spin" />
+          </span>
+          <div className="min-w-0">
+            <p className={`truncate text-sm font-semibold ${color.text}`}>{title}</p>
+            {detail && <p className={`hidden text-xs sm:block ${color.muted}`}>{detail}</p>}
+            {detail && <span className="sr-only sm:hidden">{detail}</span>}
+          </div>
+        </div>
       </div>
       <div className="h-1 w-full bg-white/70">
         <div className={`h-full w-1/3 animate-pulse ${color.bar}`} />

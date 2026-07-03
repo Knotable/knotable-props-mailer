@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { ProgressStatus } from "@/components/progress-status";
+import { DataFreshness } from "@/components/data-freshness";
 
 type RecipientLogRow = {
   recipientEmail: string | null;
@@ -15,6 +16,7 @@ type RecipientLogRow = {
 
 type QueueSnapshot = {
   ok: true;
+  generatedAt: string;
   emailId: string | null;
   subject: string | null;
   emailStatus: string | null;
@@ -98,6 +100,7 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
     if (scopedEmailId) params.set("emailId", scopedEmailId);
+    params.set("refresh", Date.now().toString());
     setProgressMessage(
       scopedEmailId
         ? "Refreshing this campaign's queue snapshot..."
@@ -111,6 +114,7 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
     const next = await readJson<QueueSnapshot>(response);
     setRecipientLog(scopedEmailId ? next.recipientLog ?? [] : []);
     setSnapshot(next);
+    setLastResponseAt(next.generatedAt);
     setProgressMessage("Queue snapshot loaded.");
     return next;
   }, [scopedEmailId]);
@@ -277,7 +281,10 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
       )}
 
       <div className={`rounded-lg border px-4 py-3 ${statusTone}`}>
-        <p className="text-sm font-semibold">{snapshot?.displayStatus ?? "Loading queue status"}</p>
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-semibold">{snapshot?.displayStatus ?? "Loading queue status"}</p>
+          <DataFreshness timestamp={snapshot?.generatedAt} loading={isWorking} />
+        </div>
         {snapshot?.statusDetail && <p className="mt-1 text-sm">{snapshot.statusDetail}</p>}
       </div>
 

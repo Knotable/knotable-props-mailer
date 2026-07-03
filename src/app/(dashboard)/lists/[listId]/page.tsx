@@ -8,6 +8,7 @@ const PAGE_SIZE = 50;
 function MemberStatusBadge({ status }: { status: string | null }) {
   const styles: Record<string, string> = {
     active: "bg-green-100 text-green-700",
+    blocked: "bg-red-100 text-red-700",
     unsubscribed: "bg-slate-100 text-slate-500",
     bounced: "bg-red-100 text-red-700",
     complained: "bg-orange-100 text-orange-700",
