@@ -3,6 +3,7 @@ import { AppShell } from "@/components/layout/app-shell";
 import { DashboardErrorBoundary } from "@/components/layout/error-boundary";
 import { HealthBanner } from "@/components/health-banner";
 import { getServerAuthContext } from "@/lib/authAccess";
+import { buildInfo } from "@/lib/buildInfo.generated";
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   let userEmail: string | null = null;
@@ -27,6 +28,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
         isBypass={isBypass}
         canSend={canSend}
         canManageUsers={canManageUsers}
+        buildInfo={buildInfo}
       >
         {children}
       </AppShell>

@@ -143,12 +143,35 @@ function LogoutButton() {
   );
 }
 
+type BuildInfo = {
+  builtAt: string | null;
+  shortSha: string;
+  commitRef: string | null;
+  commitDate: string | null;
+};
+
 type AppShellProps = PropsWithChildren<{
   userEmail: string | null;
   isBypass?: boolean;
   canSend?: boolean;
   canManageUsers?: boolean;
+  buildInfo: BuildInfo;
 }>;
+
+const formatBuildDate = (value: string | null) => {
+  if (!value) return "unknown";
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(new Date(value));
+  } catch {
+    return "unknown";
+  }
+};
 
 export const AppShell = ({
   children,
@@ -156,6 +179,7 @@ export const AppShell = ({
   isBypass = false,
   canSend = false,
   canManageUsers = false,
+  buildInfo,
 }: AppShellProps) => {
   const pathname = usePathname();
   const navItems = dashboardNav.filter((item) => item.href !== "/users" || canManageUsers);
@@ -191,6 +215,14 @@ export const AppShell = ({
               <p className="text-slate-400">Not signed in</p>
             )}
           </div>
+        </div>
+        <div className="mx-auto flex max-w-6xl justify-end px-4 pb-2">
+          <p className="text-[11px] text-slate-400">
+            Build {formatBuildDate(buildInfo.builtAt)} · Commit{" "}
+            {buildInfo.shortSha}
+            {buildInfo.commitRef ? ` (${buildInfo.commitRef})` : ""} · Commit date{" "}
+            {formatBuildDate(buildInfo.commitDate)}
+          </p>
         </div>
       </header>
       <main className="mx-auto flex max-w-6xl flex-col gap-3 px-0 py-3 sm:gap-4 sm:px-4 sm:py-5">
