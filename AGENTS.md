@@ -2,6 +2,8 @@
 # Start here
 
 Read `README-AI.md` in the repo root before doing any structural exploration. It contains the full project analysis — architecture, key files, tech stack, deployment flow, DB schema, and conventions. This avoids re-deriving what is already documented.
+
+If the task is operational, UI-adjacent, live-app assistance, Supabase/Vercel screen guidance, analytics/history checking, send/queue work, or "help me do this on the screen," also read `docs/ai-operator-runbook.md` before deciding whether code changes are needed. Many tasks in this repo are operator workflows rather than coding tasks.
 <!-- END:project-context -->
 
 <!-- BEGIN:email-sending-rules -->

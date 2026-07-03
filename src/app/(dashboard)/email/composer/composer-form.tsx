@@ -1,5 +1,19 @@
 "use client";
 
+import {
+  Bold,
+  ChevronDown,
+  Eraser,
+  Heading2,
+  Italic,
+  Link as LinkIcon,
+  List,
+  ListOrdered,
+  Pilcrow,
+  Underline,
+  Unlink,
+  X,
+} from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { saveDraftAction, sendTestAction, queueCampaignAction, type QueueCampaignConfirm, type QueueCampaignOk } from "../actions";
@@ -391,6 +405,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
             name="subject"
             required
             defaultValue={draft?.subject ?? ""}
+            placeholder="Subject, e.g. Hello {{firstName}}"
             className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
           />
         </label>
@@ -411,10 +426,11 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                   <button
                     type="button"
                     onClick={() => setSelectedList(null)}
-                    className="text-slate-400 hover:text-slate-700 text-xs leading-none"
+                    className="inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-700"
                     title="Remove list"
                   >
-                    ✕
+                    <X aria-hidden="true" className="size-4" />
+                    <span className="sr-only">Remove list</span>
                   </button>
                 </div>
               ) : (
@@ -444,7 +460,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                   className="flex items-center gap-1 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 whitespace-nowrap"
                 >
                   Lists
-                  <span className="text-slate-400">▾</span>
+                  <ChevronDown aria-hidden="true" className="size-4 text-slate-400" />
                 </button>
 
                 {dropdownOpen && (
@@ -766,16 +782,36 @@ function RichHtmlEditor({
       {mode === "visual" ? (
         <div className="overflow-hidden rounded-md border border-slate-300 bg-white">
           <div className="flex flex-wrap gap-1 border-b border-slate-200 bg-slate-50 p-2">
-            <EditorToolbarButton label="Paragraph" onClick={() => runCommand("formatBlock", "p")} />
-            <EditorToolbarButton label="Heading" onClick={() => runCommand("formatBlock", "h2")} />
-            <EditorToolbarButton label="Bold" onClick={() => runCommand("bold")} />
-            <EditorToolbarButton label="Italic" onClick={() => runCommand("italic")} />
-            <EditorToolbarButton label="Underline" onClick={() => runCommand("underline")} />
-            <EditorToolbarButton label="Bullets" onClick={() => runCommand("insertUnorderedList")} />
-            <EditorToolbarButton label="Numbered list" onClick={() => runCommand("insertOrderedList")} />
-            <EditorToolbarButton label="Link" onClick={addLink} />
-            <EditorToolbarButton label="Unlink" onClick={() => runCommand("unlink")} />
-            <EditorToolbarButton label="Clear format" onClick={() => runCommand("removeFormat")} />
+            <EditorToolbarButton label="Paragraph" onClick={() => runCommand("formatBlock", "p")}>
+              <Pilcrow aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Heading" onClick={() => runCommand("formatBlock", "h2")}>
+              <Heading2 aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Bold" onClick={() => runCommand("bold")}>
+              <Bold aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Italic" onClick={() => runCommand("italic")}>
+              <Italic aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Underline" onClick={() => runCommand("underline")}>
+              <Underline aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Bullets" onClick={() => runCommand("insertUnorderedList")}>
+              <List aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Numbered list" onClick={() => runCommand("insertOrderedList")}>
+              <ListOrdered aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Link" onClick={addLink}>
+              <LinkIcon aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Unlink" onClick={() => runCommand("unlink")}>
+              <Unlink aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
+            <EditorToolbarButton label="Clear format" onClick={() => runCommand("removeFormat")}>
+              <Eraser aria-hidden="true" className="size-4" />
+            </EditorToolbarButton>
           </div>
           <div
             ref={editorRef}
@@ -797,21 +833,31 @@ function RichHtmlEditor({
         />
       )}
       <p className="mt-1 text-xs text-slate-500">
-        Use Visual for formatting or HTML source for exact markup. Preview before sending.
+        Merge tags work in subject and body: {"{{firstName}}"}, {"{{name}}"}, {"{{email}}"}.
       </p>
     </div>
   );
 }
 
-function EditorToolbarButton({ label, onClick }: { label: string; onClick: () => void }) {
+function EditorToolbarButton({
+  label,
+  onClick,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <button
       type="button"
       onMouseDown={(event) => event.preventDefault()}
       onClick={onClick}
-      className="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100"
+      className="inline-flex size-9 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 hover:bg-slate-100"
+      title={label}
+      aria-label={label}
     >
-      {label}
+      {children}
     </button>
   );
 }

@@ -1,20 +1,27 @@
-import { bypassLogin, sendLoginCode, verifyLoginCode } from "./actions";
 import Link from "next/link";
+import { KeyRound, RotateCcw } from "lucide-react";
+import { FormStatusButton } from "@/components/form-status-button";
+import { sendPasswordReset, signInWithPassword } from "./actions";
+import {
+  AuthCard,
+  AuthMessage,
+  inputClass,
+  linkClass,
+  pickParam,
+  primaryButtonClass,
+} from "./auth-ui";
 
 type LoginPageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-const pickParam = (value: string | string[] | undefined) =>
-  Array.isArray(value) ? value[0] ?? "" : value ?? "";
-
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const params = (await searchParams) ?? {};
   const email = pickParam(params.email).trim().toLowerCase();
-  const sent = pickParam(params.sent) === "1";
+  const resetSent = pickParam(params.reset) === "1";
+  const passwordUpdated = pickParam(params.password) === "updated";
   const error = pickParam(params.error);
   const trace = pickParam(params.trace);
-  const signup = pickParam(params.signup) === "1";
   const rateLimitMatch = error.match(/^rate:(\d+)$/);
 
   const errorMessage =
@@ -26,109 +33,111 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       ? "No account exists for that email yet. Create an account first."
       : error === "send-code"
       ? "We couldn’t send the sign-in code. Check the address and try again."
-      : error === "missing-code"
-      ? "Paste the code from the email to finish signing in."
-      : error === "invalid-code"
-      ? "That code didn’t work. Request a fresh one and try again."
-      : error === "bypass-failed"
-      ? "Bypass password didn’t match."
-      : error === "token" || error === "use-code"
-      ? "Magic links are no longer supported here. Request a sign-in code instead."
+      : error === "reset-password"
+      ? "We couldn’t send the password reset email. Check the username and try again."
+      : error === "missing-credentials"
+      ? "Enter your username and password."
+      : error === "invalid-credentials"
+      ? "That username and password didn’t work."
       : null;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
-      <div className="w-full max-w-md space-y-6 rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
-        <div className="space-y-1 text-center">
-          <p className="text-xs uppercase tracking-wide text-slate-400">Knotable Props</p>
-          <h1 className="text-2xl font-semibold text-slate-900">Sign in</h1>
-          <p className="text-sm text-slate-500">
-            We email you a one-time code. New accounts can draft and review mail, but sending stays off until an admin enables it.
-          </p>
-        </div>
+    <AuthCard title="Sign in" description="Use your account username and password.">
+      {errorMessage ? (
+        <AuthMessage>
+          <p>{errorMessage}</p>
+          {trace ? <p className="mt-1 text-xs text-rose-800/80">Trace: {trace}</p> : null}
+        </AuthMessage>
+      ) : null}
 
-        {errorMessage ? (
-          <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">
-            {errorMessage}
-          </div>
-        ) : null}
+      {resetSent ? (
+        <AuthMessage tone="success" icon="mail">
+          <p>Password reset link sent to <span className="font-medium">{email}</span>.</p>
+          {trace ? <p className="mt-1 text-xs text-emerald-800/80">Trace: {trace}</p> : null}
+        </AuthMessage>
+      ) : null}
 
-        {sent ? (
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-            {signup ? "Account code" : "Sign-in code"} sent to <span className="font-medium">{email}</span>.
-            {trace ? <p className="mt-1 text-xs text-emerald-800/80">Trace: {trace}</p> : null}
-          </div>
-        ) : null}
+      {passwordUpdated ? (
+        <AuthMessage tone="success">
+          <p>Password updated. Sign in with the new password.</p>
+        </AuthMessage>
+      ) : null}
 
-        {!sent && trace && errorMessage ? (
-          <p className="text-xs text-slate-400">Trace: {trace}</p>
-        ) : null}
+      {trace && errorMessage ? (
+        <p className="text-xs text-slate-400">Trace: {trace}</p>
+      ) : null}
 
-        <form action={sendLoginCode} className="space-y-4">
-          <label className="block text-sm font-medium text-slate-700">
-            Email address
-            <input
-              name="email"
-              type="email"
-              required
-              defaultValue={email}
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2"
-              placeholder="you@example.com"
-            />
-          </label>
-          <button className="w-full rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
-            {sent ? "Send a new code" : "Send sign-in code"}
-          </button>
-        </form>
-
-        <form action={verifyLoginCode} className="space-y-4 border-t border-slate-200 pt-4">
-          <input type="hidden" name="email" value={email} />
-          <label className="block text-sm font-medium text-slate-700">
-            Sign-in code
-            <input
-              name="code"
-              type="text"
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              required
-              className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 tracking-[0.3em]"
-              placeholder="123456"
-            />
-          </label>
-          <button className="w-full rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900">
-            Verify code
-          </button>
-        </form>
-
-        <p className="text-center text-sm text-slate-500">
-          Need access?{" "}
-          <Link href={`/signup${email ? `?email=${encodeURIComponent(email)}` : ""}`} className="font-medium text-slate-900 underline underline-offset-4">
-            Create an account
-          </Link>
-        </p>
-
-        <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4">
-          <p className="text-sm font-semibold text-slate-900">Bypass</p>
-          <p className="mt-1 text-xs text-slate-500">
-            Emergency fallback if Supabase auth is rate-limiting or failing.
-          </p>
-          <form action={bypassLogin} className="mt-3 space-y-3">
-            <label className="block text-sm font-medium text-slate-700">
+      <form action={signInWithPassword} className="space-y-4">
+        <label className="block text-sm font-medium text-slate-700">
+          Username
+          <input
+            name="email"
+            type="email"
+            required
+            autoComplete="username"
+            defaultValue={email}
+            className={inputClass}
+            placeholder="you@example.com"
+          />
+        </label>
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-3">
+            <label htmlFor="password" className="block text-sm font-medium text-slate-700">
               Password
-              <input
-                name="password"
-                type="password"
-                required
-                className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2"
-                placeholder="Enter bypass password"
-              />
             </label>
-            <button className="w-full rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900">
-              Enter with bypass
-            </button>
-          </form>
+            <FormStatusButton
+              name="intent"
+              value="reset-password"
+              pendingIntent="reset-password"
+              formAction={sendPasswordReset}
+              formNoValidate
+              pendingLabel="Sending reset"
+              className="inline-flex items-center gap-1 text-sm font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900 disabled:opacity-60"
+            >
+              <RotateCcw aria-hidden="true" className="size-3.5" />
+              <span>Forgot password?</span>
+            </FormStatusButton>
+          </div>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autoComplete="current-password"
+            required
+            className={inputClass}
+            placeholder="Enter your password"
+          />
+        </div>
+        <FormStatusButton
+          name="intent"
+          value="sign-in"
+          pendingIntent="sign-in"
+          pendingLabel="Checking"
+          className={primaryButtonClass}
+        >
+          <KeyRound aria-hidden="true" className="size-4" />
+          <span>Sign in</span>
+        </FormStatusButton>
+      </form>
+
+      <p className="text-center text-sm text-slate-500">
+        Need access?{" "}
+        <Link href={`/signup${email ? `?email=${encodeURIComponent(email)}` : ""}`} className={linkClass}>
+          Create an account
+        </Link>
+      </p>
+
+      <div className="border-t border-slate-200 pt-4 text-center text-sm text-slate-500">
+        <p className="mb-2">Other sign-in options</p>
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+          <Link href={`/login/code${email ? `?email=${encodeURIComponent(email)}` : ""}`} className={linkClass}>
+            Get sign-in code
+          </Link>
+          <Link href="/login/bypass" className={linkClass}>
+            Use bypass
+          </Link>
         </div>
       </div>
-    </div>
+    </AuthCard>
   );
 }

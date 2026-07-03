@@ -6,6 +6,13 @@ import { getServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { logAudit } from "@/lib/logger";
 import type { Json } from "@/supabase/types";
+import {
+  BLOCK_LIST_ADDRESS,
+  BLOCK_LIST_NAME,
+  BLOCKED_EMAIL_DOMAINS,
+  blockedMemberMetadata,
+  isBlockedRecipientEmail,
+} from "@/lib/blockList";
 
 async function requireAuthUserId(): Promise<string> {
   const auth = await getServerAuthContext();
@@ -15,6 +22,7 @@ async function requireAuthUserId(): Promise<string> {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const IMPORT_MEMBERS_CHUNK_SIZE = 500;
+const OWNER_ALWAYS_INCLUDE_EMAIL = "a@sarva.co";
 
 function parseCsvLine(line: string): string[] {
   const fields: string[] = [];
@@ -130,8 +138,30 @@ const UpsertListSchema = z.object({
 
 const ImportMembersSchema = z.object({
   listId: z.string().uuid(),
-  members: z.string().min(1).max(20_000_000),
+  members: z.string().max(20_000_000).optional().default(""),
 });
+
+async function upsertOwnerAlwaysIncludeMember(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  listId: string,
+) {
+  const { error } = await supabase.from("list_members").upsert(
+    {
+      list_id: listId,
+      email: OWNER_ALWAYS_INCLUDE_EMAIL,
+      status: "active",
+      source: "always_include_owner",
+      unsubscribed_at: null,
+      metadata: {
+        name: "Amol Sarva",
+        display_name: "Amol Sarva",
+        always_include_owner: true,
+      } satisfies Json,
+    },
+    { onConflict: "list_id,email" },
+  );
+  if (error) throw error;
+}
 
 export async function upsertListAction(formData: FormData) {
   const userId = await requireAuthUserId();
@@ -159,11 +189,12 @@ export async function upsertListAction(formData: FormData) {
     throw new Error("A list with this address already exists");
   }
 
-  const { error } = await supabase.from("lists").upsert(
+  const { data: upsertedList, error } = await supabase.from("lists").upsert(
     { owner_id: userId, name, address, description },
     { onConflict: "address" },
-  );
+  ).select("id").single();
   if (error) throw error;
+  if (upsertedList?.id) await upsertOwnerAlwaysIncludeMember(supabase, upsertedList.id);
 
   logAudit({
     userId,
@@ -186,7 +217,12 @@ export async function importMembersAction(formData: FormData) {
   if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
 
   const listId = parsed.data.listId;
-  const raw = parsed.data.members;
+  const uploadedFile = formData.get("membersFile");
+  const rawFromFile =
+    uploadedFile instanceof File && uploadedFile.size > 0
+      ? await uploadedFile.text()
+      : "";
+  const raw = rawFromFile || parsed.data.members;
 
   // Verify the requesting user owns the target list.
   const { data: list } = await supabase
@@ -200,15 +236,32 @@ export async function importMembersAction(formData: FormData) {
   const { members, skippedInvalid, skippedDuplicate, submitted } = parseMemberRows(raw);
   if (!members.length) throw new Error("No members provided");
 
-  for (let i = 0; i < members.length; i += IMPORT_MEMBERS_CHUNK_SIZE) {
-    const rows = members
+  const ownerMember = {
+    email: OWNER_ALWAYS_INCLUDE_EMAIL,
+    metadata: {
+      name: "Amol Sarva",
+      display_name: "Amol Sarva",
+      always_include_owner: true,
+    } as Json,
+  };
+  const importMembers = members.some((member) => member.email === OWNER_ALWAYS_INCLUDE_EMAIL)
+    ? members
+    : [...members, ownerMember];
+
+  for (let i = 0; i < importMembers.length; i += IMPORT_MEMBERS_CHUNK_SIZE) {
+    const rows = importMembers
       .slice(i, i + IMPORT_MEMBERS_CHUNK_SIZE)
-      .map((member) => ({
-        list_id: listId,
-        email: member.email,
-        status: "active",
-        metadata: member.metadata,
-      }));
+      .map((member) => {
+        const blocked = isBlockedRecipientEmail(member.email);
+        return {
+          list_id: listId,
+          email: member.email,
+          status: blocked ? "blocked" : "active",
+          source: blocked ? "block_list" : "manual",
+          unsubscribed_at: blocked ? new Date().toISOString() : null,
+          metadata: blocked ? blockedMemberMetadata(member.metadata) : member.metadata,
+        };
+      });
     const { error } = await supabase
       .from("list_members")
       .upsert(rows, { onConflict: "list_id,email" });
@@ -222,10 +275,10 @@ export async function importMembersAction(formData: FormData) {
     entityId: listId,
     payload: {
       submitted,
-      upserted: members.length,
+      upserted: importMembers.length,
       skippedInvalid,
       skippedDuplicate,
-      chunks: Math.ceil(members.length / IMPORT_MEMBERS_CHUNK_SIZE),
+      chunks: Math.ceil(importMembers.length / IMPORT_MEMBERS_CHUNK_SIZE),
     },
   }).catch(console.error);
 
@@ -233,8 +286,91 @@ export async function importMembersAction(formData: FormData) {
   revalidatePath(`/lists/${listId}`);
   return {
     submitted,
-    upserted: members.length,
+    upserted: importMembers.length,
     skippedInvalid,
     skippedDuplicate,
   };
+}
+
+export async function applyBlockListAction() {
+  const userId = await requireAuthUserId();
+  const supabase = getSupabaseAdmin();
+
+  const { data: existing } = await supabase
+    .from("lists")
+    .select("id, owner_id")
+    .eq("address", BLOCK_LIST_ADDRESS)
+    .maybeSingle();
+
+  if (existing && existing.owner_id !== userId) {
+    throw new Error("Block List already exists under another owner");
+  }
+
+  const { data: blockList, error: listError } = await supabase
+    .from("lists")
+    .upsert(
+      {
+        owner_id: userId,
+        name: BLOCK_LIST_NAME,
+        address: BLOCK_LIST_ADDRESS,
+        description: [
+          "Global suppression rules:",
+          BLOCKED_EMAIL_DOMAINS.map((domain) => `*@${domain}`).join(", "),
+        ].join(" "),
+      },
+      { onConflict: "address" },
+    )
+    .select("id")
+    .single();
+
+  if (listError || !blockList) throw listError ?? new Error("Unable to create Block List");
+
+  const wildcardRows = BLOCKED_EMAIL_DOMAINS.map((domain) => ({
+    list_id: blockList.id,
+    email: `*@${domain}`,
+    status: "blocked",
+    source: "block_list",
+    unsubscribed_at: new Date().toISOString(),
+    metadata: blockedMemberMetadata(),
+  }));
+
+  const { error: wildcardError } = await supabase
+    .from("list_members")
+    .upsert(wildcardRows, { onConflict: "list_id,email" });
+  if (wildcardError) throw wildcardError;
+
+  let blockedCount = 0;
+  const now = new Date().toISOString();
+  for (const domain of BLOCKED_EMAIL_DOMAINS) {
+    const { count, error } = await supabase
+      .from("list_members")
+      .update(
+        {
+          status: "blocked",
+          source: "block_list",
+          unsubscribed_at: now,
+        },
+        { count: "exact" },
+      )
+      .neq("list_id", blockList.id)
+      .eq("status", "active")
+      .ilike("email", `%@${domain}`);
+
+    if (error) throw error;
+    blockedCount += count ?? 0;
+  }
+
+  logAudit({
+    userId,
+    action: "list.apply_block_list",
+    entity: "lists",
+    entityId: blockList.id,
+    payload: {
+      blockedDomains: [...BLOCKED_EMAIL_DOMAINS],
+      blockedCount,
+    },
+  }).catch(console.error);
+
+  revalidatePath("/lists");
+  return { blockedCount, blockedDomains: [...BLOCKED_EMAIL_DOMAINS] };
 }

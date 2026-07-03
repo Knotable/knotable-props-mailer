@@ -86,21 +86,21 @@ export async function GET(request: Request) {
     await Promise.all([
       supabase
         .from("mail_queue")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("status", "pending"),
       supabase
         .from("mail_queue")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("status", "pending")
         .lte("available_at", nowIso),
       supabase
         .from("mail_queue")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("status", "pending")
         .gt("available_at", nowIso),
       supabase
         .from("mail_queue")
-        .select("id", { count: "planned", head: true })
+        .select("id", { count: "exact", head: true })
         .eq("status", "processing"),
     ]);
 

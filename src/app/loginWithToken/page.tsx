@@ -17,18 +17,22 @@ export default async function LoginWithTokenPage({ searchParams }: LoginWithToke
   const type = (pickParam(params.type) as EmailOtpType | "") || "magiclink";
 
   if (!token_hash) {
-    redirect("/login?error=use-code");
+    redirect("/login/code?error=use-code");
   }
 
   const { data, error } = await supabase.auth.verifyOtp({ type, token_hash });
   if (error) {
     console.error("[loginWithToken] OTP verification failed:", error.message);
-    redirect("/login?error=use-code");
+    redirect("/login/code?error=use-code");
   }
 
   const user = data.user ?? (await supabase.auth.getUser()).data.user;
   if (user?.id && user.email) {
     await ensureUserProfile(user.id, user.email);
+  }
+
+  if (type === "recovery") {
+    redirect("/reset-password");
   }
 
   redirect("/email/composer");

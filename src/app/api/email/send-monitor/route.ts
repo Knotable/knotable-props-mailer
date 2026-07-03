@@ -96,7 +96,7 @@ async function countQueueRows(status: string, emailId?: string, availability?: "
   const supabase = getSupabaseAdmin();
   let query = supabase
     .from("mail_queue")
-    .select("id", { count: "planned", head: true })
+    .select("id", { count: "exact", head: true })
     .eq("status", status);
 
   if (emailId) query = query.eq("email_id", emailId);
@@ -112,7 +112,7 @@ async function countSucceededRows(emailId?: string, sendDateGte?: string) {
   const supabase = getSupabaseAdmin();
   let query = supabase
     .from("mail_queue")
-    .select("id", { count: "planned", head: true })
+    .select("id", { count: "exact", head: true })
     .eq("status", "succeeded");
 
   if (emailId) query = query.eq("email_id", emailId);
@@ -127,7 +127,7 @@ async function countSucceededOnDate(date: string) {
   const supabase = getSupabaseAdmin();
   const { count, error } = await supabase
     .from("mail_queue")
-    .select("id", { count: "planned", head: true })
+    .select("id", { count: "exact", head: true })
     .eq("send_date", date)
     .eq("status", "succeeded");
 
@@ -182,6 +182,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     const total = pending + processing;
     return {
       ok: true,
+      generatedAt: new Date().toISOString(),
       emailId: null,
       subject: null,
       emailStatus: null,
@@ -285,6 +286,7 @@ async function buildMonitorSnapshot(emailId?: string) {
 
   return {
     ok: true,
+    generatedAt: new Date().toISOString(),
     emailId: emailId ?? null,
     subject,
     emailStatus,
@@ -320,7 +322,13 @@ export async function GET(request: Request) {
   try {
     const parsed = optionalEmailId(request);
     if (parsed.error) return NextResponse.json({ error: parsed.error }, { status: 400 });
-    return NextResponse.json(await buildMonitorSnapshot(parsed.emailId));
+    return NextResponse.json(await buildMonitorSnapshot(parsed.emailId), {
+      headers: {
+        "Cache-Control": "private, no-store, no-cache, max-age=0, must-revalidate",
+        Expires: "0",
+        Pragma: "no-cache",
+      },
+    });
   } catch (error) {
     const message = errorMessage(error, "Unable to load queue status");
     console.error("[send-monitor] snapshot error", error);
