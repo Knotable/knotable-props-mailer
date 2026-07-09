@@ -690,7 +690,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
         status: "pending",
         available_at: QUEUE_HOLD_AT,
         send_date: null,
-        campaign_label,
+        campaign_label: campaignLabel,
         dedupe_hash: makeSenderCopyDedupeHash(emailId, senderEmail),
       });
     }
