@@ -11,6 +11,10 @@ const ACTIVE_QUEUE_STATUSES = ["pending", "processing"] as const;
 
 const currentTimestampMs = () => Date.now();
 
+type SchedulePageProps = {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+};
+
 type ScheduleQueueRow = {
   id: string;
   email_id: string | null;
@@ -108,9 +112,11 @@ function payloadToEmail(payload: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-export default async function SchedulePage() {
+export default async function SchedulePage({ searchParams }: SchedulePageProps) {
   const auth = await requireServerAuthContext();
   const admin = getSupabaseAdmin();
+  const params = (await searchParams) ?? {};
+  const sendError = typeof params.sendError === "string" ? params.sendError : null;
 
   const { data: emails } = await admin
     .from("emails")
@@ -275,6 +281,12 @@ export default async function SchedulePage() {
               Showing the first {MAX_GLOBAL_ACTIVE_QUEUE_ROWS.toLocaleString()} active rows; narrow by campaign before draining.
             </span>
           )}
+        </div>
+      )}
+
+      {sendError && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {sendError}
         </div>
       )}
 

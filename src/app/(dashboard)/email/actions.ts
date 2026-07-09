@@ -2,6 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getServerAuthContext, requireCanSendAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
@@ -1252,6 +1253,20 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to send email" };
   }
+}
+
+export async function sendQueuedEmailAndRedirectAction(formData: FormData): Promise<void> {
+  const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+  if (!parsed.success) {
+    redirect("/email/schedule?sendError=Invalid%20email%20id");
+  }
+
+  const result = await sendQueuedEmailAction(formData);
+  if (result.error) {
+    redirect(`/email/schedule?sendError=${encodeURIComponent(result.error)}`);
+  }
+
+  redirect(`/email/monitor?emailId=${parsed.data.id}&auto=1`);
 }
 
 export async function editQueuedEmailAction(

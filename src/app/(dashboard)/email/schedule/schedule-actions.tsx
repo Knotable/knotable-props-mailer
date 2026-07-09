@@ -1,11 +1,12 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useState, useTransition, type FormEvent } from "react";
+import { useFormStatus } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
   deleteEmailAction,
   editQueuedEmailAction,
-  sendQueuedEmailAction,
+  sendQueuedEmailAndRedirectAction,
 } from "../actions";
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 import { ProgressStatus } from "@/components/progress-status";
@@ -60,28 +61,17 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
     });
   };
 
-  const handleSendNow = () => {
+  const handleSendNowSubmit = (event: FormEvent<HTMLFormElement>) => {
     const confirmed = confirm(
       `Release queued recipients for "${subject || "this email"}" and start the monitor?`,
     );
-    if (!confirmed) return;
+    if (!confirmed) {
+      event.preventDefault();
+      return;
+    }
 
-    runAction("Releasing due recipients and checking the daily send cap...", async () => {
-      const fd = new FormData();
-      fd.set("id", id);
-      fd.set("releaseConfirmation", buildQueueReleaseConfirmation(id));
-      const res = await sendQueuedEmailAction(fd);
-      if (res.error) throw new Error(res.error);
-      setProgress("Release complete. Opening the scoped monitor for this email...");
-      setResult({
-        ok: true,
-        message:
-          (res.remainingQueued ?? 0) > 0
-            ? `Released ${res.dueNow ?? 0} for today${(res.scheduledFuture ?? 0) > 0 ? `, scheduled ${res.scheduledFuture} future` : ""}; opening the scoped monitor.`
-            : `Sent ${res.succeeded}${(res.failed ?? 0) > 0 ? `, ${res.failed} failed` : ""}.`,
-      });
-      router.push(`/email/monitor?emailId=${id}&auto=1`);
-    });
+    setResult(null);
+    setProgress("Releasing due recipients and opening the scoped monitor...");
   };
 
   const handleDelete = () => {
@@ -102,6 +92,7 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
         {isQueued && (
           <>
             <button
+              type="button"
               onClick={handleEdit}
               disabled={working}
               className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
@@ -109,17 +100,24 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
               {working ? "Working..." : "Edit"}
             </button>
             {canSend && (
-              <button
-                onClick={handleSendNow}
-                disabled={working}
-                className="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+              <form
+                action={sendQueuedEmailAndRedirectAction}
+                onSubmit={handleSendNowSubmit}
+                className="contents"
               >
-                {working ? "Working..." : "Send Now"}
-              </button>
+                <input type="hidden" name="id" value={id} />
+                <input
+                  type="hidden"
+                  name="releaseConfirmation"
+                  value={buildQueueReleaseConfirmation(id)}
+                />
+                <SendNowButton disabled={working} />
+              </form>
             )}
           </>
         )}
         <button
+          type="button"
           onClick={handleDelete}
           disabled={working}
           className="rounded-md border border-red-200 px-3 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-50"
@@ -142,5 +140,20 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
         </span>
       )}
     </div>
+  );
+}
+
+function SendNowButton({ disabled }: { disabled: boolean }) {
+  const { pending } = useFormStatus();
+  const isDisabled = disabled || pending;
+
+  return (
+    <button
+      type="submit"
+      disabled={isDisabled}
+      className="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+    >
+      {isDisabled ? "Working..." : "Send Now"}
+    </button>
   );
 }
