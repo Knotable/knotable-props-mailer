@@ -1,0 +1,46 @@
+name: Mailer Cron Trigger
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mailer-cron
+  cancel-in-progress: false
+
+jobs:
+  trigger-mailer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      MAILER_BASE_URL: https://knotable-props-mailer.vercel.app
+      MAILER_CRON_SECRET: ${{ secrets.MAILER_CRON_SECRET }}
+    steps:
+      - name: Trigger active mailer worker
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${MAILER_CRON_SECRET:-}" ]; then
+            echo "MAILER_CRON_SECRET is not set."
+            exit 1
+          fi
+
+          for attempt in 1 2 3 4 5 6 7 8; do
+            echo "Trigger ${attempt}/8"
+            curl --fail --show-error --silent --max-time 50 \
+              --request POST \
+              --header "Authorization: Bearer ${MAILER_CRON_SECRET}" \
+              --header "Content-Type: application/json" \
+              --data '{"action":"send_queued"}' \
+              "${MAILER_BASE_URL}/api/workers/send-queued"
+            echo
+
+            if [ "${attempt}" != "8" ]; then
+              sleep 10
+            fi
+          done
