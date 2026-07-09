@@ -16,8 +16,16 @@ import {
 } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { saveDraftAction, sendTestAction, queueCampaignAction, type QueueCampaignConfirm, type QueueCampaignOk } from "../actions";
+import {
+  saveDraftAction,
+  sendTestAction,
+  queueCampaignAction,
+  sendQueuedEmailAction,
+  type QueueCampaignConfirm,
+  type QueueCampaignOk,
+} from "../actions";
 import { ProgressStatus } from "@/components/progress-status";
+import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 
 const LAST_DRAFT_KEY = "composer.lastDraftId";
 const AUTOSAVE_DELAY_MS = 3_000;
@@ -46,6 +54,7 @@ type Props = {
 };
 
 type AutosaveState = "idle" | "pending" | "saving" | "saved" | "error";
+type QueueWorkflowTarget = "queue" | "sendNow";
 type WarningGroup = QueueCampaignConfirm["warningGroups"][number];
 
 export function ComposerForm({ draft, lists, templateMode = false, userEmail, canSend }: Props) {
@@ -62,6 +71,8 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [draftId, setDraftId] = useState<string | null>(templateMode ? null : (draft?.id ?? null));
   const [autosaveState, setAutosaveState] = useState<AutosaveState>("idle");
+  const [activeWorkflow, setActiveWorkflow] = useState<QueueWorkflowTarget | "directSend" | null>(null);
+  const [pendingQueueTarget, setPendingQueueTarget] = useState<QueueWorkflowTarget>("queue");
   // Duplicate-send confirmation state — set when the server returns requiresConfirmation:true.
   const [dupWarning, setDupWarning] = useState<QueueCampaignConfirm | null>(null);
 
@@ -209,14 +220,21 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
     }
   };
 
-  // ── Core queue helper (used by both first-send and "send anyway") ─────────
-  const runQueueCampaign = async (skipDuplicateCheck: boolean, emailIdOverride?: string, excludeRecipients?: string[]) => {
+  // ── Core queue helper (used by Queue, Send Now, and duplicate overrides) ──
+  const runQueueCampaign = async (
+    skipDuplicateCheck: boolean,
+    emailIdOverride?: string,
+    excludeRecipients?: string[],
+    target: QueueWorkflowTarget = "queue",
+  ) => {
     let emailId = emailIdOverride ?? draftId;
     if (!formRef.current || !selectedList || !emailId) return;
     cancelAutosave();
     setSending(true);
+    setActiveWorkflow(target);
     setBanner(null);
     setDupWarning(null);
+    setPendingQueueTarget(target);
     setActionStatus("Saving the latest draft before queue preparation...");
 
     try {
@@ -252,6 +270,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         if (!res.ok) {
           if (res.requiresConfirmation) {
             setDupWarning(res);
+            setPendingQueueTarget(target);
           } else {
             setBanner({ ok: false, message: res.error });
           }
@@ -272,24 +291,42 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
       }
 
       if (lastOk?.ok) {
-        setActionStatus("Queue preparation finished. Opening the Queue page...");
-        setBanner({
-          ok: true,
-          message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
-        });
-        router.push("/email/sends");
+        if (target === "sendNow") {
+          setActionStatus("Queue preparation finished. Releasing this campaign now...");
+          const releaseFd = new FormData();
+          releaseFd.set("id", emailId);
+          releaseFd.set("releaseConfirmation", buildQueueReleaseConfirmation(emailId));
+          const release = await sendQueuedEmailAction(releaseFd);
+          if (release.error) throw new Error(release.error);
+          setActionStatus("Release started. Opening the scoped monitor...");
+          setBanner({
+            ok: true,
+            message:
+              (release.remainingQueued ?? 0) > 0
+                ? `Released ${release.dueNow ?? 0} for today; opening the monitor for this campaign.`
+                : `Send completed: ${release.succeeded ?? 0} accepted${(release.failed ?? 0) > 0 ? `, ${release.failed} failed` : ""}.`,
+          });
+          router.push(`/email/monitor?emailId=${emailId}&auto=1`);
+        } else {
+          setActionStatus("Queue preparation finished. Opening the Queue page...");
+          setBanner({
+            ok: true,
+            message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
+          });
+          router.push("/email/schedule");
+        }
       }
-      router.push("/email/schedule");
     } catch (err) {
       setBanner({ ok: false, message: getActionErrorMessage(err, "Queue failed.") });
     } finally {
       setSending(false);
+      setActiveWorkflow(null);
       setActionStatus(null);
     }
   };
 
   // ── Queue / Send ───────────────────────────────────────────────────────────
-  const handleSend = async () => {
+  const handleQueueOrSend = async (target: QueueWorkflowTarget) => {
     if (!formRef.current) return;
     if (!canSend) {
       setBanner({ ok: false, message: "An admin has not enabled sending for this account." });
@@ -301,6 +338,13 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
     const fd = new FormData(formRef.current);
 
     if (selectedList) {
+      if (target === "sendNow") {
+        const confirmed = confirm(
+          `Queue and send "${(fd.get("subject") as string | null) || "this email"}" to "${selectedList.name}" now?`,
+        );
+        if (!confirmed) return;
+      }
+
       let emailId = draftId;
       if (!emailId) {
         setActionStatus("Creating a draft before queue preparation...");
@@ -320,9 +364,10 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         setBanner({ ok: false, message: "Unable to create a draft for queueing. Please try again." });
         return;
       }
-      await runQueueCampaign(false, emailId);
+      await runQueueCampaign(false, emailId, undefined, target);
     } else {
       setSending(true);
+      setActiveWorkflow("directSend");
       setActionStatus("Sending email through SES...");
       try {
         const res = await sendTestAction(fd);
@@ -340,19 +385,20 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         setBanner({ ok: false, message: getActionErrorMessage(err, "Send failed.") });
       } finally {
         setSending(false);
+        setActiveWorkflow(null);
         setActionStatus(null);
       }
     }
   };
 
   // ── Queue anyway (override duplicate warning) ──────────────────────────────
-  const handleSendAnyway = () => runQueueCampaign(true);
+  const handleSendAnyway = () => runQueueCampaign(true, undefined, undefined, pendingQueueTarget);
 
   // ── Queue without duplicates (exclude exact duplicate recipients) ──────────
   const handleSendWithoutDuplicates = () => {
     if (!dupWarning) return;
     const exactDuplicates = dupWarning.warningGroups.flatMap((g) => g.exactRecipientAddresses);
-    runQueueCampaign(true, undefined, exactDuplicates);
+    runQueueCampaign(true, undefined, exactDuplicates, pendingQueueTarget);
   };
 
   const canQueueWithoutDuplicates =
@@ -626,6 +672,9 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                 Showing a bounded sample of {dupWarning.warningSampleLimit.toLocaleString()} rows; duplicate removal is disabled for this large warning set.
               </p>
             )}
+            <p className="text-xs font-medium text-amber-900">
+              Continuing will {pendingQueueTarget === "sendNow" ? "queue and release this campaign now" : "queue this campaign and open the Queue tab"}.
+            </p>
             <div className="flex flex-wrap gap-2 pt-1">
               <button
                 type="button"
@@ -641,7 +690,9 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                   disabled={sending}
                   className="rounded-md border border-amber-400 bg-amber-100 px-4 py-1.5 text-sm font-semibold text-amber-900 hover:bg-amber-200 disabled:opacity-50"
                 >
-                  {sending ? "Queueing…" : `Remove ${dupWarning.duplicateCount.toLocaleString()} duplicate${dupWarning.duplicateCount !== 1 ? "s" : ""} & queue`}
+                  {sending
+                    ? pendingQueueTarget === "sendNow" ? "Sending…" : "Queueing…"
+                    : `Remove ${dupWarning.duplicateCount.toLocaleString()} duplicate${dupWarning.duplicateCount !== 1 ? "s" : ""} & ${pendingQueueTarget === "sendNow" ? "send now" : "queue"}`}
                 </button>
               )}
               <button
@@ -650,7 +701,9 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                 disabled={sending || !canSend}
                 className="rounded-md bg-amber-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
               >
-                {sending ? "Queueing…" : "Send anyway"}
+                {sending
+                  ? pendingQueueTarget === "sendNow" ? "Sending…" : "Queueing…"
+                  : pendingQueueTarget === "sendNow" ? "Send anyway" : "Queue anyway"}
               </button>
             </div>
           </div>
@@ -685,12 +738,33 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
 
           <button
             type="button"
-            onClick={handleSend}
+            onClick={() => void handleQueueOrSend("queue")}
             disabled={sending || !canSend}
             className="rounded-md bg-slate-900 px-5 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
           >
-            {sending ? (selectedList ? "Queueing…" : "Sending…") : selectedList ? "Queue" : "Send"}
+            {sending
+              ? activeWorkflow === "queue"
+                ? "Queueing…"
+                : activeWorkflow === "directSend"
+                  ? "Sending…"
+                  : selectedList
+                    ? "Queue"
+                    : "Sending…"
+              : selectedList
+                ? "Queue"
+                : "Send"}
           </button>
+
+          {selectedList && (
+            <button
+              type="button"
+              onClick={() => void handleQueueOrSend("sendNow")}
+              disabled={sending || !canSend}
+              className="rounded-md bg-green-700 px-5 py-2 text-sm font-semibold text-white hover:bg-green-800 disabled:opacity-50"
+            >
+              {sending && activeWorkflow === "sendNow" ? "Sending…" : "Send Now"}
+            </button>
+          )}
 
           {/* Autosave indicator */}
           <span className="ml-auto text-xs">
