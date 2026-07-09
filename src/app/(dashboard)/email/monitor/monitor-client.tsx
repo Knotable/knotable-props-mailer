@@ -25,9 +25,15 @@ type QueueSnapshot = {
   date: string;
   dailyCap: number;
   sentToday: number;
+  acceptedTodayUtc?: number;
+  rolling24hSent?: number;
   sentLast7Days: number;
   sentAllTime: number | null;
   remainingToday: number;
+  remainingRolling24h?: number;
+  quotaWindowHours?: number;
+  sesMaxSendRatePerSecond?: number;
+  effectiveSendRatePerSecond?: number;
   total: number;
   resolved: number;
   terminalFailures: number;
@@ -322,9 +328,9 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
             </span>
           </p>
           <p>
-            Global sent today:{" "}
+            SES accepted rolling {snapshot?.quotaWindowHours ?? 24}h:{" "}
             <span className="font-medium text-slate-900">
-              {(snapshot?.sentToday ?? 0).toLocaleString()}
+              {(snapshot?.rolling24hSent ?? snapshot?.sentToday ?? 0).toLocaleString()}
             </span>
           </p>
           <p>
@@ -334,9 +340,27 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
             </span>
           </p>
           <p>
-            Quota left today:{" "}
+            SES quota left rolling {snapshot?.quotaWindowHours ?? 24}h:{" "}
             <span className="font-medium text-slate-900">
-              {(snapshot?.remainingToday ?? 0).toLocaleString()}
+              {(snapshot?.remainingRolling24h ?? snapshot?.remainingToday ?? 0).toLocaleString()}
+            </span>
+          </p>
+          <p>
+            SES max send rate:{" "}
+            <span className="font-medium text-slate-900">
+              {formatRate(snapshot?.sesMaxSendRatePerSecond)} / sec
+            </span>
+          </p>
+          <p>
+            Worker target rate:{" "}
+            <span className="font-medium text-slate-900">
+              {formatRate(snapshot?.effectiveSendRatePerSecond)} / sec
+            </span>
+          </p>
+          <p>
+            Accepted today UTC:{" "}
+            <span className="font-medium text-slate-900">
+              {(snapshot?.acceptedTodayUtc ?? snapshot?.sentToday ?? 0).toLocaleString()}
             </span>
           </p>
           <p>
@@ -414,6 +438,12 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
 
 function formatTimestamp(value: string | null) {
   return value ? value.replace("T", " ").slice(0, 19) : "never";
+}
+
+function formatRate(value: number | undefined) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toLocaleString(undefined, { maximumFractionDigits: 2 })
+    : "unknown";
 }
 
 function Metric({

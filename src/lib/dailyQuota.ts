@@ -1,7 +1,7 @@
 /**
- * Daily send-quota helpers.
+ * SES send-quota helpers.
  *
- * Current SES production quota: 65,400 emails / 24-hour period.
+ * Current SES production quota: 65,400 recipients / rolling 24-hour period.
  * The app defaults to 65,400, but the active cap is
  * editable in the analytics UI and stored in public.app_settings.
  */
@@ -10,6 +10,7 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { DEFAULT_DAILY_SEND_LIMIT, getDailySendLimit } from "@/lib/appSettings";
 
 export const DAILY_SEND_LIMIT = DEFAULT_DAILY_SEND_LIMIT;
+export const QUOTA_WINDOW_HOURS = 24;
 
 /** Returns today's date string in UTC (YYYY-MM-DD). */
 export function todayUTC(): string {
@@ -32,10 +33,52 @@ export async function getDailySentCount(date: string = todayUTC()): Promise<numb
 }
 
 /**
+ * Returns how many queue items were accepted by SES in the previous rolling
+ * 24-hour window. SES enforces the account quota this way, not by calendar day.
+ */
+export async function getRolling24hSentCount(now: Date = new Date()): Promise<number> {
+  const supabase = getSupabaseAdmin();
+  const since = new Date(now.getTime() - QUOTA_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+  const { count, error } = await supabase
+    .from("mail_queue")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "succeeded")
+    .gte("updated_at", since);
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+export async function getQuotaUsageSnapshot(now: Date = new Date()): Promise<{
+  dailyCap: number;
+  rolling24hSent: number;
+  remainingRolling24h: number;
+  acceptedTodayUtc: number;
+}> {
+  const [dailyCap, rolling24hSent, acceptedTodayUtc] = await Promise.all([
+    getDailySendLimit(),
+    getRolling24hSentCount(now),
+    getDailySentCount(todayUTC()),
+  ]);
+
+  return {
+    dailyCap,
+    rolling24hSent,
+    remainingRolling24h: Math.max(0, dailyCap - rolling24hSent),
+    acceptedTodayUtc,
+  };
+}
+
+/**
  * Returns how many more emails can be sent today.
  */
 export async function getRemainingQuota(date: string = todayUTC()): Promise<number> {
-  const sent = await getDailySentCount(date);
+  if (date !== todayUTC()) {
+    const sent = await getDailySentCount(date);
+    const limit = await getDailySendLimit();
+    return Math.max(0, limit - sent);
+  }
+  const sent = await getRolling24hSentCount();
   const limit = await getDailySendLimit();
   return Math.max(0, limit - sent);
 }

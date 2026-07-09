@@ -1,8 +1,8 @@
 import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
-import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
-import { getDailySendLimit } from "@/lib/appSettings";
+import { getQuotaUsageSnapshot, todayUTC } from "@/lib/dailyQuota";
+import { getSesMaxSendRatePerSecond } from "@/lib/appSettings";
 import { parseUuid } from "@/lib/ids";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
@@ -67,12 +67,13 @@ const MailQueuePayloadSchema = z.object({
   campaigns: z.array(z.string()).optional(),
 });
 
-// 200 rows per invocation. With 5 nodemailer pool connections sending in
-// parallel (Promise.allSettled below), we sustain ~14 msgs/sec — the SES
-// SMTP rate limit. 200 items ÷ 14/sec ≈ 14 seconds, well within the 30s
-// monitor loop and Vercel's 30s hobby / 60s pro function timeout.
+// 200 rows per invocation at the current SES rate. Lower SES rate settings
+// automatically reduce this so a worker call stays inside Vercel's function
+// window instead of timing out.
 const WORKER_BATCH_SIZE = 200;
 const WORKER_CONCURRENCY = 5; // must match emailProvider maxConnections
+const WORKER_SEND_WINDOW_MS = 20_000;
+const SES_RATE_SAFETY_FACTOR = 0.9;
 const STUCK_PROCESSING_TTL_MS = 15 * 60 * 1000;
 const GLOBAL_DRAIN_ELIGIBLE_EMAIL_STATUSES = ["queued", "sending", "sent"] as const;
 const GLOBAL_DRAIN_HOLD_AT = "2999-12-31T23:59:59.000Z";
@@ -84,8 +85,11 @@ export type QueueWorkerResult = {
   failed: number;
   reclaimed: number;
   sentToday: number;
+  rolling24hSent: number;
   remaining: number;
   dailyCap: number;
+  sesMaxSendRatePerSecond: number;
+  effectiveSendRatePerSecond: number;
   message?: string;
 };
 
@@ -109,6 +113,20 @@ type ClaimedQueueItem = {
   payload: unknown;
   list_id: string | null;
 };
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function effectiveSesSendRate(maxRatePerSecond: number): number {
+  if (!Number.isFinite(maxRatePerSecond) || maxRatePerSecond <= 0) return 1;
+  return Math.max(1, Math.floor(maxRatePerSecond * SES_RATE_SAFETY_FACTOR));
+}
+
+function workerClaimLimit(remainingQuota: number, effectiveRatePerSecond: number): number {
+  const maxByFunctionWindow = Math.max(1, Math.floor(effectiveRatePerSecond * (WORKER_SEND_WINDOW_MS / 1000)));
+  return Math.max(1, Math.min(remainingQuota, WORKER_BATCH_SIZE, maxByFunctionWindow));
+}
 
 async function writeMetrics(opts: { queueDepth: number; processed: number; failed: number }) {
   const supabase = getSupabaseAdmin();
@@ -271,7 +289,11 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const now = new Date();
-  const dailySendLimit = await getDailySendLimit();
+  const [quota, sesMaxSendRatePerSecond] = await Promise.all([
+    getQuotaUsageSnapshot(now),
+    getSesMaxSendRatePerSecond(),
+  ]);
+  const effectiveSendRatePerSecond = effectiveSesSendRate(sesMaxSendRatePerSecond);
 
   const staleLockedBefore = new Date(now.getTime() - STUCK_PROCESSING_TTL_MS).toISOString();
   let reclaimQuery = supabase
@@ -291,8 +313,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     console.info(`[queue worker] reclaimed ${reclaimedCount} stuck processing row(s)`);
   }
 
-  const sentToday = await getDailySentCount(today);
-  const remaining = Math.max(0, dailySendLimit - sentToday);
+  const remaining = quota.remainingRolling24h;
 
   if (remaining === 0) {
     await writeMetrics({ queueDepth: 0, processed: 0, failed: 0 });
@@ -302,14 +323,17 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       succeeded: 0,
       failed: 0,
       reclaimed: reclaimedCount,
-      sentToday,
+      sentToday: quota.acceptedTodayUtc,
+      rolling24hSent: quota.rolling24hSent,
       remaining,
-      dailyCap: dailySendLimit,
-      message: `Daily cap of ${dailySendLimit} reached. No sends this run.`,
+      dailyCap: quota.dailyCap,
+      sesMaxSendRatePerSecond,
+      effectiveSendRatePerSecond,
+      message: `SES rolling 24-hour cap of ${quota.dailyCap} reached. No sends this run.`,
     };
   }
 
-  const limit = Math.min(remaining, WORKER_BATCH_SIZE);
+  const limit = workerClaimLimit(remaining, effectiveSendRatePerSecond);
 
   const { data: items, error: fetchError } = await (
     supabase as unknown as {
@@ -343,9 +367,12 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       succeeded: 0,
       failed: 0,
       reclaimed: reclaimedCount,
-      sentToday,
+      sentToday: quota.acceptedTodayUtc,
+      rolling24hSent: quota.rolling24hSent,
       remaining,
-      dailyCap: dailySendLimit,
+      dailyCap: quota.dailyCap,
+      sesMaxSendRatePerSecond,
+      effectiveSendRatePerSecond,
       message: isGlobalRun ? "No eligible pending items." : "No pending items.",
     };
   }
@@ -400,7 +427,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
    * Returns "succeeded" | "failed" so the caller can tally counts.
    *
    * We fan these out with Promise.allSettled in WORKER_CONCURRENCY-sized
-   * windows below, saturating the nodemailer connection pool at ~14 msg/sec.
+   * windows below, then pace each window under the configured SES send rate.
    */
   async function processItem(item: ClaimedQueueItem): Promise<"succeeded" | "failed"> {
     const payloadParsed = MailQueuePayloadSchema.safeParse(item.payload);
@@ -529,15 +556,17 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     }
   }
 
-  // Fan out sends in WORKER_CONCURRENCY-sized windows.
-  // This saturates the nodemailer pool (maxConnections=5) without overwhelming
-  // it, and lets us hit the 14 msg/sec SES SMTP rate limit.
+  // Fan out sends in WORKER_CONCURRENCY-sized windows. The pause after each
+  // window keeps sustained acceptance under SES's account-level send-rate cap.
   for (let i = 0; i < items.length; i += WORKER_CONCURRENCY) {
     const window = items.slice(i, i + WORKER_CONCURRENCY);
     const results = await Promise.allSettled(window.map(processItem));
     for (const r of results) {
       if (r.status === "fulfilled" && r.value === "succeeded") succeeded++;
       else failed++;
+    }
+    if (i + WORKER_CONCURRENCY < items.length) {
+      await sleep(Math.ceil((window.length / effectiveSendRatePerSecond) * 1000));
     }
   }
 
@@ -557,9 +586,12 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     succeeded,
     failed,
     reclaimed: reclaimedCount,
-    sentToday: sentToday + succeeded,
+    sentToday: quota.acceptedTodayUtc + succeeded,
+    rolling24hSent: quota.rolling24hSent + succeeded,
     remaining: remaining - succeeded,
-    dailyCap: dailySendLimit,
+    dailyCap: quota.dailyCap,
+    sesMaxSendRatePerSecond,
+    effectiveSendRatePerSecond,
     message: isGlobalRun
       ? "Global drain processed eligible queued/sending/sent campaigns only."
       : undefined,

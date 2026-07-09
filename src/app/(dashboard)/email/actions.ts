@@ -7,8 +7,7 @@ import { z } from "zod";
 import { getServerAuthContext, requireCanSendAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
-import { getDailySentCount, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
-import { getDailySendLimit } from "@/lib/appSettings";
+import { getQuotaUsageSnapshot, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
 import { logAudit } from "@/lib/logger";
 import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/queueReleaseGuard";
 import { runQueueWorker } from "@/lib/queueWorker";
@@ -144,13 +143,12 @@ type QueueReleaseSummary = {
   scheduled_future: number;
 };
 
-function nextQueueReleaseDate(nowIso: string, releaseIndex: number, remainingToday: number, dailyLimit: number): string {
-  if (releaseIndex <= remainingToday) return nowIso;
+function nextQueueReleaseDate(nowIso: string, releaseIndex: number, remainingNow: number, dailyLimit: number): string {
+  if (releaseIndex <= remainingNow) return nowIso;
 
   const now = new Date(nowIso);
-  const utcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
-  const offsetDays = Math.floor((releaseIndex - remainingToday - 1) / dailyLimit) + 1;
-  return new Date(utcMidnight + offsetDays * 24 * 60 * 60 * 1000).toISOString();
+  const offsetWindows = Math.floor((releaseIndex - remainingNow - 1) / dailyLimit) + 1;
+  return new Date(now.getTime() + offsetWindows * 24 * 60 * 60 * 1000).toISOString();
 }
 
 async function releaseHeldQueueInChunks(
@@ -158,10 +156,10 @@ async function releaseHeldQueueInChunks(
   emailId: string,
   nowIso: string,
   dailySendLimit: number,
-  sentToday: number,
+  rolling24hSent: number,
 ): Promise<QueueReleaseSummary> {
   const dailyLimit = Math.max(dailySendLimit, 1);
-  const remainingToday = Math.max(0, dailySendLimit - sentToday);
+  const remainingNow = Math.max(0, dailySendLimit - rolling24hSent);
   const summary: QueueReleaseSummary = {
     released: 0,
     due_now: 0,
@@ -185,11 +183,11 @@ async function releaseHeldQueueInChunks(
     const updatesByAvailableAt = new Map<string, string[]>();
     for (let index = 0; index < rows.length; index += 1) {
       const releaseIndex = summary.released + index + 1;
-      const availableAt = nextQueueReleaseDate(nowIso, releaseIndex, remainingToday, dailyLimit);
+      const availableAt = nextQueueReleaseDate(nowIso, releaseIndex, remainingNow, dailyLimit);
       const ids = updatesByAvailableAt.get(availableAt) ?? [];
       ids.push(rows[index].id);
       updatesByAvailableAt.set(availableAt, ids);
-      if (releaseIndex <= remainingToday) {
+      if (releaseIndex <= remainingNow) {
         summary.due_now += 1;
       } else {
         summary.scheduled_future += 1;
@@ -583,8 +581,8 @@ async function buildQueueWarningSummary(
 }
 
 /**
- * Queue a campaign send to a mailing list, automatically splitting across
- * multiple days if the list is larger than the 45k daily cap.
+ * Queue a campaign send to a mailing list. Rows stay held until the operator
+ * releases the campaign; release uses the configured SES rolling 24h cap.
  *
  * Pre-flight duplicate check (skipped when skipDuplicateCheck=true):
  *  1. Blocks if this exact email_id was already sent succeeded to any member
@@ -717,10 +715,9 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   }
 
   const today = todayUTC();
-  const alreadySentToday = await getDailySentCount(today);
+  const quota = await getQuotaUsageSnapshot();
   const estimatedTotal = Math.max(0, totalActiveMembers - excludedRecipients.size);
-  const dailySendLimit = await getDailySendLimit();
-  const schedule = buildSendSchedule(estimatedTotal, alreadySentToday, today, dailySendLimit);
+  const schedule = buildSendSchedule(estimatedTotal, quota.rolling24hSent, today, quota.dailyCap);
   const campaignLabel = `${emailId}:${today}`;
 
   // Prebuild the queue, but keep everything on hold until the operator hits
@@ -967,7 +964,7 @@ export async function getQueueSnapshotAction(emailId?: string) {
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const nowIso = new Date().toISOString();
-  const sentToday = await getDailySentCount(today);
+  const quota = await getQuotaUsageSnapshot();
 
   const statusCount = async (status: string) => {
     let query = supabase
@@ -1031,7 +1028,7 @@ export async function getQueueSnapshotAction(emailId?: string) {
   const terminalFailures = failed + dead;
   const total = pending + processing + succeeded + failed + dead + canceled;
   const resolved = succeeded + failed + dead + canceled;
-  const dailySendLimit = await getDailySendLimit();
+  const dailySendLimit = quota.dailyCap;
   const isDrained = total > 0 && pending === 0 && processing === 0;
   const displayStatus =
     total === 0
@@ -1064,8 +1061,9 @@ export async function getQueueSnapshotAction(emailId?: string) {
     statusDetail,
     date: today,
     dailyCap: dailySendLimit,
-    sentToday,
-    remainingToday: Math.max(0, dailySendLimit - sentToday),
+    sentToday: quota.acceptedTodayUtc,
+    rolling24hSent: quota.rolling24hSent,
+    remainingToday: quota.remainingRolling24h,
     total,
     resolved,
     terminalFailures,
@@ -1188,19 +1186,17 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       };
     }
 
-    const sentToday = await getDailySentCount();
-    const dailySendLimit = await getDailySendLimit();
-    const remainingToday = Math.max(0, dailySendLimit - sentToday);
-    if (remainingToday === 0) {
-      return { error: `Daily cap of ${dailySendLimit.toLocaleString()} reached. Nothing can be sent right now.` };
+    const quota = await getQuotaUsageSnapshot();
+    if (quota.remainingRolling24h === 0) {
+      return { error: `SES rolling 24-hour cap of ${quota.dailyCap.toLocaleString()} reached. Nothing can be sent right now.` };
     }
 
     const releaseSummary = await releaseHeldQueueInChunks(
       supabase,
       id,
       nowIso,
-      dailySendLimit,
-      sentToday,
+      quota.dailyCap,
+      quota.rolling24hSent,
     );
 
     if (releaseSummary.released === 0 && preflight.pendingDue === 0) {

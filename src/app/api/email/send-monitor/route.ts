@@ -17,10 +17,10 @@
 import { NextResponse } from "next/server";
 import { requireCanSendAuthContext, requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { todayUTC } from "@/lib/dailyQuota";
-import { getDailySendLimit } from "@/lib/appSettings";
+import { QUOTA_WINDOW_HOURS, getQuotaUsageSnapshot, todayUTC } from "@/lib/dailyQuota";
+import { getSesMaxSendRatePerSecond } from "@/lib/appSettings";
 import { parseUuid } from "@/lib/ids";
-import { runQueueWorker } from "@/lib/queueWorker";
+import { effectiveSesSendRate, runQueueWorker } from "@/lib/queueWorker";
 
 export const dynamic = "force-dynamic";
 
@@ -168,15 +168,16 @@ async function buildMonitorSnapshot(emailId?: string) {
   const last7Date = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   if (!emailId) {
-    const [sentToday, sentLast7Days, dailySendLimit, pendingDue, pendingHeld, processing] =
+    const [quota, sentLast7Days, sesMaxSendRatePerSecond, pendingDue, pendingHeld, processing] =
       await Promise.all([
-        countSucceededOnDate(today),
+        getQuotaUsageSnapshot(),
         countSucceededRows(undefined, last7Date),
-        getDailySendLimit(),
+        getSesMaxSendRatePerSecond(),
         countQueueRows("pending", undefined, "due"),
         countQueueRows("pending", undefined, "held"),
         countQueueRows("processing"),
       ]);
+    const effectiveSendRatePerSecond = effectiveSesSendRate(sesMaxSendRatePerSecond);
 
     const pending = pendingDue + pendingHeld;
     const total = pending + processing;
@@ -194,11 +195,17 @@ async function buildMonitorSnapshot(emailId?: string) {
             } still waiting or sending.`
           : "No pending or processing queue rows.",
       date: today,
-      dailyCap: dailySendLimit,
-      sentToday,
+      dailyCap: quota.dailyCap,
+      sentToday: quota.acceptedTodayUtc,
+      acceptedTodayUtc: quota.acceptedTodayUtc,
+      rolling24hSent: quota.rolling24hSent,
       sentLast7Days,
       sentAllTime: null,
-      remainingToday: Math.max(0, dailySendLimit - sentToday),
+      remainingToday: quota.remainingRolling24h,
+      remainingRolling24h: quota.remainingRolling24h,
+      quotaWindowHours: QUOTA_WINDOW_HOURS,
+      sesMaxSendRatePerSecond,
+      effectiveSendRatePerSecond,
       total,
       resolved: 0,
       terminalFailures: 0,
@@ -216,9 +223,9 @@ async function buildMonitorSnapshot(emailId?: string) {
   }
 
   const [
-    sentToday,
+    quota,
     sentLast7Days,
-    dailySendLimit,
+    sesMaxSendRatePerSecond,
     pending,
     processing,
     succeeded,
@@ -228,9 +235,9 @@ async function buildMonitorSnapshot(emailId?: string) {
     pendingDue,
     pendingHeld,
   ] = await Promise.all([
-    countSucceededOnDate(today),
+    getQuotaUsageSnapshot(),
     countSucceededRows(emailId, last7Date),
-    getDailySendLimit(),
+    getSesMaxSendRatePerSecond(),
     countQueueRows("pending", emailId),
     countQueueRows("processing", emailId),
     countQueueRows("succeeded", emailId),
@@ -240,6 +247,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     countQueueRows("pending", emailId, "due"),
     countQueueRows("pending", emailId, "held"),
   ]);
+  const effectiveSendRatePerSecond = effectiveSesSendRate(sesMaxSendRatePerSecond);
 
   let subject: string | null = null;
   let emailStatus: string | null = null;
@@ -293,11 +301,17 @@ async function buildMonitorSnapshot(emailId?: string) {
     displayStatus,
     statusDetail,
     date: today,
-    dailyCap: dailySendLimit,
-    sentToday,
+    dailyCap: quota.dailyCap,
+    sentToday: quota.acceptedTodayUtc,
+    acceptedTodayUtc: quota.acceptedTodayUtc,
+    rolling24hSent: quota.rolling24hSent,
     sentLast7Days,
     sentAllTime,
-    remainingToday: Math.max(0, dailySendLimit - sentToday),
+    remainingToday: quota.remainingRolling24h,
+    remainingRolling24h: quota.remainingRolling24h,
+    quotaWindowHours: QUOTA_WINDOW_HOURS,
+    sesMaxSendRatePerSecond,
+    effectiveSendRatePerSecond,
     total,
     resolved,
     terminalFailures,

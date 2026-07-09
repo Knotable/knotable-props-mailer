@@ -53,21 +53,8 @@ function buildStringToSign(msg: Record<string, unknown>): string {
 
   return fields
     .filter((k) => msg[k] !== undefined && msg[k] !== null)
-    .map((k) => `${k}\n${msg[k]}`)
-    .join("\n");
-}
-
-function buildLegacyStringToSign(msg: Record<string, unknown>): string {
-  const type = msg["Type"] as string;
-  const fields =
-    type === "Notification"
-      ? ["Message", "MessageId", "Subject", "Timestamp", "TopicArn", "Type"]
-      : ["Message", "MessageId", "SubscribeURL", "Timestamp", "Token", "TopicArn", "Type"];
-
-  return fields
-    .filter((k) => msg[k] !== undefined && msg[k] !== null)
-    .map((k) => `${k}\n${msg[k]}`)
-    .join("\n");
+    .map((k) => `${k}\n${msg[k]}\n`)
+    .join("");
 }
 
 function verifyWithAlgorithm(algorithm: string, pem: string, stringToSign: string, signature: string): boolean {
@@ -88,7 +75,7 @@ async function verifySnsSignature(body: Record<string, unknown>): Promise<{ vali
       ? ["RSA-SHA256", "sha256WithRSAEncryption"]
       : ["RSA-SHA1", "sha1WithRSAEncryption"];
     const pem = await fetchSigningCert(certUrl);
-    const stringsToSign = [buildStringToSign(body), buildLegacyStringToSign(body)];
+    const stringsToSign = [buildStringToSign(body)];
 
     for (const stringToSign of stringsToSign) {
       for (const algorithm of algorithms) {
@@ -291,8 +278,9 @@ export async function POST(request: Request) {
 
   // ── Deduplication ──────────────────────────────────────────────────────────
   // SNS guarantees at-least-once delivery; retries after a 500 would create
-  // duplicate rows without this check.
-  if (messageId) {
+  // duplicate rows without this check. Open and Click are engagement events,
+  // so retain repeated opens/clicks instead of collapsing them to one row.
+  if (messageId && sesEventType !== "Open" && sesEventType !== "Click") {
     const { data: existing } = await supabase
       .from("provider_events")
       .select("id")

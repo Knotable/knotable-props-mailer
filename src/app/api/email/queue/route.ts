@@ -8,7 +8,7 @@
  *
  * Each invocation:
  *   1. Reclaims stuck "processing" rows (worker crash / timeout recovery).
- *   2. Checks the daily send quota.
+ *   2. Checks the SES rolling 24-hour send quota.
  *   3. Claims a batch of pending items using locked_at as an optimistic lock.
  *   4. Sends each via SES SMTP.
  *   5. Updates row status: succeeded / back-to-pending with backoff / dead.
@@ -17,10 +17,10 @@
 
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { getDailySentCount, todayUTC } from "@/lib/dailyQuota";
-import { getDailySendLimit } from "@/lib/appSettings";
+import { QUOTA_WINDOW_HOURS, getQuotaUsageSnapshot, todayUTC } from "@/lib/dailyQuota";
+import { getSesMaxSendRatePerSecond } from "@/lib/appSettings";
 import { parseUuid } from "@/lib/ids";
-import { runQueueWorker } from "@/lib/queueWorker";
+import { effectiveSesSendRate, runQueueWorker } from "@/lib/queueWorker";
 
 export async function POST(request: Request) {
   // ── Auth ─────────────────────────────────────────────────────────────────
@@ -76,9 +76,11 @@ export async function GET(request: Request) {
   }
 
   const today = todayUTC();
-  const sentToday = await getDailySentCount(today);
-  const dailySendLimit = await getDailySendLimit();
-  const remaining = Math.max(0, dailySendLimit - sentToday);
+  const [quota, sesMaxSendRatePerSecond] = await Promise.all([
+    getQuotaUsageSnapshot(),
+    getSesMaxSendRatePerSecond(),
+  ]);
+  const effectiveSendRatePerSecond = effectiveSesSendRate(sesMaxSendRatePerSecond);
 
   const supabase = getSupabaseAdmin();
   const nowIso = new Date().toISOString();
@@ -106,9 +108,15 @@ export async function GET(request: Request) {
 
   return NextResponse.json({
     date: today,
-    sentToday,
-    dailyCap: dailySendLimit,
-    remaining,
+    sentToday: quota.acceptedTodayUtc,
+    acceptedTodayUtc: quota.acceptedTodayUtc,
+    rolling24hSent: quota.rolling24hSent,
+    dailyCap: quota.dailyCap,
+    remaining: quota.remainingRolling24h,
+    remainingRolling24h: quota.remainingRolling24h,
+    quotaWindowHours: QUOTA_WINDOW_HOURS,
+    sesMaxSendRatePerSecond,
+    effectiveSendRatePerSecond,
     pendingInQueue: pendingCount ?? 0,
     pendingDue: pendingDue ?? 0,
     pendingHeld: pendingHeld ?? 0,

@@ -3,7 +3,12 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
 import { getServerAuthContext } from "@/lib/authAccess";
-import { getDailySendLimit, setDailySendLimit } from "@/lib/appSettings";
+import {
+  getDailySendLimit,
+  getSesMaxSendRatePerSecond,
+  setDailySendLimit,
+  setSesMaxSendRatePerSecond,
+} from "@/lib/appSettings";
 import { isoDaysAgo } from "@/lib/dateWindows";
 import { DataFreshness } from "@/components/data-freshness";
 
@@ -19,10 +24,23 @@ async function updateDailySendLimitAction(formData: FormData) {
   revalidatePath("/email/analytics");
 }
 
+async function updateSesSendRateAction(formData: FormData) {
+  "use server";
+
+  const auth = await getServerAuthContext();
+  if (!auth?.userId) throw new Error("Unauthorized");
+
+  const raw = String(formData.get("sesMaxSendRatePerSecond") ?? "").replace(/,/g, "").trim();
+  const nextRate = Number(raw);
+  await setSesMaxSendRatePerSecond(nextRate);
+  revalidatePath("/email/analytics");
+}
+
 export default async function AnalyticsPage() {
   await connection();
   const supabase = getSupabaseAdmin();
   const dailySendLimit = await getDailySendLimit();
+  const sesMaxSendRatePerSecond = await getSesMaxSendRatePerSecond();
 
   // ── Delivery totals — COUNT queries at DB level, not full table scans ────────
   const last7Date = isoDaysAgo(7).slice(0, 10);
@@ -311,7 +329,7 @@ export default async function AnalyticsPage() {
         <StatCard
           label="Pending now"
           value={pending.toLocaleString()}
-          sub={`${dailySendLimit.toLocaleString()} daily cap`}
+          sub={`${dailySendLimit.toLocaleString()} SES rolling 24h cap`}
           color={pending > 0 ? "blue" : "slate"}
         />
       </div>
@@ -373,11 +391,11 @@ export default async function AnalyticsPage() {
         />
       </section>
 
-      {/* ── Daily capacity ── */}
+      {/* ── SES capacity ── */}
       <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
         <form action={updateDailySendLimitAction} className="flex flex-wrap items-end gap-3">
           <label className="text-sm font-medium text-slate-700">
-            Daily send cap
+            SES rolling 24h send cap
             <input
               name="dailySendLimit"
               type="number"
@@ -392,7 +410,27 @@ export default async function AnalyticsPage() {
             Save cap
           </button>
           <span className="pb-2 text-slate-500">
-            {dailySendLimit.toLocaleString()} emails/day · {pending.toLocaleString()} pending in queue
+            {dailySendLimit.toLocaleString()} recipients / rolling 24h · {pending.toLocaleString()} pending in queue
+          </span>
+        </form>
+        <form action={updateSesSendRateAction} className="mt-3 flex flex-wrap items-end gap-3">
+          <label className="text-sm font-medium text-slate-700">
+            SES max send rate / sec
+            <input
+              name="sesMaxSendRatePerSecond"
+              type="number"
+              min={0.1}
+              max={1_000}
+              step={0.1}
+              defaultValue={sesMaxSendRatePerSecond}
+              className="mt-1 w-40 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+            />
+          </label>
+          <button className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white">
+            Save rate
+          </button>
+          <span className="pb-2 text-slate-500">
+            Worker targets 90% of this value for sustained sends.
           </span>
         </form>
       </div>
