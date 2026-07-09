@@ -30,9 +30,9 @@ jobs:
             exit 1
           fi
 
-          for attempt in 1 2 3 4 5 6 7 8; do
-            echo "Trigger ${attempt}/8"
-            curl --fail --show-error --silent --max-time 50 \
+          for attempt in 1 2; do
+            echo "Trigger ${attempt}/2"
+            curl --fail --show-error --silent --max-time 140 \
               --request POST \
               --header "Authorization: Bearer ${MAILER_CRON_SECRET}" \
               --header "Content-Type: application/json" \
@@ -40,7 +40,7 @@ jobs:
               "${MAILER_BASE_URL}/api/workers/send-queued"
             echo
 
-            if [ "${attempt}" != "8" ]; then
+            if [ "${attempt}" != "2" ]; then
               sleep 10
             fi
           done
