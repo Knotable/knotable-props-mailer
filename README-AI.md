@@ -108,6 +108,7 @@ Update this section as work progresses so future agents do not re-derive the sta
 | Verify large-send RPCs in prod | Done 2026-05-21 | `/api/health` critical checks are green, including `claim_mail_queue_batch` and `release_mail_queue_campaign`. Re-check immediately before release. |
 | Confirm queue is not accidentally due | Done 2026-06-15 live check | Production health reported `0` due pending, `0` processing, and `0` held pending. Re-check immediately before monitor use and only run the intended `emailId`; avoid the guarded global monitor except for explicit repair/debug. |
 | Prepare next two LifeX newsletters | Drafted 2026-06-11 | Local HTML files in `/Users/MrAnonymous/Documents/01 LifeX/Newsletter work/` were updated to use Supabase-hosted images and reply-based unsubscribe footer. Supabase draft ids: `08df2ed7-a8a2-4ec4-9542-990d3a43c0e6` for June 11 Part 1 and `00440fb7-59a6-4730-8bfe-605f5442f1ee` for the June 25 / July Part 2 draft. Both are still `draft`; live check showed `0` queue rows. |
+| Add GitHub mailer cron trigger | Done 2026-07-09 | `.github/workflows/mailer-cron.yml` runs every 5 minutes and loops guarded calls to `/api/workers/send-queued`. The endpoint only drains emails already marked `sending`, using `MAILER_CRON_SECRET` in GitHub Actions mapped to Vercel `CRON_SECRET`; it does not deploy to Vercel and does not broadly drain queued/sent campaigns. |
 | Add reply-to unsubscribe logging | Table repaired 2026-06-21 | App code stores/sends `reply_to` and sets a mailto `List-Unsubscribe` header when reply-to is present. Applied `20260611_unsubscribe_requests.sql` live, granted the API roles, reloaded PostgREST, and verified `unsubscribe_requests` through the service-role REST API. |
 | Run local checks after hardening | Partially done 2026-05-21 | `git diff --check` passed; conflict-marker scan is clean; code stale-reference scan no longer finds the old broad-drain UI/API paths; TypeScript `transpileModule` checks passed for touched TS/TSX files; direct `vitest run` passed 7 tests. Full `tsc --noEmit` runs but fails on the known stale Supabase generated types (`never` table rows across existing files), so regenerate `src/supabase/types.ts` before treating full typecheck as a release gate. `npm` is still not on PATH in this desktop shell; re-run `npm run lint`, `npm test`, and `npm run build` in a normal Node/npm shell before deploy. |
 
@@ -124,7 +125,7 @@ curl -fsS https://knotable-props-mailer.vercel.app/api/health | jq '{ok, critica
 
 ## What This Project Is
 
-A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, queue them, send via Amazon SES (SMTP), manage mailing lists, and track analytics. There is no Cron automation — sends are initiated manually, then drained by keeping `/email/monitor` open in a browser tab.
+A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, queue them, send via Amazon SES (SMTP), manage mailing lists, and track analytics. Sends are initiated manually; active `sending` campaigns can drain through the monitor tab or the GitHub Actions mailer cron trigger.
 
 **Owner:** Amol (a@sarva.co)
 **Repo:** GitHub → Vercel auto-deploy
@@ -143,7 +144,7 @@ A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on
 | Validation | Zod v4 |
 | Icons | lucide-react |
 | Testing | Vitest |
-| Deployment | Vercel (no Cron jobs; queue drained via monitor page) |
+| Deployment | Vercel + GitHub Actions scheduled mailer trigger |
 
 **Important:** This is **Next.js 16** — not the Next.js 14/15 you may know from training data. APIs and conventions may differ. Always read `node_modules/next/dist/docs/` before writing new Next.js-specific code (per `AGENTS.md`).
 
@@ -175,6 +176,7 @@ src/
         queue/route.ts      # POST: run queue worker batch for a specific emailId; GET: quota + queue depth. Both require Bearer $CRON_SECRET.
         preview/[id]/route.ts # GET: render email HTML for preview iframe
         report/route.ts     # GET ?emailId=<uuid>: per-email send report (queue outcome counts + SES event counts + first 100 unsent recipients). Requires Bearer $CRON_SECRET.
+      workers/send-queued/route.ts # POST: GitHub Actions cron trigger; drains one scoped batch for an email already marked sending. Requires Bearer $CRON_SECRET.
       health/route.ts       # GET: unauthenticated; checks env vars + DB tables/columns. Good smoke test after deploy.
       log/client/route.ts   # POST: receive client-side error logs
       webhooks/ses/route.ts # POST: ingest SES SNS delivery/bounce events
