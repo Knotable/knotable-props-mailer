@@ -143,6 +143,17 @@ Run `curl <your-url>/api/health` any time — it tells you exactly which of thes
 
 ---
 
+## Feature backlog
+
+These are product requests that should be prioritized deliberately before implementation:
+
+- **Amazon SES suppression-list reconciliation.** Add sync or reconciliation with Amazon SES account-level suppression lists so Props Mailer can detect addresses SES has already suppressed, mark matching list members appropriately, and avoid queueing mail that SES will reject or silently suppress.
+- **Embeddable newsletter sign-up widget.** Build a Mailchimp-like sign-up box that can be pasted into another website as a content item. Consider backing submissions with Google Apps Script or another highly available lightweight endpoint so sign-ups still work if the Props Mailer host is asleep, redeploying, or unavailable. Clarify the unfinished requirement after: "but I do want to ...".
+- **Performance and usability sprint.** The web app UI is redundant and can feel slow. Review repeated controls, duplicate queue/status language, over-fetching, and slow remote calls; simplify the interface around the operator's main tasks.
+- **Informative progress feedback.** When the app is waiting on remote calls, show clear progress text such as "Saving draft to Supabase", "Preparing recipients", "Queueing batch 3", or "Sending through SES" so the page does not feel stuck during slow operations.
+
+---
+
 ## Useful commands
 
 ```bash
