@@ -111,6 +111,7 @@ type DraftPayload = {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
+const QUEUE_RELEASE_CHUNK_SIZE = 500;
 
 const parseRecipients = (input: string) =>
   input
@@ -134,6 +135,83 @@ function toActionErrorMessage(err: unknown, fallback: string): string {
     return (err as { message: string }).message;
   }
   return fallback;
+}
+
+type QueueReleaseSummary = {
+  released: number;
+  due_now: number;
+  scheduled_future: number;
+};
+
+function nextQueueReleaseDate(nowIso: string, releaseIndex: number, remainingToday: number, dailyLimit: number): string {
+  if (releaseIndex <= remainingToday) return nowIso;
+
+  const now = new Date(nowIso);
+  const utcMidnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const offsetDays = Math.floor((releaseIndex - remainingToday - 1) / dailyLimit) + 1;
+  return new Date(utcMidnight + offsetDays * 24 * 60 * 60 * 1000).toISOString();
+}
+
+async function releaseHeldQueueInChunks(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+  nowIso: string,
+  dailySendLimit: number,
+  sentToday: number,
+): Promise<QueueReleaseSummary> {
+  const dailyLimit = Math.max(dailySendLimit, 1);
+  const remainingToday = Math.max(0, dailySendLimit - sentToday);
+  const summary: QueueReleaseSummary = {
+    released: 0,
+    due_now: 0,
+    scheduled_future: 0,
+  };
+
+  while (true) {
+    const { data: rows, error: selectError } = await supabase
+      .from("mail_queue")
+      .select("id")
+      .eq("email_id", emailId)
+      .eq("status", "pending")
+      .gte("available_at", QUEUE_HOLD_AT)
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(QUEUE_RELEASE_CHUNK_SIZE);
+
+    if (selectError) throw selectError;
+    if (!rows || rows.length === 0) break;
+
+    const updatesByAvailableAt = new Map<string, string[]>();
+    for (let index = 0; index < rows.length; index += 1) {
+      const releaseIndex = summary.released + index + 1;
+      const availableAt = nextQueueReleaseDate(nowIso, releaseIndex, remainingToday, dailyLimit);
+      const ids = updatesByAvailableAt.get(availableAt) ?? [];
+      ids.push(rows[index].id);
+      updatesByAvailableAt.set(availableAt, ids);
+      if (releaseIndex <= remainingToday) {
+        summary.due_now += 1;
+      } else {
+        summary.scheduled_future += 1;
+      }
+    }
+
+    for (const [availableAt, ids] of updatesByAvailableAt) {
+      const { error: updateError } = await supabase
+        .from("mail_queue")
+        .update({
+          available_at: availableAt,
+          updated_at: nowIso,
+        })
+        .eq("email_id", emailId)
+        .eq("status", "pending")
+        .in("id", ids);
+      if (updateError) throw updateError;
+    }
+
+    summary.released += rows.length;
+  }
+
+  return summary;
 }
 
 export async function saveDraftAction(formData: FormData) {
@@ -1116,30 +1194,13 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       return { error: `Daily cap of ${dailySendLimit.toLocaleString()} reached. Nothing can be sent right now.` };
     }
 
-    const { data: releaseRows, error: releaseError } = await (
-      supabase as unknown as {
-        rpc(
-          fn: "release_mail_queue_campaign",
-          args: {
-            p_email_id: string;
-            p_now: string;
-            p_daily_limit: number;
-            p_sent_today: number;
-          },
-        ): Promise<{
-          data: { released: number; due_now: number; scheduled_future: number }[] | null;
-          error: { message: string } | null;
-        }>;
-      }
-    ).rpc("release_mail_queue_campaign", {
-      p_email_id: id,
-      p_now: nowIso,
-      p_daily_limit: dailySendLimit,
-      p_sent_today: sentToday,
-    });
-    if (releaseError) return { error: releaseError.message };
-
-    const releaseSummary = releaseRows?.[0] ?? { released: 0, due_now: 0, scheduled_future: 0 };
+    const releaseSummary = await releaseHeldQueueInChunks(
+      supabase,
+      id,
+      nowIso,
+      dailySendLimit,
+      sentToday,
+    );
 
     if (releaseSummary.released === 0 && preflight.pendingDue === 0) {
       return { error: "No queued recipients are ready for this email." };
@@ -1149,8 +1210,6 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       .from("emails")
       .update({ status: "sending" })
       .eq("id", id);
-
-    const result = await runQueueWorker({ emailId: id });
 
     const { count: remainingQueued } = await supabase
       .from("mail_queue")
@@ -1170,10 +1229,11 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
         pendingDueBefore: preflight.pendingDue,
         pendingHeldBefore: preflight.pendingHeld,
         processingBefore: preflight.processing,
-        processed: result.processed,
-        succeeded: result.succeeded,
-        failed: result.failed,
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
         remainingQueued: remainingQueued ?? 0,
+        mode: "released_for_scoped_monitor",
       },
     }).catch(console.error);
 
@@ -1182,11 +1242,11 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
 
     return {
       released: releaseSummary.released,
-      dueNow: releaseSummary.due_now,
+      dueNow: preflight.pendingDue + releaseSummary.due_now,
       scheduledFuture: releaseSummary.scheduled_future,
-      processed: result.processed,
-      succeeded: result.succeeded,
-      failed: result.failed,
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
       remainingQueued: remainingQueued ?? 0,
     };
   } catch (err) {
