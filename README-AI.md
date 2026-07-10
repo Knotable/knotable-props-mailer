@@ -1219,6 +1219,7 @@ See `.env.example` for full list.
 - `provider_events` bounce/complaint data is stored and partially surfaced in analytics; detailed deliverability reporting still needs more operator UI.
 - Analytics reliability + iPhone mode PRD lives at `docs/analytics-mobile-prd.md`; next production step is to apply `supabase/migrations/20260702_recent_analytics_rpc.sql` and verify a known large campaign.
 - Route protection via middleware is partially implemented
+- One-time mail-merge audiences intentionally avoid Supabase schema changes for now: CSV imports are stored as `lists.access_level = 'one_time_csv'`, synthetic `one-time-...@props.sarva.co` list addresses, and per-row merge fields in `list_members.metadata.merge`; queued rows copy those fields into `mail_queue.payload.merge`. Future tax: add first-class `audiences` / `audience_members` tables, audience type enums, original CSV storage, cleanup/archive semantics, and migration of these shoehorned list records.
 
 ---
 
@@ -1244,5 +1245,6 @@ See `.env.example` for full list.
 
 - **WYSIWYG HTML editor**: The composer defaults to a visual `contentEditable` editor with paragraph, heading, emphasis, list, link, and clear-format controls. The **HTML source** tab remains available for exact markup edits. Both modes synchronize into the existing `html` form value so autosave, preview, test sends, and queueing keep the same server-action contract.
 - **Per-recipient merge tags**: Campaign subject, HTML, and text support `{{firstName}}`, `{{name}}`, and `{{email}}` placeholders. The queue worker renders them per recipient at send time using `mail_queue.payload.toName` and `payload.to`, so queued campaigns do not duplicate full HTML per recipient. `{{firstName|friend}}` style fallbacks are supported for recipients without stored names.
+- **One-time mail merge audiences**: The composer can import/paste a CSV with an `email` header plus arbitrary fields such as `name`, `first_name`, `opener`, `company`, or `custom_note`. The UI validates valid/skipped rows, previews a selected row, imports the data as a one-time list without schema changes, and queues through the normal approval/SES path. Arbitrary CSV headers render as merge tags such as `{{opener}}` or `{{company|your team}}`.
 - **Preview button**: Opens a new `800×700` browser window and writes the current synchronized HTML content into it via `document.write`. Purely client-side — no save required. Added to `composer-form.tsx` alongside the other action buttons.
 - **Send Test button**: Calls `sendTestAction` (in `email/actions.ts`) but overrides `recipients` in the FormData to `a@sarva.co` (owner address). Does not affect the To field or selected list. Test sends appear in Past Sends (`mail_queue` row with `status = 'succeeded'`). The action accepts any valid `recipients` value — the caller controls the destination.

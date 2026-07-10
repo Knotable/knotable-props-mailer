@@ -56,6 +56,21 @@ describe("recipient personalization", () => {
     expect(personalizeText("Visit {{unsubscribeUrl}}", recipient)).toBe("Visit {{unsubscribeUrl}}");
   });
 
+  it("renders arbitrary one-time audience merge fields with fallbacks", () => {
+    const recipient = buildRecipientPersonalization({
+      email: "alice@example.com",
+      displayName: "Alice Smith",
+      mergeData: {
+        opener: "Loved your London note.",
+        company_name: "Knotable",
+      },
+    });
+
+    expect(
+      personalizeText("{{opener}} Re: {{companyName}} / {{missing|fallback}}", recipient),
+    ).toBe("Loved your London note. Re: Knotable / fallback");
+  });
+
   it("personalizes subject, html, and text together", () => {
     const recipient = buildRecipientPersonalization({
       email: "nancy@example.com",

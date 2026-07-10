@@ -2,11 +2,14 @@ export type RecipientPersonalization = {
   email: string;
   name?: string;
   firstName?: string;
+  mergeData?: Record<string, string>;
 };
 
 type RecipientPersonalizationInput = {
   email: string;
   displayName?: string | null;
+  firstName?: string | null;
+  mergeData?: Record<string, unknown> | null;
 };
 
 type EmailContent = {
@@ -28,6 +31,14 @@ function normalizeTokenName(value: string) {
   return value.replace(/[_.-]/g, "").toLowerCase();
 }
 
+function normalizeMergeKey(value: string) {
+  return value
+    .trim()
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+}
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -47,11 +58,23 @@ export function buildRecipientPersonalization(
   input: RecipientPersonalizationInput,
 ): RecipientPersonalization {
   const name = normalizeValue(input.displayName);
+  const firstName = normalizeValue(input.firstName) ?? firstNameFromDisplayName(name);
+  const mergeData = Object.fromEntries(
+    Object.entries(input.mergeData ?? {})
+      .flatMap(([key, value]) => {
+        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return [];
+        const normalizedKey = normalizeMergeKey(key);
+        const normalizedValue = normalizeValue(String(value));
+        if (!normalizedKey || !normalizedValue) return [];
+        return [[normalizedKey, normalizedValue]];
+      }),
+  );
 
   return {
     email: normalizeValue(input.email)?.toLowerCase() ?? input.email.trim().toLowerCase(),
     name,
-    firstName: firstNameFromDisplayName(name),
+    firstName,
+    mergeData,
   };
 }
 
@@ -74,6 +97,14 @@ function resolveMergeTag(
   if (["firstname", "first", "recipientfirstname"].includes(key)) {
     return personalization.firstName ?? fallback ?? "there";
   }
+
+  const mergeKey = normalizeMergeKey(rawKey);
+  const mergeValue = personalization.mergeData?.[mergeKey]
+    ?? Object.entries(personalization.mergeData ?? {}).find(
+      ([key]) => normalizeTokenName(key) === normalizeTokenName(mergeKey),
+    )?.[1];
+  if (mergeValue) return mergeValue;
+  if (fallback !== undefined) return fallback;
 
   return null;
 }

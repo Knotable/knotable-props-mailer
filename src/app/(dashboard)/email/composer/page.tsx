@@ -30,7 +30,7 @@ export default async function ComposerPage({ searchParams }: Props) {
   // Fetch available lists for the picker (needed for list detection below too)
   const { data: lists } = await supabase
     .from("lists")
-    .select("id, name, address")
+    .select("id, name, address, access_level")
     .order("name");
 
   if (sourceId) {

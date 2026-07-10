@@ -1,6 +1,6 @@
 'use server';
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -13,6 +13,7 @@ import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/qu
 import { runQueueWorker } from "@/lib/queueWorker";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
+import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
 import type { Json } from "@/supabase/types";
 
 /**
@@ -53,6 +54,11 @@ const QueueCampaignSchema = z.object({
   offset: z.string().optional(),
 });
 
+const ImportOneTimeAudienceSchema = z.object({
+  name: z.string().min(1).max(200),
+  sourceFilename: z.string().max(500).optional().nullable(),
+});
+
 const SendTestSchema = z.object({
   id: z.string().uuid().optional().nullable(),
   from: z.string().min(1).max(320),
@@ -69,6 +75,8 @@ const EmailIdSchema = z.object({ id: z.string().uuid() });
 const RequeueDeadSchema = z.object({ emailId: z.string().uuid() });
 const QUEUE_CREATE_PAGE_SIZE = 1_000;
 const QUEUE_WARNING_SAMPLE_LIMIT = 500;
+const ONE_TIME_AUDIENCE_ADDRESS_DOMAIN = "props.sarva.co";
+const ONE_TIME_AUDIENCE_MEMBER_CHUNK_SIZE = 500;
 
 // Throws if there is no authenticated session — middleware should have already
 // caught unauthenticated requests, but this is a second line of defence for
@@ -451,6 +459,153 @@ function listMemberToName(metadata: Json | null | undefined) {
   return name || undefined;
 }
 
+function jsonRecord(value: Json | null | undefined): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function listMemberToMergeData(metadata: Json | null | undefined): Record<string, string> {
+  const record = jsonRecord(metadata);
+  const directMerge = jsonRecord(record.merge as Json | null | undefined);
+  const mergeData = jsonRecord(record.merge_data as Json | null | undefined);
+  const source = Object.keys(directMerge).length > 0 ? directMerge : mergeData;
+  const entries = Object.entries(source).flatMap(([key, value]) => {
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return [];
+    const text = String(value).trim();
+    if (!key.trim() || !text) return [];
+    return [[key, text]];
+  });
+
+  const name = listMemberToName(metadata);
+  if (name && !entries.some(([key]) => key === "name")) entries.push(["name", name]);
+
+  const firstName = typeof record.first_name === "string"
+    ? record.first_name.trim()
+    : typeof record.firstName === "string"
+      ? record.firstName.trim()
+      : "";
+  if (firstName && !entries.some(([key]) => key === "first_name")) entries.push(["first_name", firstName]);
+
+  return Object.fromEntries(entries);
+}
+
+export async function importOneTimeAudienceAction(formData: FormData) {
+  const userId = await requireAuthUserId();
+  const parsed = ImportOneTimeAudienceSchema.safeParse({
+    name: String(formData.get("name") ?? "").trim(),
+    sourceFilename: formData.get("sourceFilename") ? String(formData.get("sourceFilename")).trim() : null,
+  });
+  if (!parsed.success) {
+    return { ok: false as const, error: parsed.error.issues[0]?.message ?? "Invalid audience name" };
+  }
+
+  const uploadedFile = formData.get("csvFile");
+  const rawFromFile = uploadedFile instanceof File && uploadedFile.size > 0
+    ? await uploadedFile.text()
+    : "";
+  const raw = rawFromFile || String(formData.get("csv") ?? "");
+  const parsedCsv = parseOneTimeAudienceCsv(raw);
+  if (parsedCsv.errors.length > 0) {
+    return { ok: false as const, error: parsedCsv.errors[0] };
+  }
+  if (parsedCsv.members.length === 0) {
+    return { ok: false as const, error: "CSV did not contain any valid recipients." };
+  }
+
+  const supabase = getSupabaseAdmin();
+  const audienceId = randomUUID();
+  const address = `one-time-${audienceId}@${ONE_TIME_AUDIENCE_ADDRESS_DOMAIN}`;
+  const sourceFilename = uploadedFile instanceof File && uploadedFile.name
+    ? uploadedFile.name
+    : parsed.data.sourceFilename || null;
+  const descriptionParts = [
+    "One-time CSV audience.",
+    "Schema-debt: this is stored in lists/list_members until dedicated audience tables exist.",
+    sourceFilename ? `Source file: ${sourceFilename}.` : null,
+    `Imported ${parsedCsv.members.length} valid recipient(s).`,
+  ].filter(Boolean);
+
+  const list = {
+    id: audienceId,
+    name: parsed.data.name,
+    address,
+    access_level: "one_time_csv",
+  };
+
+  const { error: listError } = await supabase
+    .from("lists")
+    .insert({
+      id: list.id,
+      owner_id: userId,
+      name: list.name,
+      address: list.address,
+      description: descriptionParts.join(" "),
+      access_level: list.access_level,
+    });
+  if (listError) return { ok: false as const, error: listError.message };
+
+  for (let i = 0; i < parsedCsv.members.length; i += ONE_TIME_AUDIENCE_MEMBER_CHUNK_SIZE) {
+    const rows = parsedCsv.members
+      .slice(i, i + ONE_TIME_AUDIENCE_MEMBER_CHUNK_SIZE)
+      .map((member) => {
+        const blocked = isBlockedRecipientEmail(member.email);
+        const metadata = {
+          name: member.name,
+          display_name: member.name,
+          first_name: member.firstName,
+          one_time_audience: true,
+          source_filename: sourceFilename,
+          source_row: member.sourceRow,
+          merge: member.mergeData,
+        } satisfies Json;
+
+        return {
+          list_id: list.id,
+          email: member.email,
+          status: blocked ? "blocked" : "active",
+          source: blocked ? "block_list" : "one_time_csv",
+          unsubscribed_at: blocked ? new Date().toISOString() : null,
+          metadata,
+        };
+      });
+
+    const { error } = await supabase.from("list_members").insert(rows);
+    if (error) {
+      await supabase.from("lists").delete().eq("id", list.id);
+      return { ok: false as const, error: error.message };
+    }
+  }
+
+  logAudit({
+    userId,
+    action: "one_time_audience.import",
+    entity: "lists",
+    entityId: list.id,
+    payload: {
+      submitted: parsedCsv.submitted,
+      imported: parsedCsv.members.length,
+      skippedInvalid: parsedCsv.skippedInvalid,
+      skippedDuplicate: parsedCsv.skippedDuplicate,
+      sourceFilename,
+      headers: parsedCsv.headers,
+    },
+  }).catch(console.error);
+
+  revalidatePath("/email/composer");
+  revalidatePath("/lists");
+
+  return {
+    ok: true as const,
+    list,
+    submitted: parsedCsv.submitted,
+    imported: parsedCsv.members.length,
+    skippedInvalid: parsedCsv.skippedInvalid,
+    skippedDuplicate: parsedCsv.skippedDuplicate,
+    headers: parsedCsv.headers,
+    sample: parsedCsv.members.slice(0, 5),
+  };
+}
+
 async function buildQueueWarningSummary(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
@@ -740,6 +895,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       payload: {
         to: member.email,
         toName: listMemberToName(member.metadata),
+        merge: listMemberToMergeData(member.metadata),
         tags: email.tags ?? [],
         campaigns: email.campaigns ?? [],
       },

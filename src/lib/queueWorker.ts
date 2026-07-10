@@ -60,6 +60,7 @@ const MailQueuePayloadSchema = z.object({
   replyTo: z.string().min(1).max(320).optional(),
   to: z.string().min(1).max(320),
   toName: z.string().min(1).max(320).optional(),
+  merge: z.record(z.string(), z.string()).optional(),
   subject: z.string().min(1).max(998).optional(),
   html: z.string().min(1).optional(),
   text: z.string().optional(),
@@ -473,6 +474,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       buildRecipientPersonalization({
         email: payload.to,
         displayName: payload.toName,
+        mergeData: payload.merge,
       }),
     );
 

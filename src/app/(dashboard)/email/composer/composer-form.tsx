@@ -4,12 +4,14 @@ import {
   Bold,
   ChevronDown,
   Eraser,
+  FileText,
   Heading2,
   Italic,
   Link as LinkIcon,
   List,
   ListOrdered,
   Pilcrow,
+  Upload,
   Underline,
   Unlink,
   X,
@@ -21,16 +23,23 @@ import {
   sendTestAction,
   queueCampaignAction,
   sendQueuedEmailAction,
+  importOneTimeAudienceAction,
   type QueueCampaignConfirm,
   type QueueCampaignOk,
 } from "../actions";
 import { ProgressStatus } from "@/components/progress-status";
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
+import {
+  parseOneTimeAudienceCsv,
+  personalizeAudiencePreview,
+  unresolvedMergeTags,
+  type AudienceParseResult,
+} from "@/lib/client/oneTimeAudience";
 
 const LAST_DRAFT_KEY = "composer.lastDraftId";
 const AUTOSAVE_DELAY_MS = 3_000;
 
-type List = { id: string; name: string; address: string };
+type List = { id: string; name: string; address: string; access_level?: string | null };
 
 type Draft = {
   id: string;
@@ -57,6 +66,10 @@ type AutosaveState = "idle" | "pending" | "saving" | "saved" | "error";
 type QueueWorkflowTarget = "queue" | "sendNow";
 type WarningGroup = QueueCampaignConfirm["warningGroups"][number];
 
+function isOneTimeList(list: List | null) {
+  return list?.access_level === "one_time_csv" || list?.address.startsWith("one-time-") || false;
+}
+
 export function ComposerForm({ draft, lists, templateMode = false, userEmail, canSend }: Props) {
   const router = useRouter();
   const initialList = draft?.list_id
@@ -64,6 +77,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
     : null;
 
   const [selectedList, setSelectedList] = useState<List | null>(initialList);
+  const [availableLists, setAvailableLists] = useState<List[]>(lists);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -75,6 +89,12 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
   const [pendingQueueTarget, setPendingQueueTarget] = useState<QueueWorkflowTarget>("queue");
   // Duplicate-send confirmation state — set when the server returns requiresConfirmation:true.
   const [dupWarning, setDupWarning] = useState<QueueCampaignConfirm | null>(null);
+  const [audienceName, setAudienceName] = useState("");
+  const [audienceCsv, setAudienceCsv] = useState("");
+  const [audienceFileName, setAudienceFileName] = useState<string | null>(null);
+  const [audiencePreview, setAudiencePreview] = useState<AudienceParseResult | null>(null);
+  const [audienceImporting, setAudienceImporting] = useState(false);
+  const [audiencePreviewIndex, setAudiencePreviewIndex] = useState(0);
 
   const formRef = useRef<HTMLFormElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -83,6 +103,10 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
   // needing to re-register the form onChange handler.
   const draftIdRef = useRef<string | null>(draftId);
   useEffect(() => { draftIdRef.current = draftId; }, [draftId]);
+
+  useEffect(() => {
+    setAvailableLists(lists);
+  }, [lists]);
 
   // Persist / restore last open draft across reloads
   useEffect(() => {
@@ -193,6 +217,90 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
       setSendingTest(false);
       setActionStatus(null);
     }
+  };
+
+  const refreshAudiencePreview = (csv: string) => {
+    const parsed = parseOneTimeAudienceCsv(csv);
+    setAudiencePreview(parsed);
+    setAudiencePreviewIndex(0);
+    return parsed;
+  };
+
+  const handleAudienceFile = async (file: File | null) => {
+    if (!file) return;
+    const text = await file.text();
+    setAudienceFileName(file.name);
+    setAudienceCsv(text);
+    if (!audienceName.trim()) {
+      const baseName = file.name.replace(/\.[^.]+$/g, "").replace(/[-_]+/g, " ").trim();
+      setAudienceName(baseName ? `One-time: ${baseName}` : "One-time CSV audience");
+    }
+    refreshAudiencePreview(text);
+  };
+
+  const handleImportAudience = async () => {
+    const parsed = audiencePreview ?? refreshAudiencePreview(audienceCsv);
+    if (parsed.errors.length > 0) {
+      setBanner({ ok: false, message: parsed.errors[0] });
+      return;
+    }
+    if (parsed.members.length === 0) {
+      setBanner({ ok: false, message: "CSV did not contain any valid recipients." });
+      return;
+    }
+
+    setAudienceImporting(true);
+    setBanner(null);
+    setActionStatus("Importing one-time audience...");
+    try {
+      const fd = new FormData();
+      fd.set("name", audienceName.trim() || "One-time CSV audience");
+      fd.set("csv", audienceCsv);
+      if (audienceFileName) fd.set("sourceFilename", audienceFileName);
+      const res = await importOneTimeAudienceAction(fd);
+      if (!res.ok) {
+        setBanner({ ok: false, message: res.error });
+        return;
+      }
+      setAvailableLists((current) => [res.list, ...current.filter((list) => list.id !== res.list.id)]);
+      setSelectedList(res.list);
+      setBanner({
+        ok: true,
+        message: `Imported ${res.imported.toLocaleString()} recipient${res.imported !== 1 ? "s" : ""} as "${res.list.name}".`,
+      });
+    } catch (err) {
+      setBanner({ ok: false, message: getActionErrorMessage(err, "Could not import this audience.") });
+    } finally {
+      setAudienceImporting(false);
+      setActionStatus(null);
+    }
+  };
+
+  const handlePreviewAudienceRecipient = () => {
+    const member = audiencePreview?.members[audiencePreviewIndex];
+    if (!member || !formRef.current) return;
+
+    const fd = new FormData(formRef.current);
+    const subject = String(fd.get("subject") ?? "");
+    const html = String(fd.get("html") ?? "");
+    const personalizedSubject = personalizeAudiencePreview(subject, member, "text");
+    const personalizedHtml = personalizeAudiencePreview(html, member, "html");
+    const remainingTags = unresolvedMergeTags(`${personalizedSubject}\n${personalizedHtml}`);
+    const warning = remainingTags.length > 0
+      ? `<p style="color:#92400e;font:13px system-ui;margin:0 0 12px;">Unresolved tags: ${remainingTags.join(", ")}</p>`
+      : "";
+
+    const win = window.open("", "_blank", "width=900,height=760,resizable=yes,scrollbars=yes");
+    if (!win) return;
+    win.document.open();
+    win.document.write(`
+      <div style="font:14px system-ui;padding:16px;border-bottom:1px solid #e5e7eb;background:#f8fafc;">
+        <div><strong>To:</strong> ${member.email}</div>
+        <div><strong>Subject:</strong> ${personalizedSubject}</div>
+      </div>
+      <div style="padding:16px;">${warning}${personalizedHtml}</div>
+    `);
+    win.document.close();
   };
 
   // ── Save Draft ─────────────────────────────────────────────────────────────
@@ -490,7 +598,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
               )}
               {selectedList && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Queues individual sends for every active member of this list. You can review and send it later from the Queue page.
+                  Queues individual sends for every active member of this {isOneTimeList(selectedList) ? "one-time audience" : "list"}. You can review and send it later from the Queue page.
                 </p>
               )}
               {selectedList && (
@@ -498,7 +606,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
               )}
             </div>
 
-            {lists.length > 0 && (
+            {availableLists.length > 0 && (
               <div className="relative shrink-0" ref={dropdownRef}>
                 <button
                   type="button"
@@ -512,7 +620,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                 {dropdownOpen && (
                   <div className="absolute right-0 top-full z-20 mt-1 w-64 rounded-lg border border-slate-200 bg-white shadow-lg">
                     <div className="p-1">
-                      {lists.map((list) => (
+                      {availableLists.map((list) => (
                         <button
                           key={list.id}
                           type="button"
@@ -527,6 +635,11 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                           }`}
                         >
                           <span className="font-medium">{list.name}</span>
+                          {isOneTimeList(list) && (
+                            <span className={`ml-2 rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase ${selectedList?.id === list.id ? "bg-white/15 text-slate-100" : "bg-blue-50 text-blue-700"}`}>
+                              one-time
+                            </span>
+                          )}
                           <span className={`ml-2 text-xs ${selectedList?.id === list.id ? "text-slate-300" : "text-slate-400"}`}>
                             {list.address}
                           </span>
@@ -537,6 +650,141 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                 )}
               </div>
             )}
+          </div>
+        </div>
+
+        <div
+          className="rounded-md border border-blue-200 bg-white px-4 py-4"
+          onChange={(event) => event.stopPropagation()}
+        >
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-slate-900">One-time mail merge audience</p>
+              <p className="mt-1 text-xs text-slate-500">
+                Upload a CSV with an email column and optional fields like name, first_name, opener, company, or custom_note.
+              </p>
+            </div>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-medium text-blue-800 hover:bg-blue-100">
+              <Upload aria-hidden="true" className="size-4" />
+              Upload CSV
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                className="sr-only"
+                onChange={(event) => void handleAudienceFile(event.target.files?.[0] ?? null)}
+              />
+            </label>
+          </div>
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(280px,360px)]">
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-slate-700">
+                Audience name
+                <input
+                  value={audienceName}
+                  onChange={(event) => setAudienceName(event.target.value)}
+                  placeholder="One-time: July investor intros"
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-700">
+                CSV
+                <textarea
+                  value={audienceCsv}
+                  onChange={(event) => {
+                    setAudienceCsv(event.target.value);
+                    setAudiencePreview(null);
+                  }}
+                  rows={5}
+                  placeholder={'email,name,first_name,opener\na@example.com,Alice Smith,Alice,"Loved your London note."'}
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-xs"
+                />
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => refreshAudiencePreview(audienceCsv)}
+                  className="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  <FileText aria-hidden="true" className="size-4" />
+                  Validate
+                </button>
+                <button
+                  type="button"
+                  onClick={handleImportAudience}
+                  disabled={audienceImporting || !audienceCsv.trim()}
+                  className="rounded-md bg-blue-700 px-3 py-2 text-sm font-semibold text-white hover:bg-blue-800 disabled:opacity-50"
+                >
+                  {audienceImporting ? "Importing..." : "Import and select"}
+                </button>
+                {audienceFileName && (
+                  <span className="text-xs text-slate-500">{audienceFileName}</span>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs font-semibold uppercase text-slate-500">Validation</p>
+              {audiencePreview ? (
+                <div className="mt-2 space-y-3 text-sm">
+                  {audiencePreview.errors.length > 0 ? (
+                    <p className="text-red-700">{audiencePreview.errors[0]}</p>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="rounded bg-white p-2">
+                          <p className="text-slate-500">Valid</p>
+                          <p className="text-lg font-semibold text-slate-900">{audiencePreview.members.length.toLocaleString()}</p>
+                        </div>
+                        <div className="rounded bg-white p-2">
+                          <p className="text-slate-500">Skipped</p>
+                          <p className="text-lg font-semibold text-slate-900">
+                            {(audiencePreview.skippedInvalid + audiencePreview.skippedDuplicate).toLocaleString()}
+                          </p>
+                        </div>
+                      </div>
+                      <p className="text-xs text-slate-600">
+                        {audiencePreview.skippedInvalid.toLocaleString()} invalid, {audiencePreview.skippedDuplicate.toLocaleString()} duplicate.
+                      </p>
+                      {audiencePreview.members.length > 0 && (
+                        <div className="space-y-2">
+                          <label className="block text-xs font-medium text-slate-600">
+                            Preview recipient
+                            <select
+                              value={audiencePreviewIndex}
+                              onChange={(event) => setAudiencePreviewIndex(Number(event.target.value))}
+                              className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+                            >
+                              {audiencePreview.members.slice(0, 25).map((member, index) => (
+                                <option key={`${member.email}-${member.sourceRow}`} value={index}>
+                                  {member.name ? `${member.name} - ` : ""}{member.email}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <button
+                            type="button"
+                            onClick={handlePreviewAudienceRecipient}
+                            className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                          >
+                            Open personalized preview
+                          </button>
+                          <div className="max-h-28 overflow-auto rounded border border-slate-200 bg-white p-2 text-xs text-slate-600">
+                            {Object.entries(audiencePreview.members[audiencePreviewIndex]?.mergeData ?? {}).slice(0, 10).map(([key, value]) => (
+                              <p key={key} className="truncate">
+                                <span className="font-medium text-slate-800">{`{{${key}}}`}</span>: {value}
+                              </p>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              ) : (
+                <p className="mt-2 text-sm text-slate-500">Validate a CSV to see row counts, skipped recipients, and a personalized preview sample.</p>
+              )}
+            </div>
           </div>
         </div>
 
