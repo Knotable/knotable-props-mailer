@@ -558,8 +558,10 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     }
   }
 
-  // Fan out sends in WORKER_CONCURRENCY-sized windows. The pause after each
-  // window keeps sustained acceptance under SES's account-level send-rate cap.
+  // Fan out sends in WORKER_CONCURRENCY-sized windows. Pace against elapsed
+  // batch time so SMTP/DB latency counts toward the SES send-rate budget.
+  const batchStartedAt = Date.now();
+  let attemptedSends = 0;
   for (let i = 0; i < items.length; i += WORKER_CONCURRENCY) {
     const window = items.slice(i, i + WORKER_CONCURRENCY);
     const results = await Promise.allSettled(window.map(processItem));
@@ -567,8 +569,12 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       if (r.status === "fulfilled" && r.value === "succeeded") succeeded++;
       else failed++;
     }
+    attemptedSends += window.length;
     if (i + WORKER_CONCURRENCY < items.length) {
-      await sleep(Math.ceil((window.length / effectiveSendRatePerSecond) * 1000));
+      const targetElapsedMs = Math.ceil((attemptedSends / effectiveSendRatePerSecond) * 1000);
+      const actualElapsedMs = Date.now() - batchStartedAt;
+      const sleepMs = targetElapsedMs - actualElapsedMs;
+      if (sleepMs > 0) await sleep(sleepMs);
     }
   }
 
