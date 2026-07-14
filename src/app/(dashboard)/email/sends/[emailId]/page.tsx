@@ -66,6 +66,51 @@ type RecipientRow = {
   updatedAt: string | null;
   lastError: string | null;
   sesMessageId: string | null;
+  deliveredEvents: number;
+  propsOpenEvents: number;
+  sesOpenEvents: number;
+  clickEvents: number;
+  bounceEvents: number;
+  complaintEvents: number;
+  firstOpenAt: string | null;
+  lastOpenAt: string | null;
+  firstClickAt: string | null;
+  lastClickAt: string | null;
+  latestEventAt: string | null;
+};
+
+type AnalyticsDetail = {
+  queued: number;
+  sesAccepted: number;
+  withSesMessageId: number;
+  deliveredUnique: number;
+  bouncedUnique: number;
+  complainedUnique: number;
+  openedUnique: number;
+  propsOpenedUnique: number;
+  sesOpenedUnique: number;
+  clickedUnique: number;
+  deliveryEvents: number;
+  openEvents: number;
+  propsOpenEvents: number;
+  sesOpenEvents: number;
+  clickEvents: number;
+  firstEventAt: string | null;
+  latestEventAt: string | null;
+};
+
+type TopLink = {
+  url: string;
+  totalClicks: number;
+  uniqueRecipients: number;
+  lastClickedAt: string | null;
+};
+
+type RpcClient = {
+  rpc(
+    fn: string,
+    args: Record<string, unknown>,
+  ): Promise<{ data: unknown; error: { message?: string } | null }>;
 };
 
 function payloadValue(payload: unknown, key: string) {
@@ -246,6 +291,138 @@ async function loadRecipientPage(
         updatedAt: row.updated_at,
         lastError: row.last_error,
         sesMessageId: row.ses_message_id,
+        deliveredEvents: 0,
+        propsOpenEvents: 0,
+        sesOpenEvents: 0,
+        clickEvents: 0,
+        bounceEvents: 0,
+        complaintEvents: 0,
+        firstOpenAt: null,
+        lastOpenAt: null,
+        firstClickAt: null,
+        lastClickAt: null,
+        latestEventAt: null,
+      } satisfies RecipientRow;
+    }),
+  };
+}
+
+async function loadAnalyticsDetail(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+) {
+  const { data, error } = await (supabase as unknown as RpcClient).rpc(
+    "get_email_analytics_detail",
+    { p_email_id: emailId },
+  );
+  const row = Array.isArray(data) ? (data[0] as Record<string, unknown> | undefined) : undefined;
+  if (error || !row) return { detail: null, exact: false } as const;
+
+  const number = (key: string) => Number(row[key] ?? 0);
+  return {
+    exact: true,
+    detail: {
+      queued: number("queued"),
+      sesAccepted: number("ses_accepted"),
+      withSesMessageId: number("with_ses_message_id"),
+      deliveredUnique: number("delivered_unique"),
+      bouncedUnique: number("bounced_unique"),
+      complainedUnique: number("complained_unique"),
+      openedUnique: number("opened_unique"),
+      propsOpenedUnique: number("props_opened_unique"),
+      sesOpenedUnique: number("ses_opened_unique"),
+      clickedUnique: number("clicked_unique"),
+      deliveryEvents: number("delivery_events"),
+      openEvents: number("open_events"),
+      propsOpenEvents: number("props_open_events"),
+      sesOpenEvents: number("ses_open_events"),
+      clickEvents: number("click_events"),
+      firstEventAt: typeof row.first_event_at === "string" ? row.first_event_at : null,
+      latestEventAt: typeof row.latest_event_at === "string" ? row.latest_event_at : null,
+    } satisfies AnalyticsDetail,
+  } as const;
+}
+
+async function loadTopLinks(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+) {
+  const { data, error } = await (supabase as unknown as RpcClient).rpc("get_email_top_links", {
+    p_email_id: emailId,
+    p_limit: 20,
+  });
+  if (error || !Array.isArray(data)) return [] as TopLink[];
+  return data.map((raw) => {
+    const row = raw as Record<string, unknown>;
+    return {
+      url: String(row.url ?? ""),
+      totalClicks: Number(row.total_clicks ?? 0),
+      uniqueRecipients: Number(row.unique_recipients ?? 0),
+      lastClickedAt: typeof row.last_clicked_at === "string" ? row.last_clicked_at : null,
+    };
+  }).filter((row) => row.url);
+}
+
+async function loadRecipientActivityPage(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+  page: number,
+  filters: { status: string | null; event: string | null; search: string | null },
+) {
+  const { data, error } = await (supabase as unknown as RpcClient).rpc(
+    "get_email_recipient_activity",
+    {
+      p_email_id: emailId,
+      p_limit: PAGE_SIZE,
+      p_offset: (page - 1) * PAGE_SIZE,
+      p_status: filters.status,
+      p_event_type: filters.event,
+      p_search: filters.search,
+    },
+  );
+
+  if (error || !Array.isArray(data)) {
+    const fallback = await loadRecipientPage(supabase, emailId, page);
+    return { ...fallback, exact: false };
+  }
+
+  const rawRows = data as Record<string, unknown>[];
+  const listIds = [...new Set(rawRows.map((row) => row.list_id).filter((id): id is string => typeof id === "string"))];
+  const { data: lists } = listIds.length
+    ? await supabase.from("lists").select("id, name").in("id", listIds)
+    : { data: [] as { id: string; name: string }[] };
+  const listNames = new Map((lists ?? []).map((list) => [list.id, list.name]));
+  const text = (row: Record<string, unknown>, key: string) => typeof row[key] === "string" ? row[key] as string : null;
+  const number = (row: Record<string, unknown>, key: string) => Number(row[key] ?? 0);
+
+  return {
+    exact: true,
+    total: Number(rawRows[0]?.total_count ?? 0),
+    rows: rawRows.map((row) => {
+      const listId = text(row, "list_id");
+      return {
+        id: String(row.queue_id),
+        email: text(row, "recipient"),
+        toName: text(row, "recipient_name"),
+        listId,
+        listName: listId ? listNames.get(listId) ?? "Unknown list" : "Direct recipient",
+        status: text(row, "queue_status"),
+        sendDate: text(row, "send_date"),
+        queuedAt: text(row, "queued_at"),
+        updatedAt: text(row, "queue_updated_at"),
+        lastError: text(row, "last_error"),
+        sesMessageId: text(row, "ses_message_id"),
+        deliveredEvents: number(row, "delivered_events"),
+        propsOpenEvents: number(row, "props_open_events"),
+        sesOpenEvents: number(row, "ses_open_events"),
+        clickEvents: number(row, "click_events"),
+        bounceEvents: number(row, "bounce_events"),
+        complaintEvents: number(row, "complaint_events"),
+        firstOpenAt: text(row, "first_open_at"),
+        lastOpenAt: text(row, "last_open_at"),
+        firstClickAt: text(row, "first_click_at"),
+        lastClickAt: text(row, "last_click_at"),
+        latestEventAt: text(row, "latest_event_at"),
       } satisfies RecipientRow;
     }),
   };
@@ -260,6 +437,9 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
 
   const resolvedSearchParams = await searchParams;
   const page = clampPage(resolvedSearchParams.page);
+  const search = singleParam(resolvedSearchParams.search);
+  const statusFilter = singleParam(resolvedSearchParams.status);
+  const eventFilter = singleParam(resolvedSearchParams.event);
   const supabase = getSupabaseAdmin();
 
   const { data: email, error: emailError } = await supabase
@@ -282,6 +462,8 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
     firstSentResult,
     listSummaries,
     recipientPage,
+    analyticsResult,
+    topLinks,
   ] = await Promise.all([
     countQueueRows(supabase, emailId),
     countQueueRows(supabase, emailId, "succeeded"),
@@ -297,11 +479,22 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
       .order("created_at", { ascending: true })
       .limit(1),
     loadListSummaries(supabase, emailId),
-    loadRecipientPage(supabase, emailId, page),
+    loadRecipientActivityPage(supabase, emailId, page, {
+      status: statusFilter,
+      event: eventFilter,
+      search,
+    }),
+    loadAnalyticsDetail(supabase, emailId),
+    loadTopLinks(supabase, emailId),
   ]);
 
   const totalPages = Math.max(1, Math.ceil(recipientPage.total / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
+  const analytics = analyticsResult.detail;
+  const acceptedDenominator = analytics?.sesAccepted ?? succeededRows ?? 0;
+  const deliveryRate = rate(analytics?.deliveredUnique ?? 0, acceptedDenominator);
+  const openRate = rate(analytics?.openedUnique ?? 0, acceptedDenominator);
+  const clickRate = rate(analytics?.clickedUnique ?? 0, acceptedDenominator);
 
   return (
     <div className="space-y-6">
@@ -353,6 +546,67 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
           </div>
         </div>
       </header>
+
+      <section className="space-y-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-900">Campaign analytics</h3>
+            <p className="mt-1 text-xs text-slate-500">
+              Unique people are the headline metric; raw events show repeat activity. Opens combine
+              SES and the Props pixel without counting the same recipient twice.
+            </p>
+          </div>
+          <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${analyticsResult.exact ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-800"}`}>
+            {analyticsResult.exact ? "Exact database counts" : "Migration required"}
+          </span>
+        </div>
+
+        {!analyticsResult.exact && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Apply <code>supabase/migrations/20260714_campaign_analytics_detail.sql</code> to enable exact
+            engagement counts, filters, and timelines. Queue outcomes below remain exact.
+          </p>
+        )}
+
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <AnalyticsMetric label="SES accepted" value={acceptedDenominator} detail={`${analytics?.withSesMessageId ?? 0} with SES message ID`} tone="green" />
+          <AnalyticsMetric label="Delivered" value={analytics?.deliveredUnique ?? null} detail={deliveryRate === null ? "provider confirmation" : `${deliveryRate}% of accepted`} tone="green" />
+          <AnalyticsMetric label="Opened" value={analytics?.openedUnique ?? null} detail={openRate === null ? "unique recipients" : `${openRate}% of accepted`} tone="blue" />
+          <AnalyticsMetric label="Clicked" value={analytics?.clickedUnique ?? null} detail={clickRate === null ? "unique recipients" : `${clickRate}% of accepted`} tone="blue" />
+          <AnalyticsMetric label="Bounced / complained" value={analytics ? analytics.bouncedUnique + analytics.complainedUnique : null} detail={analytics ? `${analytics.bouncedUnique} bounced · ${analytics.complainedUnique} complained` : "provider events"} tone={(analytics?.bouncedUnique ?? 0) + (analytics?.complainedUnique ?? 0) > 0 ? "red" : "slate"} />
+        </div>
+
+        <div className="grid gap-3 rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs sm:grid-cols-2 lg:grid-cols-4">
+          <ConfidenceFact label="Open sources" value={analytics ? `${analytics.propsOpenedUnique.toLocaleString()} Props pixel · ${analytics.sesOpenedUnique.toLocaleString()} SES` : "Unavailable"} />
+          <ConfidenceFact label="Repeat activity" value={analytics ? `${analytics.openEvents.toLocaleString()} open events · ${analytics.clickEvents.toLocaleString()} click events` : "Unavailable"} />
+          <ConfidenceFact label="Provider coverage" value={analytics && analytics.sesAccepted > 0 ? `${rate(analytics.withSesMessageId, analytics.sesAccepted) ?? 0}% have SES IDs` : "No accepted rows"} />
+          <ConfidenceFact label="Latest provider event" value={analytics?.latestEventAt ? formatDate(analytics.latestEventAt) : "None recorded"} />
+        </div>
+
+        <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-900">
+          <span className="font-semibold">How to read this:</span> clicks are the strongest engagement
+          signal here. Opens are directional because image blocking and privacy preloading can create
+          false negatives and false positives. “SES accepted” is submission, while “Delivered” is the
+          receiving mail server confirmation.
+        </div>
+      </section>
+
+      {topLinks.length > 0 && (
+        <section className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
+            <h3 className="text-sm font-semibold text-slate-900">Top clicked links</h3>
+            <p className="text-xs text-slate-500">Ranked by unique recipients, then total clicks.</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-left text-xs">
+              <thead className="text-slate-400"><tr><th className="px-4 py-2">Destination</th><th className="px-4 py-2 text-right">People</th><th className="px-4 py-2 text-right">Clicks</th><th className="px-4 py-2">Latest</th></tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {topLinks.map((link) => <tr key={link.url}><td className="max-w-2xl px-4 py-2"><a href={link.url} target="_blank" rel="noopener noreferrer" className="block truncate font-medium text-blue-700 hover:underline">{link.url}</a></td><td className="px-4 py-2 text-right tabular-nums">{link.uniqueRecipients.toLocaleString()}</td><td className="px-4 py-2 text-right tabular-nums">{link.totalClicks.toLocaleString()}</td><td className="px-4 py-2 text-slate-500">{formatDate(link.lastClickedAt)}</td></tr>)}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       <section className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600 sm:grid-cols-2 lg:grid-cols-4">
         <Metric label="Queued rows" value={totalRows} />
@@ -425,15 +679,22 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
       </section>
 
       <section className="rounded-lg border border-slate-200 bg-white">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div>
-            <h3 className="text-sm font-semibold text-slate-900">Recipients</h3>
+            <h3 className="text-sm font-semibold text-slate-900">Recipient activity</h3>
             <p className="text-xs text-slate-500">
-              Showing {recipientPage.rows.length.toLocaleString()} of {recipientPage.total.toLocaleString()} queued rows.
+              Showing {recipientPage.rows.length.toLocaleString()} of {recipientPage.total.toLocaleString()} matching recipients.
+              {!recipientPage.exact && " Event detail needs the analytics-detail migration."}
             </p>
           </div>
-          <Pagination emailId={email.id} page={safePage} totalPages={totalPages} />
+          <Pagination emailId={email.id} page={safePage} totalPages={totalPages} filters={{ search, status: statusFilter, event: eventFilter }} />
         </div>
+        <form method="get" className="grid gap-2 border-b border-slate-100 bg-white p-3 sm:grid-cols-[minmax(12rem,1fr)_10rem_10rem_auto]">
+          <input name="search" defaultValue={search ?? ""} placeholder="Search recipient email" className="rounded-md border border-slate-300 px-3 py-2 text-xs" />
+          <select name="status" defaultValue={statusFilter ?? ""} className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs"><option value="">Any queue status</option>{QUEUE_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
+          <select name="event" defaultValue={eventFilter ?? ""} className="rounded-md border border-slate-300 bg-white px-3 py-2 text-xs"><option value="">Any activity</option>{["delivered", "opened", "clicked", "bounced", "complained"].map((event) => <option key={event} value={event}>{event}</option>)}</select>
+          <div className="flex gap-2"><button className="rounded-md bg-slate-900 px-3 py-2 text-xs font-semibold text-white">Filter</button><Link href={`/email/sends/${email.id}`} className="rounded-md border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600">Clear</Link></div>
+        </form>
         {recipientPage.rows.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="min-w-full text-left text-xs">
@@ -442,9 +703,10 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
                   <th className="px-4 py-2 font-semibold uppercase tracking-wide">Recipient</th>
                   <th className="px-4 py-2 font-semibold uppercase tracking-wide">List</th>
                   <th className="px-4 py-2 font-semibold uppercase tracking-wide">Status</th>
-                  <th className="px-4 py-2 font-semibold uppercase tracking-wide">Send Date</th>
-                  <th className="px-4 py-2 font-semibold uppercase tracking-wide">SES Message</th>
-                  <th className="px-4 py-2 font-semibold uppercase tracking-wide">Error</th>
+                  <th className="px-4 py-2 font-semibold uppercase tracking-wide">Delivery</th>
+                  <th className="px-4 py-2 font-semibold uppercase tracking-wide">Opens</th>
+                  <th className="px-4 py-2 font-semibold uppercase tracking-wide">Clicks</th>
+                  <th className="px-4 py-2 font-semibold uppercase tracking-wide">Latest activity</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -464,23 +726,20 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
                       )}
                     </td>
                     <td className={`px-4 py-2 ${statusClassName(row.status)}`}>{row.status ?? "unknown"}</td>
-                    <td className="px-4 py-2 text-slate-500">{row.sendDate ?? "not sent"}</td>
-                    <td className="max-w-xs px-4 py-2">
-                      <code className="block truncate text-[11px] text-slate-500">{row.sesMessageId ?? "-"}</code>
-                    </td>
-                    <td className="max-w-sm px-4 py-2 text-red-600">
-                      <span className="line-clamp-2">{csvSafe(row.lastError) || "-"}</span>
-                    </td>
+                    <td className="px-4 py-2"><EventCount count={row.deliveredEvents} label="delivered" tone="green" />{row.bounceEvents > 0 && <EventCount count={row.bounceEvents} label="bounced" tone="red" />}{row.complaintEvents > 0 && <EventCount count={row.complaintEvents} label="complained" tone="red" />}{row.lastError && <p className="mt-1 max-w-xs line-clamp-2 text-[10px] text-red-600">{csvSafe(row.lastError)}</p>}</td>
+                    <td className="px-4 py-2"><EventCount count={row.propsOpenEvents + row.sesOpenEvents} label="events" tone="blue" />{row.propsOpenEvents + row.sesOpenEvents > 0 && <p className="text-[10px] text-slate-400">{row.propsOpenEvents} Props · {row.sesOpenEvents} SES</p>}</td>
+                    <td className="px-4 py-2"><EventCount count={row.clickEvents} label="events" tone="blue" />{row.lastClickAt && <p className="text-[10px] text-slate-400">{formatDate(row.lastClickAt)}</p>}</td>
+                    <td className="px-4 py-2 text-slate-500"><p>{formatDate(row.latestEventAt ?? row.updatedAt)}</p><p className="mt-1 text-[10px] text-slate-400">Sent {row.sendDate ?? "not sent"}</p></td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <p className="px-4 py-6 text-sm text-slate-500">No queue recipient rows were recorded for this email.</p>
+          <p className="px-4 py-6 text-sm text-slate-500">No recipients match these filters.</p>
         )}
         <div className="border-t border-slate-100 px-4 py-3">
-          <Pagination emailId={email.id} page={safePage} totalPages={totalPages} />
+          <Pagination emailId={email.id} page={safePage} totalPages={totalPages} filters={{ search, status: statusFilter, event: eventFilter }} />
         </div>
       </section>
     </div>
@@ -501,6 +760,21 @@ function Metric({ label, value, tone = "slate" }: { label: string; value: number
       <p className={`text-xl font-semibold ${color}`}>{formatNullableCount(value)}</p>
     </div>
   );
+}
+
+function AnalyticsMetric({ label, value, detail, tone }: { label: string; value: number | null; detail: string; tone: "slate" | "green" | "red" | "blue" }) {
+  const color = { slate: "text-slate-900", green: "text-green-700", red: "text-red-700", blue: "text-blue-700" }[tone];
+  return <div className="rounded-lg border border-slate-100 bg-slate-50 p-3"><p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">{label}</p><p className={`mt-1 text-xl font-semibold tabular-nums ${color}`}>{value === null ? "—" : value.toLocaleString()}</p><p className="mt-1 text-[11px] text-slate-500">{detail}</p></div>;
+}
+
+function ConfidenceFact({ label, value }: { label: string; value: string }) {
+  return <div><p className="font-semibold uppercase tracking-wide text-slate-400">{label}</p><p className="mt-1 font-medium text-slate-700">{value}</p></div>;
+}
+
+function EventCount({ count, label, tone }: { count: number; label: string; tone: "green" | "red" | "blue" }) {
+  if (count <= 0) return <span className="text-slate-300">—</span>;
+  const color = { green: "text-green-700", red: "text-red-700", blue: "text-blue-700" }[tone];
+  return <p className={`font-semibold tabular-nums ${color}`}>{count.toLocaleString()} {label}</p>;
 }
 
 function Fact({ label, value }: { label: string; value: string | null }) {
@@ -549,9 +823,16 @@ function StatusLine({ counts }: { counts: Record<string, number | null> }) {
   );
 }
 
-function Pagination({ emailId, page, totalPages }: { emailId: string; page: number; totalPages: number }) {
+function Pagination({ emailId, page, totalPages, filters }: { emailId: string; page: number; totalPages: number; filters: { search: string | null; status: string | null; event: string | null } }) {
   const prev = page > 1 ? page - 1 : null;
   const next = page < totalPages ? page + 1 : null;
+  const href = (targetPage: number) => {
+    const params = new URLSearchParams({ page: String(targetPage) });
+    if (filters.search) params.set("search", filters.search);
+    if (filters.status) params.set("status", filters.status);
+    if (filters.event) params.set("event", filters.event);
+    return `/email/sends/${emailId}?${params.toString()}`;
+  };
 
   return (
     <div className="flex items-center gap-2 text-xs">
@@ -559,14 +840,14 @@ function Pagination({ emailId, page, totalPages }: { emailId: string; page: numb
         Page {page} of {totalPages}
       </span>
       {prev ? (
-        <Link href={`/email/sends/${emailId}?page=${prev}`} className="rounded border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-50">
+        <Link href={href(prev)} className="rounded border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-50">
           Previous
         </Link>
       ) : (
         <span className="rounded border border-slate-200 px-2 py-1 text-slate-300">Previous</span>
       )}
       {next ? (
-        <Link href={`/email/sends/${emailId}?page=${next}`} className="rounded border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-50">
+        <Link href={href(next)} className="rounded border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-50">
           Next
         </Link>
       ) : (
@@ -586,6 +867,16 @@ function statusClassName(status: string | null) {
 
 function formatNullableCount(value: number | null) {
   return value === null ? "..." : value.toLocaleString();
+}
+
+function singleParam(value: string | string[] | undefined) {
+  const raw = Array.isArray(value) ? value[0] : value;
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed.slice(0, 200) : null;
+}
+
+function rate(numerator: number, denominator: number) {
+  return denominator > 0 ? Math.round((numerator / denominator) * 1000) / 10 : null;
 }
 
 function formatDate(value: string | null) {

@@ -361,6 +361,12 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 lg:justify-self-end">
+                  <Link
+                    href={`/email/readiness/${item.id}`}
+                    className="rounded-md border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                  >
+                    Readiness
+                  </Link>
                   {!isDraft && (
                     <Link
                       href={`/api/email/preview/${item.id}`}

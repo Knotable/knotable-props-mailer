@@ -90,11 +90,10 @@ export default async function AnalyticsPage() {
     { count: opensLast7Days },
     { count: clicksLast7Days },
     { count: bouncesLast7Days },
-    { count: deliveredAllTimeEvents },
-    { count: complaintsAllTime },
     { count: opensAllTime },
     { count: clicksAllTime },
     { count: bouncesAllTime },
+    { count: sesEventsAllTime },
   ] = await Promise.all([
     supabase
       .from("provider_events")
@@ -114,14 +113,6 @@ export default async function AnalyticsPage() {
     supabase
       .from("provider_events")
       .select("id", { count: "exact", head: true })
-      .eq("event_type", "delivered"),
-    supabase
-      .from("provider_events")
-      .select("id", { count: "exact", head: true })
-      .eq("event_type", "complained"),
-    supabase
-      .from("provider_events")
-      .select("id", { count: "exact", head: true })
       .eq("event_type", "opened"),
     supabase
       .from("provider_events")
@@ -131,18 +122,19 @@ export default async function AnalyticsPage() {
       .from("provider_events")
       .select("id", { count: "exact", head: true })
       .eq("event_type", "bounced"),
+    supabase
+      .from("provider_events")
+      .select("id", { count: "exact", head: true })
+      .eq("provider", "ses"),
   ]);
 
   const recentOpens = opensLast7Days ?? 0;
   const recentClicks = clicksLast7Days ?? 0;
   const recentBounces = bouncesLast7Days ?? 0;
-  const allTimeProviderDeliveries = deliveredAllTimeEvents ?? 0;
-  const allTimeComplaints = complaintsAllTime ?? 0;
   const allTimeOpens = opensAllTime ?? 0;
   const allTimeClicks = clicksAllTime ?? 0;
   const allTimeBounces = bouncesAllTime ?? 0;
-  const hasSnsEvents =
-    allTimeProviderDeliveries + allTimeComplaints + allTimeOpens + allTimeClicks + allTimeBounces > 0;
+  const hasSnsEvents = (sesEventsAllTime ?? 0) > 0;
 
   // ── Per-campaign breakdown — pages from emails, then does exact indexed
   // counts for only the visible campaigns in Postgres.
@@ -336,7 +328,7 @@ export default async function AnalyticsPage() {
 
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
-          label="Opens last 7 days"
+          label="Open events, 7 days"
           value={hasSnsEvents ? recentOpens.toLocaleString() : "—"}
           sub={
             hasSnsEvents
@@ -346,7 +338,7 @@ export default async function AnalyticsPage() {
           color="blue"
         />
         <StatCard
-          label="Clicks last 7 days"
+          label="Click events, 7 days"
           value={hasSnsEvents ? recentClicks.toLocaleString() : "—"}
           sub={
             hasSnsEvents
@@ -367,7 +359,7 @@ export default async function AnalyticsPage() {
         />
       </div>
 
-      <section className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm sm:grid-cols-3">
+      <section className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
         <ConfidenceItem
           label="Queue truth"
           value="SES accepted rows"
@@ -378,6 +370,12 @@ export default async function AnalyticsPage() {
           value={hasSnsEvents ? "Events present" : "Awaiting events"}
           detail="Delivered, bounced, complaints, opens, and clicks depend on SES/SNS."
           tone={hasSnsEvents ? "green" : "amber"}
+        />
+        <ConfidenceItem
+          label="Engagement truth"
+          value="Unique people in campaign rows"
+          detail="Open-event cards are raw activity; campaign rows deduplicate recipients. Clicks are more trustworthy than opens."
+          tone="blue"
         />
         <ConfidenceItem
           label="Campaign rows"
@@ -500,7 +498,7 @@ export default async function AnalyticsPage() {
                         : "No activity timestamp"}
                   </span>
                   <Link
-                    href={`/email/sends?emailId=${c.email_id}`}
+                    href={`/email/sends/${c.email_id}`}
                     className="shrink-0 rounded-md border border-slate-200 px-2.5 py-1.5 font-medium text-slate-700"
                   >
                     History
@@ -530,9 +528,9 @@ export default async function AnalyticsPage() {
                 {campaigns.map((c) => (
                   <tr key={c.email_id} className="bg-white hover:bg-slate-50">
                     <td className="max-w-xs truncate px-4 py-3 font-medium text-slate-800">
-                      {c.subject ?? (
-                        <span className="italic text-slate-400">untitled</span>
-                      )}
+                      <Link href={`/email/sends/${c.email_id}`} className="hover:text-blue-700 hover:underline">
+                        {c.subject || <span className="italic text-slate-400">untitled</span>}
+                      </Link>
                     </td>
                     <td className="px-4 py-3 text-slate-600">
                       {c.list_name ?? <span className="text-slate-400">—</span>}
@@ -646,12 +644,13 @@ function ConfidenceItem({
   label: string;
   value: string;
   detail: string;
-  tone?: "slate" | "green" | "amber";
+  tone?: "slate" | "green" | "amber" | "blue";
 }) {
   const toneClasses = {
     slate: "bg-slate-100 text-slate-700",
     green: "bg-emerald-50 text-emerald-700",
     amber: "bg-amber-50 text-amber-700",
+    blue: "bg-blue-50 text-blue-700",
   };
 
   return (
