@@ -30,6 +30,7 @@ type SendItem = {
     address: string;
     updated_at: string | null;
     memberCount: number;
+    queuedRecipientCount: number | null;
     memberEmails: string[];
   }[];
   recipientSamples: {
@@ -233,6 +234,24 @@ export function SendsClient({ sends }: { sends: SendItem[] }) {
                       {send.first_sent && <> · Sent {formatDate(send.first_sent)}</>}
                       {!send.first_sent && send.last_queued_at && (
                         <> · Queued {formatDate(send.last_queued_at)}</>
+                      )}
+                    </p>
+                    <p className="mt-1 text-xs font-medium text-slate-700">
+                      {send.lists.length > 0 ? (
+                        <>
+                          Sent to{" "}
+                          {send.lists.map((list) => list.name).join(", ")}
+                          {total !== null && (
+                            <> · {total.toLocaleString()} queued recipient{total === 1 ? "" : "s"}</>
+                          )}
+                        </>
+                      ) : total !== null && total > 0 ? (
+                        <>
+                          Direct/test send · {total.toLocaleString()} queued recipient
+                          {total === 1 ? "" : "s"}
+                        </>
+                      ) : (
+                        "Recipient history unavailable"
                       )}
                     </p>
                   </div>
@@ -533,8 +552,13 @@ function RecipientDetailsPopover({
                           </span>
                         </span>
                         <span className="shrink-0 text-xs font-semibold text-slate-700">
-                          {list.memberCount.toLocaleString()}
+                          {list.queuedRecipientCount !== null
+                            ? `${list.queuedRecipientCount.toLocaleString()} queued`
+                            : "queued count unavailable"}
                         </span>
+                      </span>
+                      <span className="mt-1 block text-[11px] text-slate-500">
+                        {list.memberCount.toLocaleString()} active members now
                       </span>
                       {list.memberEmails.length > 0 ? (
                         <span className="mt-2 block max-h-24 overflow-y-auto">

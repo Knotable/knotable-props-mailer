@@ -33,6 +33,7 @@ type SendList = {
   address: string;
   updated_at: string | null;
   memberCount: number;
+  queuedRecipientCount: number | null;
   memberEmails: string[];
 };
 
@@ -462,6 +463,7 @@ async function loadPastSendsData(page: number): Promise<PastSendsData> {
           address: list.address,
           updated_at: list.updated_at,
           memberCount: count ?? 0,
+          queuedRecipientCount: null,
           memberEmails: sampleRows.map((member) => member.email),
         } satisfies SendList,
       ] as const;
@@ -470,6 +472,29 @@ async function loadPastSendsData(page: number): Promise<PastSendsData> {
 
   const emailDetails = new Map(emailRows.map((email) => [email.id, email]));
   const listDetails = new Map(listMetaEntries);
+  const emailListPairs = rows.flatMap((row) =>
+    (row.list_ids ?? []).map((listId) => ({
+      emailId: row.email_id,
+      listId,
+    })),
+  );
+  const queuedListCountEntries = await Promise.all(
+    emailListPairs.map(async ({ emailId, listId }) => {
+      const result = await timedQuery(
+        supabase
+          .from("mail_queue")
+          .select("id", { count: "exact", head: true })
+          .eq("email_id", emailId)
+          .eq("list_id", listId),
+      );
+
+      return [
+        `${emailId}:${listId}`,
+        result.error ? null : result.count,
+      ] as const;
+    }),
+  );
+  const queuedListCounts = new Map(queuedListCountEntries);
   const recipientSampleEntries = await Promise.all(
     rows.map(async (row) => {
       const summary = await loadRecipientSamplesForEmail(supabase, row.email_id);
@@ -488,7 +513,15 @@ async function loadPastSendsData(page: number): Promise<PastSendsData> {
   const sends = rows.map((row) => {
     const email = emailDetails.get(row.email_id);
     const sendLists = (row.list_ids ?? [])
-      .map((listId) => listDetails.get(listId))
+      .map((listId) => {
+        const list = listDetails.get(listId);
+        if (!list) return null;
+        return {
+          ...list,
+          queuedRecipientCount:
+            queuedListCounts.get(`${row.email_id}:${listId}`) ?? null,
+        };
+      })
       .filter(Boolean) as SendList[];
     const recipientSampleSummary = recipientSamplesByEmail.get(row.email_id);
     const openStats = openStatsByEmail.get(row.email_id);
