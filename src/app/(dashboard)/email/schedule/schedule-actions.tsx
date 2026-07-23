@@ -32,6 +32,7 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
   const [working, startWorking] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
+  const [sendConfirmationArmed, setSendConfirmationArmed] = useState(false);
 
   const runAction = (initialProgress: string, task: () => Promise<void>) => {
     setResult(null);
@@ -62,11 +63,9 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
   };
 
   const handleSendNowSubmit = (event: FormEvent<HTMLFormElement>) => {
-    const confirmed = confirm(
-      `Release queued recipients for "${subject || "this email"}" and start the monitor?`,
-    );
-    if (!confirmed) {
+    if (!sendConfirmationArmed) {
       event.preventDefault();
+      setSendConfirmationArmed(true);
       return;
     }
 
@@ -111,7 +110,10 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
                   name="releaseConfirmation"
                   value={buildQueueReleaseConfirmation(id)}
                 />
-                <SendNowButton disabled={working} />
+                <SendNowButton
+                  disabled={working}
+                  confirmationArmed={sendConfirmationArmed}
+                />
               </form>
             )}
           </>
@@ -143,7 +145,13 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
   );
 }
 
-function SendNowButton({ disabled }: { disabled: boolean }) {
+function SendNowButton({
+  disabled,
+  confirmationArmed,
+}: {
+  disabled: boolean;
+  confirmationArmed: boolean;
+}) {
   const { pending } = useFormStatus();
   const isDisabled = disabled || pending;
 
@@ -151,9 +159,14 @@ function SendNowButton({ disabled }: { disabled: boolean }) {
     <button
       type="submit"
       disabled={isDisabled}
-      className="rounded-md bg-slate-900 px-3 py-1 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+      aria-label={confirmationArmed ? "Confirm send now" : "Send now"}
+      className={`rounded-md px-3 py-1 text-xs font-semibold text-white disabled:opacity-50 ${
+        confirmationArmed
+          ? "bg-red-600 hover:bg-red-700"
+          : "bg-slate-900 hover:bg-slate-700"
+      }`}
     >
-      {isDisabled ? "Working..." : "Send Now"}
+      {isDisabled ? "Working..." : confirmationArmed ? "Sure?" : "Send Now"}
     </button>
   );
 }
