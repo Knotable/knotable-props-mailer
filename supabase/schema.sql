@@ -584,8 +584,8 @@ create policy "unsubscribe_requests: authenticated full access"
   using (auth.role() = 'authenticated')
   with check (auth.role() = 'authenticated');
 
--- Exact per-campaign analytics helpers. Canonical definitions are introduced
--- by supabase/migrations/20260714_campaign_analytics_detail.sql.
+-- Exact per-campaign analytics helpers. Large-campaign query shapes are
+-- optimized by supabase/migrations/20260803_optimize_campaign_analytics_detail.sql.
 create or replace function public.get_email_analytics_detail(p_email_id uuid)
 returns table (
   email_id uuid, queued bigint, ses_accepted bigint, with_ses_message_id bigint,
@@ -597,22 +597,34 @@ returns table (
 )
 language sql security definer set search_path = public
 as $$
-  select p_email_id,
-    (select count(*) from public.mail_queue mq where mq.email_id = p_email_id),
-    (select count(*) from public.mail_queue mq where mq.email_id = p_email_id and mq.status = 'succeeded'),
-    (select count(*) from public.mail_queue mq where mq.email_id = p_email_id and mq.ses_message_id is not null),
-    count(distinct lower(pe.recipient)) filter (where pe.event_type = 'delivered' and pe.recipient is not null),
-    count(distinct lower(pe.recipient)) filter (where pe.event_type = 'bounced' and pe.recipient is not null),
-    count(distinct lower(pe.recipient)) filter (where pe.event_type = 'complained' and pe.recipient is not null),
-    count(distinct lower(pe.recipient)) filter (where pe.event_type = 'opened' and pe.recipient is not null),
-    count(distinct lower(pe.recipient)) filter (where pe.event_type = 'opened' and pe.provider = 'props' and pe.recipient is not null),
-    count(distinct lower(pe.recipient)) filter (where pe.event_type = 'opened' and pe.provider = 'ses' and pe.recipient is not null),
-    count(distinct lower(pe.recipient)) filter (where pe.event_type = 'clicked' and pe.recipient is not null),
-    count(*) filter (where pe.event_type = 'delivered'), count(*) filter (where pe.event_type = 'opened'),
-    count(*) filter (where pe.event_type = 'opened' and pe.provider = 'props'),
-    count(*) filter (where pe.event_type = 'opened' and pe.provider = 'ses'),
-    count(*) filter (where pe.event_type = 'clicked'), min(pe.received_at), max(pe.received_at)
-  from public.provider_events pe where pe.email_id = p_email_id;
+  with q as (
+    select count(*) queued,
+      count(*) filter (where mq.status = 'succeeded') ses_accepted,
+      count(*) filter (where mq.ses_message_id is not null) with_ses_message_id
+    from public.mail_queue mq where mq.email_id = p_email_id
+  ), e as (
+    select
+      count(distinct lower(pe.recipient)) filter (where pe.event_type = 'delivered' and pe.recipient is not null) delivered_unique,
+      count(distinct lower(pe.recipient)) filter (where pe.event_type = 'bounced' and pe.recipient is not null) bounced_unique,
+      count(distinct lower(pe.recipient)) filter (where pe.event_type = 'complained' and pe.recipient is not null) complained_unique,
+      count(distinct lower(pe.recipient)) filter (where pe.event_type = 'opened' and pe.recipient is not null) opened_unique,
+      count(distinct lower(pe.recipient)) filter (where pe.event_type = 'opened' and pe.provider = 'props' and pe.recipient is not null) props_opened_unique,
+      count(distinct lower(pe.recipient)) filter (where pe.event_type = 'opened' and pe.provider = 'ses' and pe.recipient is not null) ses_opened_unique,
+      count(distinct lower(pe.recipient)) filter (where pe.event_type = 'clicked' and pe.recipient is not null) clicked_unique,
+      count(*) filter (where pe.event_type = 'delivered') delivery_events,
+      count(*) filter (where pe.event_type = 'opened') open_events,
+      count(*) filter (where pe.event_type = 'opened' and pe.provider = 'props') props_open_events,
+      count(*) filter (where pe.event_type = 'opened' and pe.provider = 'ses') ses_open_events,
+      count(*) filter (where pe.event_type = 'clicked') click_events,
+      min(pe.received_at) first_event_at, max(pe.received_at) latest_event_at
+    from public.provider_events pe where pe.email_id = p_email_id
+  )
+  select p_email_id, q.queued, q.ses_accepted, q.with_ses_message_id,
+    e.delivered_unique, e.bounced_unique, e.complained_unique, e.opened_unique,
+    e.props_opened_unique, e.ses_opened_unique, e.clicked_unique,
+    e.delivery_events, e.open_events, e.props_open_events, e.ses_open_events,
+    e.click_events, e.first_event_at, e.latest_event_at
+  from q cross join e;
 $$;
 
 create or replace function public.get_email_top_links(p_email_id uuid, p_limit integer default 20)
@@ -645,12 +657,37 @@ returns table (
 )
 language sql security definer set search_path = public
 as $$
-  with activity as (
-    select mq.id queue_id, nullif(lower(mq.payload->>'to'), '') recipient,
-      nullif(mq.payload->>'toName', '') recipient_name, mq.list_id, mq.status queue_status,
-      mq.send_date, mq.created_at queued_at, mq.updated_at queue_updated_at,
-      mq.ses_message_id, mq.last_error,
-      count(*) filter (where pe.event_type = 'delivered') delivered_events,
+  with filtered_queue as materialized (
+    select mq.id, coalesce(mq.updated_at, mq.created_at) as sort_at
+    from public.mail_queue mq
+    where mq.email_id = p_email_id
+      and (p_status is null or mq.status = p_status)
+      and (p_search is null or p_search = '' or lower(mq.payload->>'to') like '%' || lower(p_search) || '%')
+      and (p_event_type is null or exists (
+        select 1 from public.provider_events pe_filter
+        where pe_filter.email_id = mq.email_id and pe_filter.event_type = p_event_type
+          and ((mq.ses_message_id is not null and pe_filter.message_id = mq.ses_message_id)
+            or pe_filter.message_id = mq.id::text)
+      ))
+  ), page_rows as (
+    select fq.* from filtered_queue fq
+    order by fq.sort_at desc, fq.id
+    limit greatest(1, least(coalesce(p_limit, 100), 500))
+    offset greatest(0, coalesce(p_offset, 0))
+  ), filtered_count as (select count(*) total_count from filtered_queue)
+  select pr.id, nullif(lower(pr.payload->>'to'), ''), nullif(pr.payload->>'toName', ''),
+    pr.list_id, pr.status, pr.send_date, pr.created_at, pr.updated_at,
+    pr.ses_message_id, pr.last_error,
+    coalesce(ev.delivered_events, 0), coalesce(ev.props_open_events, 0),
+    coalesce(ev.ses_open_events, 0), coalesce(ev.click_events, 0),
+    coalesce(ev.bounce_events, 0), coalesce(ev.complaint_events, 0),
+    ev.first_open_at, ev.last_open_at, ev.first_click_at, ev.last_click_at,
+    ev.latest_event_at, fc.total_count
+  from page_rows page
+  join public.mail_queue pr on pr.id = page.id
+  cross join filtered_count fc
+  left join lateral (
+    select count(*) filter (where pe.event_type = 'delivered') delivered_events,
       count(*) filter (where pe.event_type = 'opened' and pe.provider = 'props') props_open_events,
       count(*) filter (where pe.event_type = 'opened' and pe.provider = 'ses') ses_open_events,
       count(*) filter (where pe.event_type = 'clicked') click_events,
@@ -661,24 +698,11 @@ as $$
       min(pe.received_at) filter (where pe.event_type = 'clicked') first_click_at,
       max(pe.received_at) filter (where pe.event_type = 'clicked') last_click_at,
       max(pe.received_at) latest_event_at
-    from public.mail_queue mq
-    left join public.provider_events pe on pe.email_id = mq.email_id and pe.recipient is not null
-      and lower(pe.recipient) = lower(mq.payload->>'to')
-    where mq.email_id = p_email_id and (p_status is null or mq.status = p_status)
-      and (p_search is null or p_search = '' or lower(mq.payload->>'to') like '%' || lower(p_search) || '%')
-    group by mq.id
-  ), filtered as (
-    select * from activity a where p_event_type is null
-      or (p_event_type = 'delivered' and a.delivered_events > 0)
-      or (p_event_type = 'opened' and a.props_open_events + a.ses_open_events > 0)
-      or (p_event_type = 'clicked' and a.click_events > 0)
-      or (p_event_type = 'bounced' and a.bounce_events > 0)
-      or (p_event_type = 'complained' and a.complaint_events > 0)
-  )
-  select f.*, count(*) over () from filtered f
-  order by coalesce(f.latest_event_at, f.queue_updated_at, f.queued_at) desc, f.queue_id
-  limit greatest(1, least(coalesce(p_limit, 100), 500))
-  offset greatest(0, coalesce(p_offset, 0));
+    from public.provider_events pe where pe.email_id = pr.email_id
+      and ((pr.ses_message_id is not null and pe.message_id = pr.ses_message_id)
+        or pe.message_id = pr.id::text)
+  ) ev on true
+  order by coalesce(ev.latest_event_at, pr.updated_at, pr.created_at) desc, pr.id;
 $$;
 
 grant execute on function public.get_email_analytics_detail(uuid) to authenticated, service_role;
