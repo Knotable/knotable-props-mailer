@@ -27,6 +27,9 @@ supabase/.schema-hash
 .vercel/
 patch_autopush.py
 
+# Private Mailchimp LifeX archive (campaign history, analytics, and contacts)
+/mailchimp lifex gitignore me/
+
 # Legacy directories deleted in git history
 webapp
 conf
