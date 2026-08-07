@@ -4,29 +4,23 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
 
-const QUEUE_LOOKUP_PAGE_SIZE = 1_000;
-const MAX_GLOBAL_ACTIVE_QUEUE_ROWS = 20_000;
 const DIRECT_RECIPIENTS_ID = "__direct_recipients__";
-const ACTIVE_QUEUE_STATUSES = ["pending", "processing"] as const;
-
-const currentTimestampMs = () => Date.now();
 
 type SchedulePageProps = {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
 };
 
-type ScheduleQueueRow = {
-  id: string;
-  email_id: string | null;
+type ScheduleQueueSummaryRow = {
+  email_id: string;
   list_id: string | null;
-  status: string | null;
-  available_at: string | null;
-};
-
-type ScheduleQueueSampleRow = {
-  email_id: string | null;
-  list_id: string | null;
-  payload: unknown;
+  pending_due: number;
+  pending_held: number;
+  processing: number;
+  succeeded: number;
+  failed: number;
+  dead: number;
+  canceled: number;
+  total: number;
 };
 
 type ScheduleEmailRow = {
@@ -37,80 +31,6 @@ type ScheduleEmailRow = {
   created_at: string | null;
   updated_at: string | null;
 };
-
-async function loadQueueRowsForEmailIds(
-  admin: ReturnType<typeof getSupabaseAdmin>,
-  emailIds: string[],
-) {
-  if (emailIds.length === 0) return [] as ScheduleQueueRow[];
-
-  const rows: ScheduleQueueRow[] = [];
-  for (let from = 0; ; from += QUEUE_LOOKUP_PAGE_SIZE) {
-    const { data, error } = await admin
-      .from("mail_queue")
-      .select("id, email_id, list_id, status, available_at")
-      .in("email_id", emailIds)
-      .in("status", [...ACTIVE_QUEUE_STATUSES])
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(from, from + QUEUE_LOOKUP_PAGE_SIZE - 1);
-
-    if (error) throw error;
-    rows.push(...((data ?? []) as ScheduleQueueRow[]));
-    if (!data || data.length < QUEUE_LOOKUP_PAGE_SIZE) break;
-  }
-
-  return rows;
-}
-
-async function loadGlobalActiveQueueRows(admin: ReturnType<typeof getSupabaseAdmin>) {
-  const rows: ScheduleQueueRow[] = [];
-  for (let from = 0; from < MAX_GLOBAL_ACTIVE_QUEUE_ROWS; from += QUEUE_LOOKUP_PAGE_SIZE) {
-    const { data, error } = await admin
-      .from("mail_queue")
-      .select("id, email_id, list_id, status, available_at")
-      .in("status", [...ACTIVE_QUEUE_STATUSES])
-      .order("available_at", { ascending: true })
-      .range(from, from + QUEUE_LOOKUP_PAGE_SIZE - 1);
-
-    if (error) throw error;
-    rows.push(...((data ?? []) as ScheduleQueueRow[]));
-    if (!data || data.length < QUEUE_LOOKUP_PAGE_SIZE) break;
-  }
-
-  return {
-    rows,
-    truncated: rows.length >= MAX_GLOBAL_ACTIVE_QUEUE_ROWS,
-  };
-}
-
-async function loadRecipientSamplesForEmailIds(
-  admin: ReturnType<typeof getSupabaseAdmin>,
-  emailIds: string[],
-) {
-  const entries = await Promise.all(
-    emailIds.map(async (emailId) => {
-      const { data, error } = await admin
-        .from("mail_queue")
-        .select("email_id, list_id, payload")
-        .eq("email_id", emailId)
-        .in("status", [...ACTIVE_QUEUE_STATUSES])
-        .order("available_at", { ascending: true })
-        .limit(40);
-
-      if (error) throw error;
-      return [emailId, (data ?? []) as ScheduleQueueSampleRow[]] as const;
-    }),
-  );
-
-  return entries.flatMap(([, rows]) => rows);
-}
-
-function payloadToEmail(payload: unknown) {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const value = (payload as { to?: unknown }).to;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
 
 export default async function SchedulePage({ searchParams }: SchedulePageProps) {
   const auth = await requireServerAuthContext();
@@ -126,38 +46,33 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
     .limit(50);
 
   const baseEmails = ((emails ?? []) as ScheduleEmailRow[]);
-  const baseEmailIds = baseEmails.map((e) => e.id);
-  const activeQueueSummary = await loadGlobalActiveQueueRows(admin);
-  const activeQueueRows = activeQueueSummary.rows;
-  const activeEmailIds = [
-    ...new Set(activeQueueRows.map((row) => row.email_id).filter((id): id is string => Boolean(id))),
-  ];
-  const missingActiveEmailIds = activeEmailIds.filter((id) => !baseEmailIds.includes(id));
-  const { data: missingActiveEmails } = missingActiveEmailIds.length
-    ? await admin
-        .from("emails")
-        .select("id, subject, from_address, status, created_at, updated_at")
-        .in("id", missingActiveEmailIds)
-    : { data: [] as ScheduleEmailRow[] };
-
-  const emailMap = new Map<string, ScheduleEmailRow>();
-  for (const email of [...baseEmails, ...((missingActiveEmails ?? []) as ScheduleEmailRow[])]) {
-    emailMap.set(email.id, email);
-  }
-
+  const emailMap = new Map(baseEmails.map((email) => [email.id, email]));
   const emailIds = [...emailMap.keys()];
-  const visibleQueueRows = await loadQueueRowsForEmailIds(admin, emailIds);
-  const recipientSampleRows = await loadRecipientSamplesForEmailIds(admin, emailIds);
-  const queueRowKeys = new Set<string>();
-  const queueRows: ScheduleQueueRow[] = [];
-  for (const row of [...visibleQueueRows, ...activeQueueRows]) {
-    if (queueRowKeys.has(row.id)) continue;
-    queueRowKeys.add(row.id);
-    queueRows.push(row);
-  }
+  const { data: queueSummaryData, error: queueSummaryError } = emailIds.length
+    ? await (
+        admin as unknown as {
+          rpc(
+            fn: "get_queue_campaign_summaries",
+            args: { p_email_ids: string[]; p_now: string },
+          ): Promise<{
+            data: ScheduleQueueSummaryRow[] | null;
+            error: { message: string } | null;
+          }>;
+        }
+      ).rpc("get_queue_campaign_summaries", {
+        p_email_ids: emailIds,
+        p_now: new Date().toISOString(),
+      })
+    : { data: [] as ScheduleQueueSummaryRow[], error: null };
+  if (queueSummaryError) throw queueSummaryError;
+  const queueRows = (queueSummaryData ?? []) as ScheduleQueueSummaryRow[];
+  const totalActiveQueueRows = queueRows.reduce(
+    (sum, row) => sum + row.pending_due + row.pending_held + row.processing,
+    0,
+  );
 
   // Unique list IDs across all emails
-  const listIds = [...new Set(queueRows.map((r) => r.list_id).filter(Boolean) as string[])];
+  const listIds = [...new Set(queueRows.map((row) => row.list_id).filter(Boolean) as string[])];
 
   const [{ data: lists }] = await Promise.all([
     listIds.length
@@ -166,50 +81,36 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
   ]);
 
   const queuedCountByEmailList = new Map<string, number>();
-  const samplesByEmailList = new Map<string, string[]>();
   const statusCountsByEmail = new Map<string, Map<string, number>>();
   const activeCountsByEmail = new Map<
     string,
     { pendingDue: number; pendingHeld: number; processing: number }
   >();
-  const nowMs = currentTimestampMs();
   for (const row of queueRows) {
-    if (!row.email_id) continue;
     const groupId = row.list_id ?? DIRECT_RECIPIENTS_ID;
     const key = `${row.email_id}:${groupId}`;
-    queuedCountByEmailList.set(key, (queuedCountByEmailList.get(key) ?? 0) + 1);
+    queuedCountByEmailList.set(key, row.total);
     const statusCounts = statusCountsByEmail.get(row.email_id) ?? new Map<string, number>();
-    const status = row.status ?? "unknown";
-    statusCounts.set(status, (statusCounts.get(status) ?? 0) + 1);
-    statusCountsByEmail.set(row.email_id, statusCounts);
-
-    if (status === "pending" || status === "processing") {
-      const activeCounts = activeCountsByEmail.get(row.email_id) ?? {
-        pendingDue: 0,
-        pendingHeld: 0,
-        processing: 0,
-      };
-      if (status === "processing") {
-        activeCounts.processing += 1;
-      } else if (row.available_at && new Date(row.available_at).getTime() > nowMs) {
-        activeCounts.pendingHeld += 1;
-      } else {
-        activeCounts.pendingDue += 1;
-      }
-      activeCountsByEmail.set(row.email_id, activeCounts);
+    for (const [status, count] of [
+      ["pending", row.pending_due + row.pending_held],
+      ["processing", row.processing],
+      ["succeeded", row.succeeded],
+      ["failed", row.failed],
+      ["dead", row.dead],
+      ["canceled", row.canceled],
+    ] as const) {
+      statusCounts.set(status, (statusCounts.get(status) ?? 0) + count);
     }
-
-  }
-
-  for (const row of recipientSampleRows) {
-    if (!row.email_id) continue;
-    const groupId = row.list_id ?? DIRECT_RECIPIENTS_ID;
-    const key = `${row.email_id}:${groupId}`;
-    const sample = payloadToEmail(row.payload);
-    if (!sample) continue;
-    const samples = samplesByEmailList.get(key) ?? [];
-    if (samples.length < 20 && !samples.includes(sample)) samples.push(sample);
-    samplesByEmailList.set(key, samples);
+    statusCountsByEmail.set(row.email_id, statusCounts);
+    const activeCounts = activeCountsByEmail.get(row.email_id) ?? {
+      pendingDue: 0,
+      pendingHeld: 0,
+      processing: 0,
+    };
+    activeCounts.pendingDue += row.pending_due;
+    activeCounts.pendingHeld += row.pending_held;
+    activeCounts.processing += row.processing;
+    activeCountsByEmail.set(row.email_id, activeCounts);
   }
 
   const listMap = new Map(
@@ -242,7 +143,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
       arr.push({
         ...list,
         memberCount: queuedCountByEmailList.get(key) ?? 0,
-        sampleEmails: samplesByEmailList.get(key) ?? [],
+        sampleEmails: [],
       });
     }
     listsByEmail.set(row.email_id, arr);
@@ -270,17 +171,12 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
         <QueueSafetyNotice />
       </header>
 
-      {activeQueueRows.length > 0 && (
+      {totalActiveQueueRows > 0 && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
           <span className="font-medium">
-            {activeQueueRows.length.toLocaleString()} active unsent queue row{activeQueueRows.length === 1 ? "" : "s"} found.
+            {totalActiveQueueRows.toLocaleString()} active unsent queue row{totalActiveQueueRows === 1 ? "" : "s"} found.
           </span>{" "}
           Campaigns with due, held, or processing rows are listed first below.
-          {activeQueueSummary.truncated && (
-            <span className="block text-xs text-amber-700">
-              Showing the first {MAX_GLOBAL_ACTIVE_QUEUE_ROWS.toLocaleString()} active rows; narrow by campaign before draining.
-            </span>
-          )}
         </div>
       )}
 

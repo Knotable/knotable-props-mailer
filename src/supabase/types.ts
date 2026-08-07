@@ -400,6 +400,25 @@ export interface Database {
           list_id: string | null;
         }[];
       };
+      get_queue_campaign_summaries: {
+        Args: { p_email_ids: string[]; p_now?: string };
+        Returns: Array<{
+          email_id: string;
+          list_id: string | null;
+          pending_due: number;
+          pending_held: number;
+          processing: number;
+          succeeded: number;
+          failed: number;
+          dead: number;
+          canceled: number;
+          total: number;
+        }>;
+      };
+      mark_mail_queue_succeeded_batch: {
+        Args: { p_results: Json; p_send_date: string; p_updated_at?: string };
+        Returns: number;
+      };
       release_mail_queue_campaign: {
         Args: {
           p_email_id: string;

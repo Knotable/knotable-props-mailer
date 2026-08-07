@@ -7,6 +7,7 @@ import { parseUuid } from "@/lib/ids";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { env } from "@/lib/env";
+import type { Json } from "@/supabase/types";
 
 /**
  * Extract the SMTP numeric response code from a nodemailer error.
@@ -114,6 +115,10 @@ type ClaimedQueueItem = {
   payload: unknown;
   list_id: string | null;
 };
+
+type QueueItemResult =
+  | { outcome: "succeeded"; id: string; sesMessageId: string }
+  | { outcome: "failed" };
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -430,23 +435,23 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
    * We fan these out with Promise.allSettled in WORKER_CONCURRENCY-sized
    * windows below, then pace each window under the configured SES send rate.
    */
-  async function processItem(item: ClaimedQueueItem): Promise<"succeeded" | "failed"> {
+  async function processItem(item: ClaimedQueueItem): Promise<QueueItemResult> {
     const payloadParsed = MailQueuePayloadSchema.safeParse(item.payload);
     if (!payloadParsed.success) {
       console.error(`[queue worker] invalid payload for item ${item.id}:`, payloadParsed.error.issues);
       await markDead(item.id, `Invalid payload: ${payloadParsed.error.issues[0]?.message ?? "schema error"}`);
-      return "failed";
+      return { outcome: "failed" };
     }
 
     const payload = payloadParsed.data;
     if (isBlockedRecipientEmail(payload.to)) {
       await cancelBlocked(item.id, "Canceled by global Block List domain rule.");
-      return "failed";
+      return { outcome: "failed" };
     }
 
     if (!item.email_id) {
       await skipIneligible(item.id, "Skipped by global queue worker because the row has no email_id.");
-      return "failed";
+      return { outcome: "failed" };
     }
 
     const template = item.email_id ? templates.get(item.email_id) : undefined;
@@ -455,7 +460,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
         item.id,
         "Skipped by queue worker because the email is not queued, sending, or sent.",
       );
-      return "failed";
+      return { outcome: "failed" };
     }
 
     const from = payload.from ?? template?.from_address;
@@ -466,7 +471,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
 
     if (!from || !subject || !html) {
       await markDead(item.id, "Missing email template fields for queued item");
-      return "failed";
+      return { outcome: "failed" };
     }
 
     const personalized = personalizeEmailContent(
@@ -494,18 +499,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
         throw new Error("sendMail returned no message ID — treat as unconfirmed");
       }
 
-      await supabase
-        .from("mail_queue")
-        .update({
-          status: "succeeded",
-          send_date: today,
-          ses_message_id: result.sesMessageId,
-          locked_at: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", item.id);
-
-      return "succeeded";
+      return { outcome: "succeeded", id: item.id, sesMessageId: result.sesMessageId };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const code = smtpResponseCode(error);
@@ -554,7 +548,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
           .eq("id", item.id);
       }
 
-      return "failed";
+      return { outcome: "failed" };
     }
   }
 
@@ -565,9 +559,36 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
   for (let i = 0; i < items.length; i += WORKER_CONCURRENCY) {
     const window = items.slice(i, i + WORKER_CONCURRENCY);
     const results = await Promise.allSettled(window.map(processItem));
-    for (const r of results) {
-      if (r.status === "fulfilled" && r.value === "succeeded") succeeded++;
-      else failed++;
+    const successfulRows = results.flatMap((result) =>
+      result.status === "fulfilled" && result.value.outcome === "succeeded"
+        ? [{ id: result.value.id, ses_message_id: result.value.sesMessageId }]
+        : [],
+    );
+
+    if (successfulRows.length > 0) {
+      const { data: applied, error: applyError } = await (
+        supabase as unknown as {
+          rpc(
+            fn: "mark_mail_queue_succeeded_batch",
+            args: { p_results: Json; p_send_date: string; p_updated_at: string },
+          ): Promise<{ data: number | null; error: { message: string } | null }>;
+        }
+      ).rpc("mark_mail_queue_succeeded_batch", {
+          p_results: successfulRows,
+          p_send_date: today,
+          p_updated_at: new Date().toISOString(),
+        });
+      if (applyError) throw new Error(`Unable to persist SES acceptances: ${applyError.message}`);
+      if (applied !== successfulRows.length) {
+        throw new Error(
+          `Persisted ${applied ?? 0} of ${successfulRows.length} SES acceptances; stopping before another batch.`,
+        );
+      }
+      succeeded += successfulRows.length;
+    }
+
+    for (const result of results) {
+      if (result.status === "rejected" || result.value.outcome === "failed") failed++;
     }
     attemptedSends += window.length;
     if (i + WORKER_CONCURRENCY < items.length) {

@@ -120,6 +120,7 @@ type DraftPayload = {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
 const QUEUE_RELEASE_CHUNK_SIZE = 500;
+const QUEUE_PAUSE_CHUNK_SIZE = 200;
 
 const parseRecipients = (input: string) =>
   input
@@ -1419,6 +1420,94 @@ export async function sendQueuedEmailAndRedirectAction(formData: FormData): Prom
   }
 
   redirect(`/email/monitor?emailId=${parsed.data.id}&auto=1`);
+}
+
+// Pause a campaign without canceling or deleting its remaining queue rows.
+// Completed deliveries stay succeeded; due pending rows move back to the
+// durable hold timestamp so the same campaign can resume from its exact
+// boundary later. Rows already claimed by a worker are allowed to finish.
+export async function pauseQueuedEmailAction(
+  formData: FormData,
+): Promise<{ paused: number; processing: number; error?: string }> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { paused: 0, processing: 0, error: "Invalid email id" };
+
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
+    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
+      return { paused: 0, processing: 0, error: "Email not found" };
+    }
+
+    // Move the parent to a worker-ineligible state first. Global repair drains
+    // may claim queued/sending/sent campaigns, so `draft` closes the race while
+    // we move pending rows back onto the durable hold timestamp.
+    const { error: emailError } = await supabase
+      .from("emails")
+      .update({ status: "draft" })
+      .eq("id", id);
+    if (emailError) return { paused: 0, processing: 0, error: emailError.message };
+
+    let paused = 0;
+    while (true) {
+      const { data: rows, error: selectError } = await supabase
+        .from("mail_queue")
+        .select("id")
+        .eq("email_id", id)
+        .eq("status", "pending")
+        .lt("available_at", QUEUE_HOLD_AT)
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(QUEUE_PAUSE_CHUNK_SIZE);
+
+      if (selectError) return { paused, processing: 0, error: selectError.message };
+      if (!rows || rows.length === 0) break;
+
+      const nowIso = new Date().toISOString();
+      const { error: updateError } = await supabase
+        .from("mail_queue")
+        .update({ available_at: QUEUE_HOLD_AT, updated_at: nowIso })
+        .eq("email_id", id)
+        .eq("status", "pending")
+        .in("id", rows.map((row) => row.id));
+      if (updateError) return { paused, processing: 0, error: updateError.message };
+      paused += rows.length;
+    }
+
+    const { count: processing, error: processingError } = await supabase
+      .from("mail_queue")
+      .select("id", { count: "exact", head: true })
+      .eq("email_id", id)
+      .eq("status", "processing");
+    if (processingError) return { paused, processing: 0, error: processingError.message };
+
+    const { error: pausedStatusError } = await supabase
+      .from("emails")
+      .update({ status: "queued" })
+      .eq("id", id);
+    if (pausedStatusError) {
+      return { paused, processing: processing ?? 0, error: pausedStatusError.message };
+    }
+
+    logAudit({
+      userId: auth.userId,
+      action: "campaign.paused",
+      entity: "emails",
+      entityId: id,
+      payload: { paused, processing: processing ?? 0 },
+    }).catch(console.error);
+
+    revalidatePath("/email/schedule");
+    revalidatePath("/email/monitor");
+    return { paused, processing: processing ?? 0 };
+  } catch (err) {
+    return {
+      paused: 0,
+      processing: 0,
+      error: toActionErrorMessage(err, "Unable to pause this campaign."),
+    };
+  }
 }
 
 export async function editQueuedEmailAction(

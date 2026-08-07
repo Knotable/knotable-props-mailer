@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   deleteEmailAction,
   editQueuedEmailAction,
+  pauseQueuedEmailAction,
   sendQueuedEmailAndRedirectAction,
 } from "../actions";
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
@@ -70,7 +71,28 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
     }
 
     setResult(null);
-    setProgress("Releasing due recipients and opening the scoped monitor...");
+    setProgress(
+      status === "queued"
+        ? "Resuming unsent recipients and opening the scoped monitor..."
+        : "Releasing due recipients and opening the scoped monitor...",
+    );
+  };
+
+  const handlePause = () => {
+    runAction("Pausing this campaign and preserving its unsent queue...", async () => {
+      const fd = new FormData();
+      fd.set("id", id);
+      const res = await pauseQueuedEmailAction(fd);
+      if (res.error) throw new Error(res.error);
+      setResult({
+        ok: true,
+        message:
+          res.processing > 0
+            ? `Paused ${res.paused.toLocaleString()} pending recipients. ${res.processing.toLocaleString()} in-flight recipient(s) may finish.`
+            : `Paused with ${res.paused.toLocaleString()} pending recipients preserved.`,
+      });
+      router.refresh();
+    });
   };
 
   const handleDelete = () => {
@@ -98,7 +120,17 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
             >
               {working ? "Working..." : "Edit"}
             </button>
-            {canSend && (
+            {canSend && status === "sending" && (
+              <button
+                type="button"
+                onClick={handlePause}
+                disabled={working}
+                className="rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+              >
+                {working ? "Working..." : "Pause"}
+              </button>
+            )}
+            {canSend && status === "queued" && (
               <form
                 action={sendQueuedEmailAndRedirectAction}
                 onSubmit={handleSendNowSubmit}
@@ -113,6 +145,7 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
                 <SendNowButton
                   disabled={working}
                   confirmationArmed={sendConfirmationArmed}
+                  resume
                 />
               </form>
             )}
@@ -148,9 +181,11 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
 function SendNowButton({
   disabled,
   confirmationArmed,
+  resume,
 }: {
   disabled: boolean;
   confirmationArmed: boolean;
+  resume: boolean;
 }) {
   const { pending } = useFormStatus();
   const isDisabled = disabled || pending;
@@ -159,14 +194,14 @@ function SendNowButton({
     <button
       type="submit"
       disabled={isDisabled}
-      aria-label={confirmationArmed ? "Confirm send now" : "Send now"}
+      aria-label={confirmationArmed ? "Confirm resume" : "Resume"}
       className={`rounded-md px-3 py-1 text-xs font-semibold text-white disabled:opacity-50 ${
         confirmationArmed
           ? "bg-red-600 hover:bg-red-700"
           : "bg-slate-900 hover:bg-slate-700"
       }`}
     >
-      {isDisabled ? "Working..." : confirmationArmed ? "Sure?" : "Send Now"}
+      {isDisabled ? "Working..." : confirmationArmed ? "Sure?" : resume ? "Resume" : "Send Now"}
     </button>
   );
 }
