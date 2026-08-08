@@ -415,6 +415,39 @@ export interface Database {
           total: number;
         }>;
       };
+      get_global_active_queue_summary: {
+        Args: { p_now?: string };
+        Returns: Array<{
+          pending_due: number;
+          pending_held: number;
+          processing: number;
+        }>;
+      };
+      get_mailer_runtime_limits: {
+        Args: { p_email_id?: string | null; p_now?: string };
+        Returns: Array<{
+          daily_cap: number;
+          ses_max_send_rate_per_second: number;
+          rolling_24h_sent: number;
+          accepted_today_utc: number;
+          sent_last_7_days: number;
+        }>;
+      };
+      get_list_member_status_summaries: {
+        Args: { p_list_ids: string[] };
+        Returns: Array<{
+          list_id: string;
+          status: string;
+          member_count: number;
+        }>;
+      };
+      get_next_sending_campaign: {
+        Args: { p_now?: string };
+        Returns: Array<{
+          id: string;
+          subject: string | null;
+        }>;
+      };
       mark_mail_queue_succeeded_batch: {
         Args: { p_results: Json; p_send_date: string; p_updated_at?: string };
         Returns: number;

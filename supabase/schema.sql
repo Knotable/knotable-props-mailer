@@ -407,11 +407,19 @@ as $$
     join public.emails e on e.id = mq.email_id
     where mq.status = 'pending'
       and mq.available_at <= p_now
-      and e.status in ('queued', 'sending', 'sent')
+      and e.status = 'sending'
       and (p_email_id is null or mq.email_id = p_email_id)
-    order by mq.available_at asc, mq.created_at asc, mq.id asc
-    for update skip locked
-    limit greatest(p_limit, 0)
+      and (
+        mq.available_at <= p_now
+        or mq.available_at >= timestamptz '2999-12-31 23:59:59+00'
+      )
+    order by
+      case when mq.available_at <= p_now then 0 else 1 end,
+      mq.available_at asc,
+      mq.created_at asc,
+      mq.id asc
+    for update of mq skip locked
+    limit least(greatest(p_limit, 0), 200)
   ),
   claimed as (
     update public.mail_queue mq
@@ -489,6 +497,85 @@ as $$
     count(*) filter (where is_due_now)::integer as due_now,
     count(*) filter (where not is_due_now)::integer as scheduled_future
   from updated;
+$$;
+
+-- Incremental large-campaign worker helpers. Resume changes only the parent
+-- email state; workers claim bounded slices directly from the durable hold.
+create or replace function public.get_next_sending_campaign(
+  p_now timestamptz default now()
+)
+returns table (id uuid, subject text)
+language sql stable security definer set search_path = public
+as $$
+  select e.id, e.subject
+  from public.emails e
+  where e.status = 'sending'
+    and exists (
+      select 1 from public.mail_queue mq
+      where mq.email_id = e.id
+        and (
+          mq.status = 'processing'
+          or (mq.status = 'pending' and (
+            mq.available_at <= p_now
+            or mq.available_at >= timestamptz '2999-12-31 23:59:59+00'
+          ))
+        )
+    )
+  order by e.updated_at asc, e.id asc
+  limit 1;
+$$;
+
+create or replace function public.get_mailer_runtime_limits(
+  p_email_id uuid default null,
+  p_now timestamptz default now()
+)
+returns table (
+  daily_cap integer,
+  ses_max_send_rate_per_second numeric,
+  rolling_24h_sent bigint,
+  accepted_today_utc bigint,
+  sent_last_7_days bigint
+)
+language sql stable security definer set search_path = public
+as $$
+  with settings as (
+    select
+      coalesce(max((value ->> 'value')::integer) filter (where key = 'daily_send_limit'), 65400) as daily_cap,
+      coalesce(max((value ->> 'value')::numeric) filter (where key = 'ses_max_send_rate_per_second'), 15) as ses_rate
+    from public.app_settings
+    where key in ('daily_send_limit', 'ses_max_send_rate_per_second')
+  )
+  select
+    settings.daily_cap,
+    settings.ses_rate,
+    (select count(*) from public.mail_queue mq where mq.status = 'succeeded' and mq.updated_at >= p_now - interval '24 hours'),
+    (select count(*) from public.mail_queue mq where mq.status = 'succeeded' and mq.send_date = (p_now at time zone 'UTC')::date),
+    (select count(*) from public.mail_queue mq where mq.status = 'succeeded' and mq.send_date >= (p_now at time zone 'UTC')::date - 6 and (p_email_id is null or mq.email_id = p_email_id))
+  from settings;
+$$;
+
+create or replace function public.get_global_active_queue_summary(
+  p_now timestamptz default now()
+)
+returns table (pending_due bigint, pending_held bigint, processing bigint)
+language sql stable security definer set search_path = public
+as $$
+  select
+    count(*) filter (where mq.status = 'pending' and mq.available_at <= p_now),
+    count(*) filter (where mq.status = 'pending' and mq.available_at > p_now),
+    count(*) filter (where mq.status = 'processing')
+  from public.mail_queue mq
+  where mq.status in ('pending', 'processing');
+$$;
+
+create or replace function public.get_list_member_status_summaries(p_list_ids uuid[])
+returns table (list_id uuid, status text, member_count bigint)
+language sql stable security definer set search_path = public
+as $$
+  select lm.list_id, lm.status, count(*)
+  from public.list_members lm
+  where lm.list_id = any(coalesce(p_list_ids, array[]::uuid[]))
+  group by lm.list_id, lm.status;
 $$;
 
 -- Simple profile table for role tracking

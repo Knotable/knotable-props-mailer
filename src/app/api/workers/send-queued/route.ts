@@ -12,8 +12,6 @@ import { runQueueWorker } from "@/lib/queueWorker";
 
 export const dynamic = "force-dynamic";
 
-const ACTIVE_EMAIL_SCAN_LIMIT = 10;
-
 type SendingEmailRow = {
   id: string;
   subject: string | null;
@@ -24,52 +22,14 @@ function isAuthorized(request: Request): boolean {
   return Boolean(cronSecret && request.headers.get("authorization") === `Bearer ${cronSecret}`);
 }
 
-async function queueCountsForEmail(emailId: string) {
-  const supabase = getSupabaseAdmin();
-  const nowIso = new Date().toISOString();
-  const [pendingDueResult, processingResult] = await Promise.all([
-    supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("email_id", emailId)
-      .eq("status", "pending")
-      .lte("available_at", nowIso),
-    supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("email_id", emailId)
-      .eq("status", "processing"),
-  ]);
-
-  if (pendingDueResult.error) throw pendingDueResult.error;
-  if (processingResult.error) throw processingResult.error;
-
-  return {
-    pendingDue: pendingDueResult.count ?? 0,
-    processing: processingResult.count ?? 0,
-  };
-}
-
 async function loadNextSendingEmail() {
   const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("emails")
-    .select("id, subject")
-    .eq("status", "sending")
-    .order("updated_at", { ascending: true })
-    .limit(ACTIVE_EMAIL_SCAN_LIMIT);
+  const { data, error } = await supabase.rpc("get_next_sending_campaign", {
+    p_now: new Date().toISOString(),
+  });
 
   if (error) throw error;
-
-  const candidates = (data ?? []) as SendingEmailRow[];
-  for (const email of candidates) {
-    const counts = await queueCountsForEmail(email.id);
-    if (counts.pendingDue > 0 || counts.processing > 0) {
-      return { ...email, ...counts, scanned: candidates.length };
-    }
-  }
-
-  return { scanned: candidates.length };
+  return ((data ?? [])[0] as SendingEmailRow | undefined) ?? null;
 }
 
 export async function POST(request: Request) {
@@ -90,13 +50,12 @@ export async function POST(request: Request) {
 
   try {
     const active = await loadNextSendingEmail();
-    if (!("id" in active)) {
+    if (!active) {
       return NextResponse.json({
         ok: true,
         action: "send_queued",
         processed: 0,
         message: "No sending campaigns have due or processing queue rows.",
-        scannedSendingEmails: active.scanned,
       });
     }
 
@@ -106,10 +65,6 @@ export async function POST(request: Request) {
       action: "send_queued",
       emailId: active.id,
       subject: active.subject,
-      before: {
-        pendingDue: active.pendingDue,
-        processing: active.processing,
-      },
       result,
     });
   } catch (error) {

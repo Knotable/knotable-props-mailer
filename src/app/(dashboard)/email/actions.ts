@@ -14,6 +14,7 @@ import { runQueueWorker } from "@/lib/queueWorker";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
+import { assertSendReadySubject } from "@/lib/subjectReadiness";
 import type { Json } from "@/supabase/types";
 
 /**
@@ -119,8 +120,6 @@ type DraftPayload = {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
-const QUEUE_RELEASE_CHUNK_SIZE = 500;
-const QUEUE_PAUSE_CHUNK_SIZE = 200;
 
 const parseRecipients = (input: string) =>
   input
@@ -144,82 +143,6 @@ function toActionErrorMessage(err: unknown, fallback: string): string {
     return (err as { message: string }).message;
   }
   return fallback;
-}
-
-type QueueReleaseSummary = {
-  released: number;
-  due_now: number;
-  scheduled_future: number;
-};
-
-function nextQueueReleaseDate(nowIso: string, releaseIndex: number, remainingNow: number, dailyLimit: number): string {
-  if (releaseIndex <= remainingNow) return nowIso;
-
-  const now = new Date(nowIso);
-  const offsetWindows = Math.floor((releaseIndex - remainingNow - 1) / dailyLimit) + 1;
-  return new Date(now.getTime() + offsetWindows * 24 * 60 * 60 * 1000).toISOString();
-}
-
-async function releaseHeldQueueInChunks(
-  supabase: ReturnType<typeof getSupabaseAdmin>,
-  emailId: string,
-  nowIso: string,
-  dailySendLimit: number,
-  rolling24hSent: number,
-): Promise<QueueReleaseSummary> {
-  const dailyLimit = Math.max(dailySendLimit, 1);
-  const remainingNow = Math.max(0, dailySendLimit - rolling24hSent);
-  const summary: QueueReleaseSummary = {
-    released: 0,
-    due_now: 0,
-    scheduled_future: 0,
-  };
-
-  while (true) {
-    const { data: rows, error: selectError } = await supabase
-      .from("mail_queue")
-      .select("id")
-      .eq("email_id", emailId)
-      .eq("status", "pending")
-      .gte("available_at", QUEUE_HOLD_AT)
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .limit(QUEUE_RELEASE_CHUNK_SIZE);
-
-    if (selectError) throw selectError;
-    if (!rows || rows.length === 0) break;
-
-    const updatesByAvailableAt = new Map<string, string[]>();
-    for (let index = 0; index < rows.length; index += 1) {
-      const releaseIndex = summary.released + index + 1;
-      const availableAt = nextQueueReleaseDate(nowIso, releaseIndex, remainingNow, dailyLimit);
-      const ids = updatesByAvailableAt.get(availableAt) ?? [];
-      ids.push(rows[index].id);
-      updatesByAvailableAt.set(availableAt, ids);
-      if (releaseIndex <= remainingNow) {
-        summary.due_now += 1;
-      } else {
-        summary.scheduled_future += 1;
-      }
-    }
-
-    for (const [availableAt, ids] of updatesByAvailableAt) {
-      const { error: updateError } = await supabase
-        .from("mail_queue")
-        .update({
-          available_at: availableAt,
-          updated_at: nowIso,
-        })
-        .eq("email_id", emailId)
-        .eq("status", "pending")
-        .in("id", ids);
-      if (updateError) throw updateError;
-    }
-
-    summary.released += rows.length;
-  }
-
-  return summary;
 }
 
 export async function saveDraftAction(formData: FormData) {
@@ -792,6 +715,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     .eq("author_id", userId)
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
+  assertSendReadySubject(email.subject);
 
   // Resume-safe queueing: retries may start again at offset 0 after a tab or
   // network failure. The dedupe_hash upsert below makes repeated pages
@@ -1292,46 +1216,34 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     const userId = auth.userId;
 
     const nowIso = new Date().toISOString();
-    const [
-      { data: emailRow, error: emailError },
-      { count: dueBefore, error: dueError },
-      { count: heldBefore, error: heldError },
-      { count: processingBefore, error: processingError },
-    ] = await Promise.all([
-      supabase.from("emails").select("status").eq("id", id).maybeSingle(),
-      supabase
-        .from("mail_queue")
-        .select("id", { count: "exact", head: true })
-        .eq("email_id", id)
-        .eq("status", "pending")
-        .lte("available_at", nowIso),
-      supabase
-        .from("mail_queue")
-        .select("id", { count: "exact", head: true })
-        .eq("email_id", id)
-        .eq("status", "pending")
-        .gt("available_at", nowIso),
-      supabase
-        .from("mail_queue")
-        .select("id", { count: "exact", head: true })
-        .eq("email_id", id)
-        .eq("status", "processing"),
+    const [{ data: emailRow, error: emailError }, { data: summaryRows, error: summaryError }] = await Promise.all([
+      supabase.from("emails").select("status, subject").eq("id", id).maybeSingle(),
+      supabase.rpc("get_queue_campaign_summaries", {
+        p_email_ids: [id],
+        p_now: nowIso,
+      }),
     ]);
 
     if (emailError) return { error: emailError.message };
-    if (dueError) return { error: dueError.message };
-    if (heldError) return { error: heldError.message };
-    if (processingError) return { error: processingError.message };
+    if (summaryError) return { error: summaryError.message };
 
     if (emailRow?.status !== "queued" && emailRow?.status !== "sending") {
       return { error: "Only queued or sending emails can be released." };
     }
+    try {
+      assertSendReadySubject(emailRow.subject ?? "");
+    } catch (error) {
+      return { error: toActionErrorMessage(error, "Subject is not send-ready.") };
+    }
 
-    const preflight = {
-      pendingDue: dueBefore ?? 0,
-      pendingHeld: heldBefore ?? 0,
-      processing: processingBefore ?? 0,
-    };
+    const preflight = (summaryRows ?? []).reduce(
+      (counts, row) => ({
+        pendingDue: counts.pendingDue + Number(row.pending_due ?? 0),
+        pendingHeld: counts.pendingHeld + Number(row.pending_held ?? 0),
+        processing: counts.processing + Number(row.processing ?? 0),
+      }),
+      { pendingDue: 0, pendingHeld: 0, processing: 0 },
+    );
 
     if (preflight.pendingDue + preflight.pendingHeld + preflight.processing === 0) {
       return { error: "No queued recipients are ready for this email." };
@@ -1348,28 +1260,12 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       return { error: `SES rolling 24-hour cap of ${quota.dailyCap.toLocaleString()} reached. Nothing can be sent right now.` };
     }
 
-    const releaseSummary = await releaseHeldQueueInChunks(
-      supabase,
-      id,
-      nowIso,
-      quota.dailyCap,
-      quota.rolling24hSent,
-    );
-
-    if (releaseSummary.released === 0 && preflight.pendingDue === 0) {
-      return { error: "No queued recipients are ready for this email." };
-    }
-
-    await supabase
+    const { error: resumeError } = await supabase
       .from("emails")
       .update({ status: "sending" })
       .eq("id", id);
-
-    const { count: remainingQueued } = await supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("email_id", id)
-      .in("status", ["pending", "processing"]);
+    if (resumeError) return { error: resumeError.message };
+    const remainingQueued = preflight.pendingDue + preflight.pendingHeld + preflight.processing;
 
     logAudit({
       userId,
@@ -1377,17 +1273,17 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       entity: "emails",
       entityId: id,
       payload: {
-        released: releaseSummary.released,
-        dueNow: releaseSummary.due_now,
-        scheduledFuture: releaseSummary.scheduled_future,
+        released: 0,
+        dueNow: preflight.pendingDue,
+        scheduledFuture: preflight.pendingHeld,
         pendingDueBefore: preflight.pendingDue,
         pendingHeldBefore: preflight.pendingHeld,
         processingBefore: preflight.processing,
         processed: 0,
         succeeded: 0,
         failed: 0,
-        remainingQueued: remainingQueued ?? 0,
-        mode: "released_for_scoped_monitor",
+        remainingQueued,
+        mode: "incremental_background_resume",
       },
     }).catch(console.error);
 
@@ -1395,13 +1291,13 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     revalidatePath("/email/sends");
 
     return {
-      released: releaseSummary.released,
-      dueNow: preflight.pendingDue + releaseSummary.due_now,
-      scheduledFuture: releaseSummary.scheduled_future,
+      released: 0,
+      dueNow: preflight.pendingDue,
+      scheduledFuture: preflight.pendingHeld,
       processed: 0,
       succeeded: 0,
       failed: 0,
-      remainingQueued: remainingQueued ?? 0,
+      remainingQueued,
     };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to send email" };
@@ -1419,13 +1315,13 @@ export async function sendQueuedEmailAndRedirectAction(formData: FormData): Prom
     redirect(`/email/schedule?sendError=${encodeURIComponent(result.error)}`);
   }
 
-  redirect(`/email/monitor?emailId=${parsed.data.id}&auto=1`);
+  redirect(`/email/monitor?emailId=${parsed.data.id}`);
 }
 
-// Pause a campaign without canceling or deleting its remaining queue rows.
-// Completed deliveries stay succeeded; due pending rows move back to the
-// durable hold timestamp so the same campaign can resume from its exact
-// boundary later. Rows already claimed by a worker are allowed to finish.
+// Pause a campaign without canceling or rewriting its queue rows. Completed
+// deliveries stay succeeded, pending rows keep their exact retry/hold state,
+// and the parent status prevents workers from claiming more. Rows already
+// claimed by a worker are allowed to finish.
 export async function pauseQueuedEmailAction(
   formData: FormData,
 ): Promise<{ paused: number; processing: number; error?: string }> {
@@ -1440,67 +1336,39 @@ export async function pauseQueuedEmailAction(
       return { paused: 0, processing: 0, error: "Email not found" };
     }
 
-    // Move the parent to a worker-ineligible state first. Global repair drains
-    // may claim queued/sending/sent campaigns, so `draft` closes the race while
-    // we move pending rows back onto the durable hold timestamp.
+    // Claiming is restricted to parent campaigns in `sending`, so this one-row
+    // state transition stops new work without rewriting thousands of queue rows.
     const { error: emailError } = await supabase
-      .from("emails")
-      .update({ status: "draft" })
-      .eq("id", id);
-    if (emailError) return { paused: 0, processing: 0, error: emailError.message };
-
-    let paused = 0;
-    while (true) {
-      const { data: rows, error: selectError } = await supabase
-        .from("mail_queue")
-        .select("id")
-        .eq("email_id", id)
-        .eq("status", "pending")
-        .lt("available_at", QUEUE_HOLD_AT)
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .limit(QUEUE_PAUSE_CHUNK_SIZE);
-
-      if (selectError) return { paused, processing: 0, error: selectError.message };
-      if (!rows || rows.length === 0) break;
-
-      const nowIso = new Date().toISOString();
-      const { error: updateError } = await supabase
-        .from("mail_queue")
-        .update({ available_at: QUEUE_HOLD_AT, updated_at: nowIso })
-        .eq("email_id", id)
-        .eq("status", "pending")
-        .in("id", rows.map((row) => row.id));
-      if (updateError) return { paused, processing: 0, error: updateError.message };
-      paused += rows.length;
-    }
-
-    const { count: processing, error: processingError } = await supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("email_id", id)
-      .eq("status", "processing");
-    if (processingError) return { paused, processing: 0, error: processingError.message };
-
-    const { error: pausedStatusError } = await supabase
       .from("emails")
       .update({ status: "queued" })
       .eq("id", id);
-    if (pausedStatusError) {
-      return { paused, processing: processing ?? 0, error: pausedStatusError.message };
-    }
+    if (emailError) return { paused: 0, processing: 0, error: emailError.message };
+
+    const { data: summaryRows, error: summaryError } = await supabase.rpc(
+      "get_queue_campaign_summaries",
+      { p_email_ids: [id], p_now: new Date().toISOString() },
+    );
+    if (summaryError) return { paused: 0, processing: 0, error: summaryError.message };
+    const paused = (summaryRows ?? []).reduce(
+      (total, row) => total + Number(row.pending_due ?? 0) + Number(row.pending_held ?? 0),
+      0,
+    );
+    const processing = (summaryRows ?? []).reduce(
+      (total, row) => total + Number(row.processing ?? 0),
+      0,
+    );
 
     logAudit({
       userId: auth.userId,
       action: "campaign.paused",
       entity: "emails",
       entityId: id,
-      payload: { paused, processing: processing ?? 0 },
+      payload: { paused, processing },
     }).catch(console.error);
 
     revalidatePath("/email/schedule");
     revalidatePath("/email/monitor");
-    return { paused, processing: processing ?? 0 };
+    return { paused, processing };
   } catch (err) {
     return {
       paused: 0,

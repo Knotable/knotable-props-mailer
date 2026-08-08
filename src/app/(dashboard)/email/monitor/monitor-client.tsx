@@ -218,7 +218,7 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
             {snapshot?.subject ?? "Outbound Queue"}
           </h2>
           <p className="text-sm text-slate-500">
-            Keep this page open while a large send is draining.
+            The background worker continues safely even if you close this page.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">

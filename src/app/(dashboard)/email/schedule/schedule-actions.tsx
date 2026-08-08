@@ -73,7 +73,7 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
     setResult(null);
     setProgress(
       status === "queued"
-        ? "Resuming unsent recipients and opening the scoped monitor..."
+        ? "Resuming the background sender and opening the scoped monitor..."
         : "Releasing due recipients and opening the scoped monitor...",
     );
   };

@@ -35,6 +35,8 @@ When the user opens this project without a specific task, offer this concise men
 
 ## OPERATOR STATUS - READ THIS FIRST
 
+**2026-08-08 paused LifeX send:** campaign `837e2da9-7907-42e3-8bfa-5432f2c52f2c`, subject `The science budget survived. The operating system changed.`, is safely paused with parent status `queued`, `11,598` held pending, `0` due, `0` processing, `1,694` succeeded (including three earlier test sends), and `0` failed/dead. Do not resume without explicit approval. Migration `20260808_incremental_queue_drain.sql` is live: Resume is a one-row state change and workers claim at most 200 rows directly from the durable hold. Opening the monitor no longer auto-starts a competing browser worker.
+
 **As of 2026-08-03, production health is green with `0` due pending, `0` processing, and `0` held pending queue rows. SES/SNS is fresh with `654` provider events received in the previous 7 days. The AWS SES quota is 65,400 recipients per rolling 24-hour period, with a separate maximum send rate of 15 recipients per second. App settings include `daily_send_limit = 65,400`; app code defaults `ses_max_send_rate_per_second` to 15 and migration `20260709_ses_quota_settings.sql` persists it. Do not open or auto-run the monitor casually; verify the exact email id first.**
 
 **Hard sending rule, 2026-06-16:** Never use Gmail or the Gmail connector to send project, campaign, newsletter, list, test, or resend emails for this repo. Gmail may be used only for read-only mailbox lookup when explicitly relevant. All outbound mail must go through Props Mailer / SES using the app's queue, test-send, or monitor flows.

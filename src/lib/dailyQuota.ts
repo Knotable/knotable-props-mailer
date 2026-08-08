@@ -12,6 +12,38 @@ import { DEFAULT_DAILY_SEND_LIMIT, getDailySendLimit } from "@/lib/appSettings";
 export const DAILY_SEND_LIMIT = DEFAULT_DAILY_SEND_LIMIT;
 export const QUOTA_WINDOW_HOURS = 24;
 
+type RuntimeLimitsRow = {
+  daily_cap: number;
+  ses_max_send_rate_per_second: number;
+  rolling_24h_sent: number;
+  accepted_today_utc: number;
+  sent_last_7_days: number;
+};
+
+export async function getMailerRuntimeLimits(emailId: string | null = null, now: Date = new Date()) {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.rpc("get_mailer_runtime_limits", {
+    p_email_id: emailId,
+    p_now: now.toISOString(),
+  });
+  if (error) throw error;
+  const row = (data?.[0] ?? null) as RuntimeLimitsRow | null;
+  if (!row) throw new Error("Mailer runtime limits are unavailable.");
+  const dailyCap = Number(row.daily_cap);
+  const rolling24hSent = Number(row.rolling_24h_sent);
+  const acceptedTodayUtc = Number(row.accepted_today_utc);
+  return {
+    quota: {
+      dailyCap,
+      rolling24hSent,
+      remainingRolling24h: Math.max(0, dailyCap - rolling24hSent),
+      acceptedTodayUtc,
+    },
+    sesMaxSendRatePerSecond: Number(row.ses_max_send_rate_per_second),
+    sentLast7Days: Number(row.sent_last_7_days),
+  };
+}
+
 /** Returns today's date string in UTC (YYYY-MM-DD). */
 export function todayUTC(): string {
   return new Date().toISOString().slice(0, 10);
@@ -55,18 +87,7 @@ export async function getQuotaUsageSnapshot(now: Date = new Date()): Promise<{
   remainingRolling24h: number;
   acceptedTodayUtc: number;
 }> {
-  const [dailyCap, rolling24hSent, acceptedTodayUtc] = await Promise.all([
-    getDailySendLimit(),
-    getRolling24hSentCount(now),
-    getDailySentCount(todayUTC()),
-  ]);
-
-  return {
-    dailyCap,
-    rolling24hSent,
-    remainingRolling24h: Math.max(0, dailyCap - rolling24hSent),
-    acceptedTodayUtc,
-  };
+  return (await getMailerRuntimeLimits(null, now)).quota;
 }
 
 /**

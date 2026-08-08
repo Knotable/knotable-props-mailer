@@ -1,12 +1,12 @@
 import { z } from "zod";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { sendEmail } from "@/lib/emailProvider";
-import { getQuotaUsageSnapshot, todayUTC } from "@/lib/dailyQuota";
-import { getSesMaxSendRatePerSecond } from "@/lib/appSettings";
+import { getMailerRuntimeLimits, todayUTC } from "@/lib/dailyQuota";
 import { parseUuid } from "@/lib/ids";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { env } from "@/lib/env";
+import { assertSendReadySubject } from "@/lib/subjectReadiness";
 import type { Json } from "@/supabase/types";
 
 /**
@@ -74,6 +74,7 @@ const MailQueuePayloadSchema = z.object({
 // window instead of timing out.
 const WORKER_BATCH_SIZE = 200;
 const WORKER_CONCURRENCY = 5; // must match emailProvider maxConnections
+const SUCCESS_PERSIST_BATCH_SIZE = 25;
 const WORKER_SEND_WINDOW_MS = 20_000;
 const SES_RATE_SAFETY_FACTOR = 0.9;
 const STUCK_PROCESSING_TTL_MS = 15 * 60 * 1000;
@@ -155,10 +156,29 @@ async function reconcileEmailStatuses(emailIds: string[]) {
 
   const supabase = getSupabaseAdmin();
   const uniqueIds = [...new Set(emailIds)];
-  const { data: rows, error } = await supabase
-    .from("mail_queue")
-    .select("email_id, status")
-    .in("email_id", uniqueIds);
+  const { data: rows, error } = await (
+    supabase as unknown as {
+      rpc(
+        fn: "get_queue_campaign_summaries",
+        args: { p_email_ids: string[]; p_now: string },
+      ): Promise<{
+        data: Array<{
+          email_id: string;
+          pending_due: number;
+          pending_held: number;
+          processing: number;
+          succeeded: number;
+          failed: number;
+          dead: number;
+          canceled: number;
+        }> | null;
+        error: { message: string } | null;
+      }>;
+    }
+  ).rpc("get_queue_campaign_summaries", {
+    p_email_ids: uniqueIds,
+    p_now: new Date().toISOString(),
+  });
 
   if (error) {
     console.error("[queue worker] reconcile status query failed", error);
@@ -174,15 +194,14 @@ async function reconcileEmailStatuses(emailIds: string[]) {
   }
 
   for (const row of rows ?? []) {
-    if (!row.email_id) continue;
     const bucket = byEmail.get(row.email_id);
     if (!bucket) continue;
-    if (row.status === "pending") bucket.pending += 1;
-    if (row.status === "processing") bucket.processing += 1;
-    if (row.status === "failed") bucket.failed += 1;
-    if (row.status === "dead") bucket.dead += 1;
-    if (row.status === "succeeded") bucket.succeeded += 1;
-    if (row.status === "canceled") bucket.canceled += 1;
+    bucket.pending += Number(row.pending_due) + Number(row.pending_held);
+    bucket.processing += Number(row.processing);
+    bucket.failed += Number(row.failed);
+    bucket.dead += Number(row.dead);
+    bucket.succeeded += Number(row.succeeded);
+    bucket.canceled += Number(row.canceled);
   }
 
   for (const [emailId, counts] of byEmail) {
@@ -295,10 +314,9 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
   const supabase = getSupabaseAdmin();
   const today = todayUTC();
   const now = new Date();
-  const [quota, sesMaxSendRatePerSecond] = await Promise.all([
-    getQuotaUsageSnapshot(now),
-    getSesMaxSendRatePerSecond(),
-  ]);
+  const runtime = await getMailerRuntimeLimits(null, now);
+  const quota = runtime.quota;
+  const sesMaxSendRatePerSecond = runtime.sesMaxSendRatePerSecond;
   const effectiveSendRatePerSecond = effectiveSesSendRate(sesMaxSendRatePerSecond);
 
   const staleLockedBefore = new Date(now.getTime() - STUCK_PROCESSING_TTL_MS).toISOString();
@@ -465,12 +483,23 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
 
     const from = payload.from ?? template?.from_address;
     const replyTo = payload.replyTo ?? template?.reply_to ?? undefined;
-    const subject = payload.subject ?? template?.subject;
+    const subject = payload.subject?.startsWith("[SENDER COPY]")
+      ? `[SENDER COPY] ${template.subject}`
+      : payload.subject ?? template?.subject;
     const html = payload.html ?? template?.html;
     const text = payload.text ?? template?.text ?? undefined;
 
     if (!from || !subject || !html) {
       await markDead(item.id, "Missing email template fields for queued item");
+      return { outcome: "failed" };
+    }
+    try {
+      assertSendReadySubject(subject);
+    } catch (error) {
+      await markDead(
+        item.id,
+        error instanceof Error ? error.message : "Subject is not send-ready.",
+      );
       return { outcome: "failed" };
     }
 
@@ -556,6 +585,29 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
   // batch time so SMTP/DB latency counts toward the SES send-rate budget.
   const batchStartedAt = Date.now();
   let attemptedSends = 0;
+  let successesToPersist: Array<{ id: string; ses_message_id: string }> = [];
+  const persistSuccesses = async () => {
+    if (successesToPersist.length === 0) return;
+    const rows = successesToPersist;
+    successesToPersist = [];
+    const { data: applied, error: applyError } = await (
+      supabase as unknown as {
+        rpc(
+          fn: "mark_mail_queue_succeeded_batch",
+          args: { p_results: Json; p_send_date: string; p_updated_at: string },
+        ): Promise<{ data: number | null; error: { message: string } | null }>;
+      }
+    ).rpc("mark_mail_queue_succeeded_batch", {
+      p_results: rows,
+      p_send_date: today,
+      p_updated_at: new Date().toISOString(),
+    });
+    if (applyError) throw new Error(`Unable to persist SES acceptances: ${applyError.message}`);
+    if (applied !== rows.length) {
+      throw new Error(`Persisted ${applied ?? 0} of ${rows.length} SES acceptances; stopping before another batch.`);
+    }
+    succeeded += rows.length;
+  };
   for (let i = 0; i < items.length; i += WORKER_CONCURRENCY) {
     const window = items.slice(i, i + WORKER_CONCURRENCY);
     const results = await Promise.allSettled(window.map(processItem));
@@ -565,27 +617,8 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
         : [],
     );
 
-    if (successfulRows.length > 0) {
-      const { data: applied, error: applyError } = await (
-        supabase as unknown as {
-          rpc(
-            fn: "mark_mail_queue_succeeded_batch",
-            args: { p_results: Json; p_send_date: string; p_updated_at: string },
-          ): Promise<{ data: number | null; error: { message: string } | null }>;
-        }
-      ).rpc("mark_mail_queue_succeeded_batch", {
-          p_results: successfulRows,
-          p_send_date: today,
-          p_updated_at: new Date().toISOString(),
-        });
-      if (applyError) throw new Error(`Unable to persist SES acceptances: ${applyError.message}`);
-      if (applied !== successfulRows.length) {
-        throw new Error(
-          `Persisted ${applied ?? 0} of ${successfulRows.length} SES acceptances; stopping before another batch.`,
-        );
-      }
-      succeeded += successfulRows.length;
-    }
+    successesToPersist.push(...successfulRows);
+    if (successesToPersist.length >= SUCCESS_PERSIST_BATCH_SIZE) await persistSuccesses();
 
     for (const result of results) {
       if (result.status === "rejected" || result.value.outcome === "failed") failed++;
@@ -598,6 +631,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       if (sleepMs > 0) await sleep(sleepMs);
     }
   }
+  await persistSuccesses();
 
   await writeMetrics({
     queueDepth: 0,

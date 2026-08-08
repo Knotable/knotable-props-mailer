@@ -1,15 +1,14 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireServerAuthContext } from "@/lib/authAccess";
-import { getQuotaUsageSnapshot } from "@/lib/dailyQuota";
-import { getSesMaxSendRatePerSecond } from "@/lib/appSettings";
+import { getMailerRuntimeLimits } from "@/lib/dailyQuota";
 import { parseUuid } from "@/lib/ids";
+import { subjectPlaceholderTerms } from "@/lib/subjectReadiness";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
 const MEMBER_STATUSES = ["active", "unsubscribed", "blocked", "bounced", "complained"] as const;
 
 type Props = { params: Promise<{ emailId: string }> };
@@ -49,59 +48,40 @@ export default async function SendReadinessPage({ params }: Props) {
   if (emailError) throw emailError;
   if (!email) notFound();
 
-  const [{ data: recipientRows }, { data: queueListRows }, { data: lists }, quota, maxRate] =
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const [
+    { data: recipientRows },
+    { data: queueSummaryRows, error: queueSummaryError },
+    runtime,
+    { data: globalSummaryRows, error: globalSummaryError },
+    latestProviderEvent,
+  ] =
     await Promise.all([
       supabase.from("email_recipients").select("recipient_address").eq("email_id", emailId),
-      supabase.from("mail_queue").select("list_id").eq("email_id", emailId).not("list_id", "is", null).limit(50),
-      supabase.from("lists").select("id, name, address, access_level").order("name"),
-      getQuotaUsageSnapshot(),
-      getSesMaxSendRatePerSecond(),
+      supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [emailId], p_now: nowIso }),
+      getMailerRuntimeLimits(emailId, now),
+      supabase.rpc("get_global_active_queue_summary", { p_now: nowIso }),
+      supabase.from("provider_events").select("received_at, event_type").order("received_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
+  if (queueSummaryError) throw queueSummaryError;
+  if (globalSummaryError) throw globalSummaryError;
 
-  const queueListIds = [...new Set((queueListRows ?? []).map((row) => row.list_id).filter(Boolean))] as string[];
+  const queueListIds = [...new Set((queueSummaryRows ?? []).map((row) => row.list_id).filter(Boolean))] as string[];
   const recipientAddresses = (recipientRows ?? []).map((row) => row.recipient_address.toLowerCase());
+  const { data: lists } = queueListIds.length
+    ? await supabase.from("lists").select("id, name, address, access_level").in("id", queueListIds)
+    : { data: [] };
   const matchedLists = (lists ?? []).filter(
     (list) => queueListIds.includes(list.id) || recipientAddresses.includes(list.address.toLowerCase()),
   );
   const listIds = matchedLists.map((list) => list.id);
 
-  const nowIso = new Date().toISOString();
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const queueBase = () => supabase.from("mail_queue").select("id", { count: "exact", head: true }).eq("email_id", emailId);
-
-  const queueCountPromises = {
-    total: exactCount(queueBase()),
-    held: exactCount(queueBase().eq("status", "pending").gte("available_at", QUEUE_HOLD_AT)),
-    due: exactCount(queueBase().eq("status", "pending").lte("available_at", nowIso)),
-    processing: exactCount(queueBase().eq("status", "processing")),
-    succeeded: exactCount(queueBase().eq("status", "succeeded")),
-    failed: exactCount(queueBase().in("status", ["failed", "dead"])),
-    canceled: exactCount(queueBase().eq("status", "canceled")),
-  };
-
-  const memberCountEntries = await Promise.all(
-    listIds.flatMap((listId) =>
-      MEMBER_STATUSES.map(async (status) => {
-        const count = await exactCount(
-          supabase
-            .from("list_members")
-            .select("id", { count: "exact", head: true })
-            .eq("list_id", listId)
-            .eq("status", status),
-        );
-        return [`${listId}:${status}`, count] as const;
-      }),
-    ),
-  );
-  const memberCounts = new Map(memberCountEntries);
-
-  const [queueCounts, recentContactRows, globalDue, globalProcessing, latestProviderEvent] = await Promise.all([
-    Promise.all(
-      Object.entries(queueCountPromises).map(async ([key, promise]) => [key, await promise] as const),
-    ).then(
-      (entries) =>
-        Object.fromEntries(entries) as Record<keyof typeof queueCountPromises, number | null>,
-    ),
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const [{ data: memberSummaryRows, error: memberSummaryError }, recentContactRows] = await Promise.all([
+    listIds.length
+      ? supabase.rpc("get_list_member_status_summaries", { p_list_ids: listIds })
+      : Promise.resolve({ data: [], error: null }),
     listIds.length
       ? exactCount(
           supabase
@@ -113,14 +93,28 @@ export default async function SendReadinessPage({ params }: Props) {
             .gte("send_date", thirtyDaysAgo),
         )
       : Promise.resolve(0),
-    exactCount(
-      supabase.from("mail_queue").select("id", { count: "exact", head: true }).eq("status", "pending").lte("available_at", nowIso),
-    ),
-    exactCount(
-      supabase.from("mail_queue").select("id", { count: "exact", head: true }).eq("status", "processing"),
-    ),
-    supabase.from("provider_events").select("received_at, event_type").order("received_at", { ascending: false }).limit(1).maybeSingle(),
   ]);
+  if (memberSummaryError) throw memberSummaryError;
+  const memberCounts = new Map(
+    (memberSummaryRows ?? []).map((row) => [`${row.list_id}:${row.status}`, Number(row.member_count)]),
+  );
+  const queueCounts = (queueSummaryRows ?? []).reduce(
+    (counts, row) => ({
+      total: counts.total + Number(row.total ?? 0),
+      held: counts.held + Number(row.pending_held ?? 0),
+      due: counts.due + Number(row.pending_due ?? 0),
+      processing: counts.processing + Number(row.processing ?? 0),
+      succeeded: counts.succeeded + Number(row.succeeded ?? 0),
+      failed: counts.failed + Number(row.failed ?? 0) + Number(row.dead ?? 0),
+      canceled: counts.canceled + Number(row.canceled ?? 0),
+    }),
+    { total: 0, held: 0, due: 0, processing: 0, succeeded: 0, failed: 0, canceled: 0 },
+  );
+  const globalSummary = globalSummaryRows?.[0];
+  const globalDue = Number(globalSummary?.pending_due ?? 0);
+  const globalProcessing = Number(globalSummary?.processing ?? 0);
+  const quota = runtime.quota;
+  const maxRate = runtime.sesMaxSendRatePerSecond;
 
   const activeAudience = matchedLists.reduce(
     (sum, list) => sum + (memberCounts.get(`${list.id}:active`) ?? 0),
@@ -150,12 +144,21 @@ export default async function SendReadinessPage({ params }: Props) {
   const insecureUrls = [...links, ...images].filter((url) => url.startsWith("http://"));
   const missingAltImages = [...email.html.matchAll(/<img\b[^>]*>/gi)].filter((match) => !/\balt\s*=\s*["'][^"']*["']/i.test(match[0])).length;
   const mergeTags = unresolvedTags(`${email.subject}\n${email.html}\n${email.text ?? ""}`);
+  const placeholderSubjectTerms = subjectPlaceholderTerms(email.subject);
   const latestEventAt = latestProviderEvent.data?.received_at ?? null;
-  const eventAgeHours = latestEventAt ? (Date.now() - new Date(latestEventAt).getTime()) / 3_600_000 : null;
+  const eventAgeHours = latestEventAt ? (now.getTime() - new Date(latestEventAt).getTime()) / 3_600_000 : null;
   const hasConfigurationSet = Boolean(process.env.AWS_SES_CONFIGURATION_SET?.trim());
   const hasSnsTopic = Boolean(process.env.AWS_SES_SNS_TOPIC_ARN?.trim());
 
   const checks: Check[] = [
+    {
+      label: "Send-ready subject",
+      detail: placeholderSubjectTerms.length === 0
+        ? "Subject contains no draft, test, or placeholder markers."
+        : `Remove placeholder term${placeholderSubjectTerms.length === 1 ? "" : "s"}: ${placeholderSubjectTerms.join(", ")}.`,
+      tone: placeholderSubjectTerms.length === 0 ? "green" : "red",
+      blocking: placeholderSubjectTerms.length > 0,
+    },
     {
       label: "Audience selected",
       detail: matchedLists.length
@@ -202,8 +205,8 @@ export default async function SendReadinessPage({ params }: Props) {
     },
     {
       label: "Global queue isolation",
-      detail: `${(globalDue ?? 0).toLocaleString()} due and ${(globalProcessing ?? 0).toLocaleString()} processing rows globally. Use only the scoped monitor for this campaign.`,
-      tone: (globalDue ?? 0) === (queueCounts.due ?? 0) && (globalProcessing ?? 0) === (queueCounts.processing ?? 0) ? "green" : "amber",
+      detail: `${globalDue.toLocaleString()} due and ${globalProcessing.toLocaleString()} processing rows globally. Use only the scoped monitor for this campaign.`,
+      tone: globalDue === queueCounts.due && globalProcessing === queueCounts.processing ? "green" : "amber",
     },
   ];
 
