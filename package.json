@@ -7,9 +7,11 @@
     "build": "node scripts/write-build-info.mjs && next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "vitest run"
+    "test": "vitest run",
+    "worker:ses-bulk": "node scripts/ses-bulk-worker.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-sesv2": "^3.1106.0",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.102.1",
     "class-variance-authority": "^0.7.1",

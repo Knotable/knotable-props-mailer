@@ -37,6 +37,8 @@ When the user opens this project without a specific task, offer this concise men
 
 **2026-08-08 paused LifeX send:** campaign `837e2da9-7907-42e3-8bfa-5432f2c52f2c`, subject `The science budget survived. The operating system changed.`, is safely paused with parent status `queued`, `11,598` held pending, `0` due, `0` processing, `1,694` succeeded (including three earlier test sends), and `0` failed/dead. Do not resume without explicit approval. Migration `20260808_incremental_queue_drain.sql` is live: Resume is a one-row state change and workers claim at most 200 rows directly from the durable hold. Opening the monitor no longer auto-starts a competing browser worker.
 
+**2026-08-08 SES bulk-worker rollout:** the codebase now contains a manually dispatched, campaign-scoped GitHub Actions worker at `.github/workflows/ses-bulk-worker.yml`. It calls SES v2 `SendBulkEmail` directly and uses bounded Supabase claim/checkpoint RPCs from `20260808_ses_bulk_worker.sql`; Vercel is not in the drain path. The legacy Vercel-trigger workflow is manual-only to prevent competing workers. Before the first send, apply that migration and configure the GitHub secrets/variables in `docs/ses-bulk-worker.md`. No bulk send has been run; the paused LifeX state above was reverified by a read-only dry run.
+
 **As of 2026-08-03, production health is green with `0` due pending, `0` processing, and `0` held pending queue rows. SES/SNS is fresh with `654` provider events received in the previous 7 days. The AWS SES quota is 65,400 recipients per rolling 24-hour period, with a separate maximum send rate of 15 recipients per second. App settings include `daily_send_limit = 65,400`; app code defaults `ses_max_send_rate_per_second` to 15 and migration `20260709_ses_quota_settings.sql` persists it. Do not open or auto-run the monitor casually; verify the exact email id first.**
 
 **Hard sending rule, 2026-06-16:** Never use Gmail or the Gmail connector to send project, campaign, newsletter, list, test, or resend emails for this repo. Gmail may be used only for read-only mailbox lookup when explicitly relevant. All outbound mail must go through Props Mailer / SES using the app's queue, test-send, or monitor flows.
@@ -111,7 +113,7 @@ Update this section as work progresses so future agents do not re-derive the sta
 | Verify large-send RPCs in prod | Done 2026-05-21 | `/api/health` critical checks are green, including `claim_mail_queue_batch` and `release_mail_queue_campaign`. Re-check immediately before release. |
 | Confirm queue is not accidentally due | Done 2026-06-15 live check | Production health reported `0` due pending, `0` processing, and `0` held pending. Re-check immediately before monitor use and only run the intended `emailId`; avoid the guarded global monitor except for explicit repair/debug. |
 | Prepare next two LifeX newsletters | Drafted 2026-06-11 | Local HTML files in `/Users/MrAnonymous/Documents/01 LifeX/Newsletter work/` were updated to use Supabase-hosted images and reply-based unsubscribe footer. Supabase draft ids: `08df2ed7-a8a2-4ec4-9542-990d3a43c0e6` for June 11 Part 1 and `00440fb7-59a6-4730-8bfe-605f5442f1ee` for the June 25 / July Part 2 draft. Both are still `draft`; live check showed `0` queue rows. |
-| Add GitHub mailer cron trigger | Done 2026-07-09 | `.github/workflows/mailer-cron.yml` runs every 5 minutes and loops guarded calls to `/api/workers/send-queued`. The endpoint only drains emails already marked `sending`, using `MAILER_CRON_SECRET` in GitHub Actions mapped to Vercel `CRON_SECRET`; it does not deploy to Vercel and does not broadly drain queued/sent campaigns. |
+| Replace scheduled Vercel trigger with SES bulk worker | Code ready 2026-08-08; setup pending | `.github/workflows/ses-bulk-worker.yml` is a manual, campaign-scoped long-running worker that calls SES v2 directly and checkpoints bounded batches in Supabase. `.github/workflows/mailer-cron.yml` is now manual-only. Apply `20260808_ses_bulk_worker.sql` and configure the credentials documented in `docs/ses-bulk-worker.md` before the first send. |
 | Add reply-to unsubscribe logging | Table repaired 2026-06-21 | App code stores/sends `reply_to` and sets a mailto `List-Unsubscribe` header when reply-to is present. Applied `20260611_unsubscribe_requests.sql` live, granted the API roles, reloaded PostgREST, and verified `unsubscribe_requests` through the service-role REST API. |
 | Run local checks after hardening | Partially done 2026-05-21 | `git diff --check` passed; conflict-marker scan is clean; code stale-reference scan no longer finds the old broad-drain UI/API paths; TypeScript `transpileModule` checks passed for touched TS/TSX files; direct `vitest run` passed 7 tests. Full `tsc --noEmit` runs but fails on the known stale Supabase generated types (`never` table rows across existing files), so regenerate `src/supabase/types.ts` before treating full typecheck as a release gate. `npm` is still not on PATH in this desktop shell; re-run `npm run lint`, `npm test`, and `npm run build` in a normal Node/npm shell before deploy. |
 
@@ -128,7 +130,7 @@ curl -fsS https://knotable-props-mailer.vercel.app/api/health | jq '{ok, critica
 
 ## What This Project Is
 
-A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, queue them, send via Amazon SES (SMTP), manage mailing lists, and track analytics. Sends are initiated manually; active `sending` campaigns can drain through the monitor tab or the GitHub Actions mailer cron trigger.
+A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, queue them, send via Amazon SES, manage mailing lists, and track analytics. Ordinary/test sends use SES SMTP; large campaigns can drain through the manually dispatched GitHub Actions SES v2 bulk worker without holding open a Vercel request.
 
 **Owner:** Amol (a@sarva.co)
 **Repo:** GitHub → Vercel auto-deploy
@@ -143,11 +145,11 @@ A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on
 | Framework | Next.js 16.2.2, App Router, React 19 |
 | Styling | Tailwind CSS v4, `tailwind-merge`, `class-variance-authority` |
 | Database / Auth | Supabase (Postgres + Auth + Storage) |
-| Mail sending | Amazon SES via SMTP using `nodemailer` |
+| Mail sending | Amazon SES via SMTP for ordinary sends; SES v2 API bulk worker for large campaigns |
 | Validation | Zod v4 |
 | Icons | lucide-react |
 | Testing | Vitest |
-| Deployment | Vercel + GitHub Actions scheduled mailer trigger |
+| Deployment | Vercel UI/API + manually dispatched GitHub Actions bulk worker |
 
 **Important:** This is **Next.js 16** — not the Next.js 14/15 you may know from training data. APIs and conventions may differ. Always read `node_modules/next/dist/docs/` before writing new Next.js-specific code (per `AGENTS.md`).
 

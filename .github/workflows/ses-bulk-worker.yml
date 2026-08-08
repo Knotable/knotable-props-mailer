@@ -1,0 +1,54 @@
+name: SES Bulk Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      email_id:
+        description: Exact campaign UUID
+        required: true
+        type: string
+      mode:
+        description: Dry run is read-only; send releases this campaign
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - send
+      confirmation:
+        description: For send mode, enter send:<campaign UUID>
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ses-bulk-${{ inputs.email_id }}
+  cancel-in-progress: false
+
+jobs:
+  drain-campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_SES_CONFIGURATION_SET: ${{ vars.AWS_SES_CONFIGURATION_SET }}
+      APP_BASE_URL: https://knotable-props-mailer.vercel.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate or drain one campaign
+        run: >-
+          node scripts/ses-bulk-worker.mjs
+          --email-id "${{ inputs.email_id }}"
+          --mode "${{ inputs.mode }}"
+          --confirmation "${{ inputs.confirmation }}"

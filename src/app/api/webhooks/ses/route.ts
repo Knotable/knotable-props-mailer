@@ -295,6 +295,7 @@ export async function POST(request: Request) {
 
   // ── Look up email_id via ses_message_id ────────────────────────────────────
   let emailId: string | null = null;
+  let queueId: string | null = null;
   if (messageId) {
     const { data: queueRow } = await supabase
       .from("mail_queue")
@@ -302,6 +303,37 @@ export async function POST(request: Request) {
       .eq("ses_message_id", messageId)
       .maybeSingle();
     emailId = queueRow?.email_id ?? null;
+  }
+
+  // The bulk worker tags each destination with its durable queue id. This is
+  // the recovery path for the narrow crash window where SES accepted a batch
+  // but the worker exited before it checkpointed the returned message ids.
+  const mailTags = mail?.["tags"] as Record<string, unknown> | undefined;
+  const taggedQueueIds = toStringArray(mailTags?.["queue_id"]);
+  if (taggedQueueIds[0] && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(taggedQueueIds[0])) {
+    queueId = taggedQueueIds[0];
+    const { data: taggedQueueRow } = await supabase
+      .from("mail_queue")
+      .select("email_id, status")
+      .eq("id", queueId)
+      .maybeSingle();
+    emailId = emailId ?? taggedQueueRow?.email_id ?? null;
+
+    if (messageId && taggedQueueRow?.status === "processing" && sesEventType === "Send") {
+      const now = new Date();
+      await supabase
+        .from("mail_queue")
+        .update({
+          status: "succeeded",
+          ses_message_id: messageId,
+          send_date: now.toISOString().slice(0, 10),
+          locked_at: null,
+          last_error: null,
+          updated_at: now.toISOString(),
+        })
+        .eq("id", queueId)
+        .eq("status", "processing");
+    }
   }
 
   if (!emailId) {

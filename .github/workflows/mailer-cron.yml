@@ -1,8 +1,6 @@
-name: Mailer Cron Trigger
+name: Legacy Vercel Mailer (Manual Only)
 
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 permissions:
