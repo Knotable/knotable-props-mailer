@@ -98,14 +98,41 @@ let requestCount = 0;
 while (remainingQuota > 0) {
   const limit = Math.min(claimSize, remainingQuota);
   const now = new Date().toISOString();
-  const { data: items, error: claimError } = await supabase.rpc("claim_ses_bulk_queue_batch", {
-    p_email_id: emailId,
-    p_worker_id: workerId,
-    p_limit: limit,
-    p_now: now,
-  });
+  // The SQL claim RPC has to consider both due and year-2999 held rows, which
+  // produced an expensive OR + sort plan on the free Supabase compute tier.
+  // A GitHub concurrency lock guarantees only one bulk worker per campaign, so
+  // use the existing email/status/created_at index to select a bounded set and
+  // then conditionally transition exactly those ids. The conditional update
+  // still fails closed if another worker somehow races this one.
+  const { data: candidates, error: candidateError } = await supabase
+    .from("mail_queue")
+    .select("id")
+    .eq("email_id", emailId)
+    .eq("status", "pending")
+    .order("created_at", { ascending: true })
+    .order("id", { ascending: true })
+    .limit(limit);
+  if (candidateError) throw new Error(`Unable to select queue batch: ${candidateError.message}`);
+  if (!candidates?.length) break;
+
+  const candidateIds = candidates.map((candidate) => candidate.id);
+  const { data: items, error: claimError } = await supabase
+    .from("mail_queue")
+    .update({
+      status: "processing",
+      locked_at: now,
+      last_heartbeat: now,
+      correlation_id: workerId,
+      updated_at: now,
+    })
+    .eq("email_id", emailId)
+    .eq("status", "pending")
+    .in("id", candidateIds)
+    .select("id, payload, list_id, attempts, max_attempts");
   if (claimError) throw new Error(`Unable to claim queue batch: ${claimError.message}`);
-  if (!items?.length) break;
+  if (items?.length !== candidateIds.length) {
+    throw new Error(`Queue claim race detected: ${items?.length ?? 0}/${candidateIds.length} rows transitioned. Stop and reconcile before retrying.`);
+  }
 
   const invalid = [];
   const deliverable = [];

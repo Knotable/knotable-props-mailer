@@ -18,12 +18,14 @@ separate destination objects, capped further at 90% of the live SES per-second
 quota. Every destination remains a private, personalized message with its own SES
 message id and open-tracking queue id.
 
-Supabase receives two bounded operations per 50-recipient claim: one atomic
-claim and one atomic result checkpoint. SES calls inside that claim remain
+Supabase receives three index-friendly bounded operations per 50-recipient
+claim: select 50 pending IDs through the campaign/status/created-at index,
+conditionally mark those IDs processing, and checkpoint the result set. GitHub
+concurrency permits only one bulk worker per campaign, and the conditional
+transition fails closed if anything races it. SES calls inside the claim remain
 split and paced to 90% of the live per-second quota (normally 13 recipients per
-request). This keeps the SES rate unchanged while reducing Supabase round trips
-by roughly 74% compared with claiming every SES request separately. It never
-rewrites the full held queue to resume a send.
+request). This keeps the SES rate unchanged and avoids the expensive held/due
+OR-and-sort plan in the general-purpose SQL claim RPC.
 
 ## Required GitHub configuration
 
