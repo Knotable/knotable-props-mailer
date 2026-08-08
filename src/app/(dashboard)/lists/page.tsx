@@ -1,6 +1,6 @@
 import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { applyBlockListAction, upsertListAction } from "./actions";
+import { upsertListAction } from "./actions";
 import { ImportMembersForm } from "./import-members-form";
 import Link from "next/link";
 import { BLOCKED_EMAIL_DOMAINS } from "@/lib/blockList";
@@ -18,24 +18,21 @@ export default async function ListsPage() {
       <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">Mailing Lists</p>
         <h2 className="text-2xl font-semibold text-slate-900">Manage Lists</h2>
-        <p className="text-sm text-slate-500">Supabase-backed lists stay local; future work will push them to SES suppression lists.</p>
+        <p className="text-sm text-slate-500">Create lists, import recipients, and manage suppressions before they reach a campaign queue.</p>
       </header>
-      <form action={applyBlockListAction} className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-xs font-bold text-white" aria-hidden="true">
+            ✓
+          </span>
           <div>
-            <p className="text-sm font-semibold text-red-900">Block List</p>
-            <p className="text-sm text-red-700">
-              Globally suppresses {BLOCKED_EMAIL_DOMAINS.map((domain) => `*@${domain}`).join(", ")} from campaign queues.
+            <p className="text-sm font-semibold text-emerald-900">Automatic suppression is active</p>
+            <p className="text-sm text-emerald-800">
+              Addresses at {BLOCKED_EMAIL_DOMAINS.map((domain) => `@${domain}`).join(" and ")} are automatically blocked during import, queueing, and sending.
             </p>
           </div>
-          <button
-            type="submit"
-            className="shrink-0 rounded-md bg-red-700 px-4 py-2 text-sm font-semibold text-white hover:bg-red-800"
-          >
-            Apply block list
-          </button>
         </div>
-      </form>
+      </div>
       <form action={upsertListAction} className="rounded-lg border border-slate-200 bg-slate-50 p-6">
         <p className="text-sm font-medium text-slate-700">Create or update list</p>
         <div className="mt-3 grid gap-4 sm:grid-cols-2">

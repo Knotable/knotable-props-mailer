@@ -1,7 +1,5 @@
 import type { Json } from "@/supabase/types";
 
-export const BLOCK_LIST_NAME = "Block List";
-export const BLOCK_LIST_ADDRESS = "block-list@props.local";
 export const BLOCKED_EMAIL_DOMAINS = ["followupthen.com", "fut.io"] as const;
 
 export function normalizeEmailForBlockList(value: string | null | undefined) {

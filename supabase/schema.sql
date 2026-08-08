@@ -117,6 +117,9 @@ create index if not exists mail_queue_email_status_send_date_idx
   where email_id is not null;
 create index if not exists mail_queue_status_updated_idx
   on public.mail_queue (status, updated_at desc);
+create index if not exists mail_queue_unsent_recipient_list_idx
+  on public.mail_queue (list_id, (payload->>'to'))
+  where status in ('pending', 'processing');
 
 create table if not exists public.queue_metrics (
   id uuid primary key default gen_random_uuid(),
@@ -185,6 +188,8 @@ create table if not exists public.list_members (
 create index if not exists list_members_list_idx on public.list_members(list_id);
 create unique index if not exists list_members_list_email_idx on public.list_members(list_id, email);
 create index if not exists list_members_email_status_idx on public.list_members(email, status);
+create index if not exists list_members_list_email_prefix_idx
+  on public.list_members (list_id, email text_pattern_ops);
 
 create table if not exists public.unsubscribe_requests (
   id uuid primary key default gen_random_uuid(),

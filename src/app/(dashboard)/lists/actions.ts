@@ -7,9 +7,6 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { logAudit } from "@/lib/logger";
 import type { Json } from "@/supabase/types";
 import {
-  BLOCK_LIST_ADDRESS,
-  BLOCK_LIST_NAME,
-  BLOCKED_EMAIL_DOMAINS,
   blockedMemberMetadata,
   isBlockedRecipientEmail,
 } from "@/lib/blockList";
@@ -139,6 +136,11 @@ const UpsertListSchema = z.object({
 const ImportMembersSchema = z.object({
   listId: z.string().uuid(),
   members: z.string().max(20_000_000).optional().default(""),
+});
+
+const SuppressListMemberSchema = z.object({
+  listId: z.string().uuid(),
+  memberId: z.string().uuid(),
 });
 
 async function upsertOwnerAlwaysIncludeMember(
@@ -292,85 +294,86 @@ export async function importMembersAction(formData: FormData) {
   };
 }
 
-export async function applyBlockListAction() {
+export async function suppressListMemberAction(formData: FormData) {
   const userId = await requireAuthUserId();
   const supabase = getSupabaseAdmin();
+  const parsed = SuppressListMemberSchema.safeParse({
+    listId: formData.get("listId"),
+    memberId: formData.get("memberId"),
+  });
+  if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Invalid input");
 
-  const { data: existing } = await supabase
+  const { listId, memberId } = parsed.data;
+  const { data: list } = await supabase
     .from("lists")
-    .select("id, owner_id")
-    .eq("address", BLOCK_LIST_ADDRESS)
-    .maybeSingle();
-
-  if (existing && existing.owner_id !== userId) {
-    throw new Error("Block List already exists under another owner");
-  }
-
-  const { data: blockList, error: listError } = await supabase
-    .from("lists")
-    .upsert(
-      {
-        owner_id: userId,
-        name: BLOCK_LIST_NAME,
-        address: BLOCK_LIST_ADDRESS,
-        description: [
-          "Global suppression rules:",
-          BLOCKED_EMAIL_DOMAINS.map((domain) => `*@${domain}`).join(", "),
-        ].join(" "),
-      },
-      { onConflict: "address" },
-    )
     .select("id")
-    .single();
+    .eq("id", listId)
+    .eq("owner_id", userId)
+    .maybeSingle();
+  if (!list) throw new Error("List not found");
 
-  if (listError || !blockList) throw listError ?? new Error("Unable to create Block List");
-
-  const wildcardRows = BLOCKED_EMAIL_DOMAINS.map((domain) => ({
-    list_id: blockList.id,
-    email: `*@${domain}`,
-    status: "blocked",
-    source: "block_list",
-    unsubscribed_at: new Date().toISOString(),
-    metadata: blockedMemberMetadata(),
-  }));
-
-  const { error: wildcardError } = await supabase
+  const { data: member, error: memberError } = await supabase
     .from("list_members")
-    .upsert(wildcardRows, { onConflict: "list_id,email" });
-  if (wildcardError) throw wildcardError;
-
-  let blockedCount = 0;
-  const now = new Date().toISOString();
-  for (const domain of BLOCKED_EMAIL_DOMAINS) {
-    const { count, error } = await supabase
-      .from("list_members")
-      .update(
-        {
-          status: "blocked",
-          source: "block_list",
-          unsubscribed_at: now,
-        },
-        { count: "exact" },
-      )
-      .neq("list_id", blockList.id)
-      .eq("status", "active")
-      .ilike("email", `%@${domain}`);
-
-    if (error) throw error;
-    blockedCount += count ?? 0;
+    .select("id, email, metadata")
+    .eq("id", memberId)
+    .eq("list_id", listId)
+    .maybeSingle();
+  if (memberError) throw memberError;
+  if (!member) throw new Error("List member not found");
+  if (member.email.toLowerCase() === OWNER_ALWAYS_INCLUDE_EMAIL) {
+    throw new Error("The list owner address cannot be suppressed");
   }
+
+  const suppressedAt = new Date().toISOString();
+  const existingMetadata =
+    member.metadata && typeof member.metadata === "object" && !Array.isArray(member.metadata)
+      ? member.metadata as Record<string, Json>
+      : {};
+  const { error: suppressError } = await supabase
+    .from("list_members")
+    .update({
+      status: "blocked",
+      source: "manual_suppression",
+      unsubscribed_at: suppressedAt,
+      metadata: {
+        ...existingMetadata,
+        suppressed_at: suppressedAt,
+        suppression_reason: "manual_list_suppression",
+      } satisfies Json,
+    })
+    .eq("id", memberId)
+    .eq("list_id", listId);
+  if (suppressError) throw suppressError;
+
+  // Stop this list membership's unsent work without touching successful history.
+  const { count: canceledQueueRows, error: queueError } = await supabase
+    .from("mail_queue")
+    .update(
+      {
+        status: "canceled",
+        locked_at: null,
+        last_error: "Canceled after manual list suppression.",
+        updated_at: suppressedAt,
+      },
+      { count: "exact" },
+    )
+    .eq("list_id", listId)
+    .in("status", ["pending", "processing"])
+    .filter("payload->>to", "eq", member.email.toLowerCase());
+  if (queueError) throw queueError;
 
   logAudit({
     userId,
-    action: "list.apply_block_list",
-    entity: "lists",
-    entityId: blockList.id,
+    action: "list.suppress_member",
+    entity: "list_members",
+    entityId: memberId,
     payload: {
-      blockedDomains: [...BLOCKED_EMAIL_DOMAINS],
-      blockedCount,
+      listId,
+      email: member.email,
+      canceledQueueRows: canceledQueueRows ?? 0,
     },
   }).catch(console.error);
 
   revalidatePath("/lists");
-  return { blockedCount, blockedDomains: [...BLOCKED_EMAIL_DOMAINS] };
+  revalidatePath(`/lists/${listId}`);
 }
