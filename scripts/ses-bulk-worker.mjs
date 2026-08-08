@@ -81,8 +81,9 @@ const quotaRemaining = Math.max(0, Math.floor(max24Hour - sentLast24Hours));
 if (quotaRemaining === 0) throw new Error(`SES rolling quota is full (${sentLast24Hours}/${max24Hour}).`);
 await new Promise((resolve) => setTimeout(resolve, 1100));
 
-const requestedBatchSize = Number(process.env.SES_BULK_BATCH_SIZE ?? 50);
-const batchSize = Math.max(1, Math.min(50, requestedBatchSize, Math.floor(maxRate * 0.9), quotaRemaining));
+const requestedClaimSize = Number(process.env.SES_BULK_CLAIM_SIZE ?? 50);
+const claimSize = Math.max(1, Math.min(50, requestedClaimSize, quotaRemaining));
+const sendRequestSize = Math.max(1, Math.min(50, Math.floor(maxRate * 0.9)));
 const workerId = `ses-bulk:${process.env.GITHUB_RUN_ID ?? "local"}:${crypto.randomUUID()}`;
 const configurationSet = process.env.AWS_SES_CONFIGURATION_SET?.trim();
 const headers = email.reply_to ? [{ Name: "List-Unsubscribe", Value: `<mailto:${email.reply_to}?subject=Unsubscribe>` }] : [];
@@ -95,7 +96,7 @@ let failed = 0;
 let remainingQuota = quotaRemaining;
 let requestCount = 0;
 while (remainingQuota > 0) {
-  const limit = Math.min(batchSize, remainingQuota);
+  const limit = Math.min(claimSize, remainingQuota);
   const now = new Date().toISOString();
   const { data: items, error: claimError } = await supabase.rpc("claim_ses_bulk_queue_batch", {
     p_email_id: emailId,
@@ -125,12 +126,7 @@ while (remainingQuota > 0) {
     }
   }
 
-  if (invalid.length) {
-    const { data: applied, error } = await supabase.rpc("finalize_ses_bulk_queue_batch", { p_email_id: emailId, p_worker_id: workerId, p_results: invalid, p_now: new Date().toISOString() });
-    if (error || applied !== invalid.length) throw new Error(`Unable to finalize invalid rows: ${error?.message ?? `${applied}/${invalid.length} applied`}`);
-    failed += invalid.length;
-  }
-
+  const claimResults = [...invalid];
   if (deliverable.length) {
     const groups = new Map();
     for (const entry of deliverable) {
@@ -138,35 +134,48 @@ while (remainingQuota > 0) {
       groups.set(key, [...(groups.get(key) ?? []), entry]);
     }
     for (const group of groups.values()) {
-      const first = group[0].compiled;
-    const response = await ses.send(new SendBulkEmailCommand({
-      FromEmailAddress: email.from_address,
-      ReplyToAddresses: email.reply_to ? [email.reply_to] : undefined,
-      ConfigurationSetName: configurationSet || undefined,
-      DefaultContent: { Template: { TemplateContent: first.content, TemplateData: "{}", Headers: headers } },
-      BulkEmailEntries: group.map(({ item, payload, compiled: itemCompiled, data }) => ({
-        Destination: { ToAddresses: [payload.to] },
-        ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(itemCompiled.replacementData(data)) } },
-        ReplacementTags: [
-          { Name: "queue_id", Value: item.id },
-          { Name: "campaign_id", Value: emailId },
-        ],
-      })),
-    }));
-    const results = group.map(({ item }, index) => classifySesResult(response.BulkEmailEntryResults?.[index], item));
-    const { data: applied, error } = await supabase.rpc("finalize_ses_bulk_queue_batch", { p_email_id: emailId, p_worker_id: workerId, p_results: results, p_now: new Date().toISOString() });
-    if (error || applied !== results.length) throw new Error(`SES accepted a batch but its checkpoint was incomplete: ${error?.message ?? `${applied}/${results.length} applied`}. Stop and reconcile before retrying.`);
-    const batchAccepted = results.filter((result) => result.outcome === "succeeded").length;
-    accepted += batchAccepted;
-    failed += results.length - batchAccepted;
-    remainingQuota -= batchAccepted;
-    requestCount += 1;
-    console.log(`batch=${requestCount} claimed=${items.length} accepted=${batchAccepted} failed=${results.length - batchAccepted} total_accepted=${accepted}`);
-      await new Promise((resolve) => setTimeout(resolve, 1100));
+      for (let offset = 0; offset < group.length; offset += sendRequestSize) {
+        const requestEntries = group.slice(offset, offset + sendRequestSize);
+        const first = requestEntries[0].compiled;
+        const response = await ses.send(new SendBulkEmailCommand({
+          FromEmailAddress: email.from_address,
+          ReplyToAddresses: email.reply_to ? [email.reply_to] : undefined,
+          ConfigurationSetName: configurationSet || undefined,
+          DefaultContent: { Template: { TemplateContent: first.content, TemplateData: "{}", Headers: headers } },
+          BulkEmailEntries: requestEntries.map(({ item, payload, compiled: itemCompiled, data }) => ({
+            Destination: { ToAddresses: [payload.to] },
+            ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(itemCompiled.replacementData(data)) } },
+            ReplacementTags: [
+              { Name: "queue_id", Value: item.id },
+              { Name: "campaign_id", Value: emailId },
+            ],
+          })),
+        }));
+        const results = requestEntries.map(({ item }, index) => classifySesResult(response.BulkEmailEntryResults?.[index], item));
+        claimResults.push(...results);
+        requestCount += 1;
+        console.log(`request=${requestCount} recipients=${requestEntries.length}`);
+        await new Promise((resolve) => setTimeout(resolve, 1100));
+      }
     }
   }
 
-  // SendBulkEmail is an SES API action with a one-request-per-second control-plane limit.
+  const { data: applied, error: finalizeError } = await supabase.rpc("finalize_ses_bulk_queue_batch", {
+    p_email_id: emailId,
+    p_worker_id: workerId,
+    p_results: claimResults,
+    p_now: new Date().toISOString(),
+  });
+  if (finalizeError || applied !== claimResults.length) {
+    throw new Error(`SES claim checkpoint was incomplete: ${finalizeError?.message ?? `${applied}/${claimResults.length} applied`}. Stop and reconcile before retrying.`);
+  }
+
+  const claimAccepted = claimResults.filter((result) => result.outcome === "succeeded").length;
+  const claimFailed = claimResults.length - claimAccepted;
+  accepted += claimAccepted;
+  failed += claimFailed;
+  remainingQuota -= claimAccepted;
+  console.log(`claim=${items.length} accepted=${claimAccepted} failed=${claimFailed} total_accepted=${accepted}`);
 }
 
 const { data: finalRows, error: finalError } = await supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [emailId], p_now: new Date().toISOString() });

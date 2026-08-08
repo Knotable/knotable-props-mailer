@@ -18,8 +18,12 @@ separate destination objects, capped further at 90% of the live SES per-second
 quota. Every destination remains a private, personalized message with its own SES
 message id and open-tracking queue id.
 
-Supabase receives two bounded operations per batch: one atomic claim and one
-atomic result checkpoint. It never rewrites the full held queue to resume a send.
+Supabase receives two bounded operations per 50-recipient claim: one atomic
+claim and one atomic result checkpoint. SES calls inside that claim remain
+split and paced to 90% of the live per-second quota (normally 13 recipients per
+request). This keeps the SES rate unchanged while reducing Supabase round trips
+by roughly 74% compared with claiming every SES request separately. It never
+rewrites the full held queue to resume a send.
 
 ## Required GitHub configuration
 
