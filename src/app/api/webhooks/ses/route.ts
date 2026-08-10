@@ -168,7 +168,7 @@ export async function POST(request: Request) {
   // Avoid two database operations per SNS delivery. During a large campaign,
   // DB-backed webhook limiting amplifies SNS retries precisely when Supabase
   // is under pressure. SNS signature verification below remains authoritative.
-  const { allowed } = checkRateLimitSync(`ses-webhook:${ip}`, 300, 60_000);
+  const { allowed } = checkRateLimitSync(`ses-webhook:${ip}`, 30, 60_000);
   if (!allowed) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
