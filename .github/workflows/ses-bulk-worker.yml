@@ -19,6 +19,11 @@ on:
         description: For send mode, enter send:<campaign UUID>
         required: false
         type: string
+      max_recipients_per_second:
+        description: Safety cap for SES acceptances (keep low enough for Supabase webhook writes)
+        required: true
+        default: 2
+        type: number
 
 permissions:
   contents: read
@@ -30,7 +35,7 @@ concurrency:
 jobs:
   drain-campaign:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 240
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -39,6 +44,8 @@ jobs:
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_SES_CONFIGURATION_SET: ${{ vars.AWS_SES_CONFIGURATION_SET }}
       APP_BASE_URL: https://knotable-props-mailer.vercel.app
+      SES_BULK_CLAIM_SIZE: 20
+      SES_BULK_MAX_RECIPIENTS_PER_SECOND: ${{ inputs.max_recipients_per_second }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6

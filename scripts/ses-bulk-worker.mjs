@@ -83,10 +83,18 @@ await new Promise((resolve) => setTimeout(resolve, 1100));
 
 const requestedClaimSize = Number(process.env.SES_BULK_CLAIM_SIZE ?? 50);
 const claimSize = Math.max(1, Math.min(50, requestedClaimSize, quotaRemaining));
-const sendRequestSize = Math.max(1, Math.min(50, Math.floor(maxRate * 0.9)));
+const configuredRateCap = Number(process.env.SES_BULK_MAX_RECIPIENTS_PER_SECOND ?? maxRate);
+if (!Number.isFinite(configuredRateCap) || configuredRateCap < 1) {
+  throw new Error("SES_BULK_MAX_RECIPIENTS_PER_SECOND must be a number greater than or equal to 1.");
+}
+const effectiveSendRate = Math.min(maxRate * 0.9, configuredRateCap);
+const sendRequestSize = Math.max(1, Math.min(50, Math.floor(effectiveSendRate)));
+const sendRequestIntervalMs = Math.ceil((sendRequestSize / effectiveSendRate) * 1000) + 100;
 const workerId = `ses-bulk:${process.env.GITHUB_RUN_ID ?? "local"}:${crypto.randomUUID()}`;
 const configurationSet = process.env.AWS_SES_CONFIGURATION_SET?.trim();
 const headers = email.reply_to ? [{ Name: "List-Unsubscribe", Value: `<mailto:${email.reply_to}?subject=Unsubscribe>` }] : [];
+
+console.log(JSON.stringify({ sesMaxRate: maxRate, configuredRateCap, effectiveSendRate, sendRequestSize, sendRequestIntervalMs, claimSize }));
 
 const { error: activateError } = await supabase.from("emails").update({ status: "sending", updated_at: new Date().toISOString() }).eq("id", emailId).in("status", ["queued", "sending"]);
 if (activateError) throw new Error(`Unable to activate campaign: ${activateError.message}`);
@@ -182,19 +190,51 @@ while (remainingQuota > 0) {
         claimResults.push(...results);
         requestCount += 1;
         console.log(`request=${requestCount} recipients=${requestEntries.length}`);
-        await new Promise((resolve) => setTimeout(resolve, 1100));
+        await new Promise((resolve) => setTimeout(resolve, sendRequestIntervalMs));
       }
     }
   }
 
-  const { data: applied, error: finalizeError } = await supabase.rpc("finalize_ses_bulk_queue_batch", {
-    p_email_id: emailId,
-    p_worker_id: workerId,
-    p_results: claimResults,
-    p_now: new Date().toISOString(),
-  });
-  if (finalizeError || applied !== claimResults.length) {
-    throw new Error(`SES claim checkpoint was incomplete: ${finalizeError?.message ?? `${applied}/${claimResults.length} applied`}. Stop and reconcile before retrying.`);
+  let checkpointed = false;
+  let checkpointError = "unknown checkpoint error";
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    const { data: applied, error: finalizeError } = await supabase.rpc("finalize_ses_bulk_queue_batch", {
+      p_email_id: emailId,
+      p_worker_id: workerId,
+      p_results: claimResults,
+      p_now: new Date().toISOString(),
+    });
+    if (!finalizeError && applied === claimResults.length) {
+      checkpointed = true;
+      break;
+    }
+
+    checkpointError = finalizeError?.message ?? `${applied}/${claimResults.length} applied`;
+    const expectedById = new Map(claimResults.map((result) => [result.id, result]));
+    const { data: persistedRows, error: persistedError } = await supabase
+      .from("mail_queue")
+      .select("id, status, ses_message_id")
+      .eq("email_id", emailId)
+      .in("id", [...expectedById.keys()]);
+    const matchesCheckpoint = !persistedError && persistedRows?.length === claimResults.length && persistedRows.every((row) => {
+      const expected = expectedById.get(row.id);
+      const expectedStatus = expected?.outcome === "retry" ? "pending" : expected?.outcome;
+      return row.status === expectedStatus && (expectedStatus !== "succeeded" || row.ses_message_id === expected.ses_message_id);
+    });
+    if (matchesCheckpoint) {
+      checkpointed = true;
+      console.warn(`checkpoint response was ambiguous but all ${claimResults.length} outcomes are durable`);
+      break;
+    }
+
+    if (attempt < 8) {
+      const retryDelayMs = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
+      console.warn(`checkpoint attempt ${attempt}/8 failed (${checkpointError}); retrying in ${retryDelayMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+    }
+  }
+  if (!checkpointed) {
+    throw new Error(`SES claim checkpoint was incomplete after retries: ${checkpointError}. Stop and reconcile before retrying.`);
   }
 
   const claimAccepted = claimResults.filter((result) => result.outcome === "succeeded").length;
