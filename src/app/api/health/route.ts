@@ -88,7 +88,20 @@ async function queueRpcOk(db: SupabaseClient, name: "claim_mail_queue_batch" | "
 
 // ── route handler ─────────────────────────────────────────────────────────────
 
+// The full report costs ~30 PostgREST round trips, and the dashboard banner
+// polls this endpoint from every open tab. Serve a short-lived cached copy so
+// background polling stays cheap on the free Supabase tier.
+const HEALTH_CACHE_TTL_MS = 60_000;
+const HEALTH_CACHE_HEADERS = {
+  "Cache-Control": "public, s-maxage=60, stale-while-revalidate=300",
+};
+let cachedReport: { report: HealthReport; at: number } | null = null;
+
 export async function GET() {
+  if (cachedReport && Date.now() - cachedReport.at < HEALTH_CACHE_TTL_MS) {
+    return NextResponse.json(cachedReport.report, { headers: HEALTH_CACHE_HEADERS });
+  }
+
   const checks: HealthCheck[] = [];
   const db = getSupabaseAdmin();
 
@@ -496,17 +509,13 @@ export async function GET() {
   const critical = failing.filter((c) => c.severity === "critical").length;
   const warnings = failing.filter((c) => c.severity === "warning").length;
 
-  return NextResponse.json(
-    {
-      ok: critical === 0,
-      critical,
-      warnings,
-      checks,
-    } satisfies HealthReport,
-    {
-      headers: {
-        "Cache-Control": "no-store",
-      },
-    },
-  );
+  const report: HealthReport = {
+    ok: critical === 0,
+    critical,
+    warnings,
+    checks,
+  };
+  cachedReport = { report, at: Date.now() };
+
+  return NextResponse.json(report, { headers: HEALTH_CACHE_HEADERS });
 }

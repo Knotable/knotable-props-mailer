@@ -238,6 +238,11 @@ create table if not exists public.provider_events (
 create index if not exists provider_events_message_event_idx
   on public.provider_events (message_id, event_type)
   where message_id is not null;
+-- Enforces webhook dedupe without a pre-select. Open/Click events are excluded
+-- so repeated engagement events keep one row per occurrence.
+create unique index if not exists provider_events_message_event_unique_idx
+  on public.provider_events (message_id, event_type)
+  where message_id is not null and event_type not in ('opened', 'clicked');
 create index if not exists provider_events_event_received_idx
   on public.provider_events (event_type, received_at desc);
 create index if not exists provider_events_email_event_received_idx

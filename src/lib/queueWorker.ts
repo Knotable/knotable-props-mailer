@@ -136,6 +136,10 @@ function workerClaimLimit(remainingQuota: number, effectiveRatePerSecond: number
 }
 
 async function writeMetrics(opts: { queueDepth: number; processed: number; failed: number }) {
+  // Idle monitor polls call the worker every ~31s; recording those no-op runs
+  // inserted a queue_metrics row each time and grew the table without bound.
+  if (opts.processed === 0 && opts.failed === 0) return;
+
   const supabase = getSupabaseAdmin();
   const { error } = await supabase
     .from("queue_metrics")
@@ -377,14 +381,6 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
   if (!items || items.length === 0) {
     if (emailId) await reconcileEmailStatuses([emailId]);
 
-    let pendingQuery = supabase
-      .from("mail_queue")
-      .select("id", { count: "exact", head: true })
-      .eq("status", "pending");
-    if (emailId) pendingQuery = pendingQuery.eq("email_id", emailId);
-    const { count: pendingCount } = await pendingQuery;
-
-    await writeMetrics({ queueDepth: pendingCount ?? 0, processed: 0, failed: 0 });
     return {
       ok: true,
       processed: 0,

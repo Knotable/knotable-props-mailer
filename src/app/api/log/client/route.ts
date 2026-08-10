@@ -3,7 +3,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { logError } from "@/lib/logger";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkRateLimitSync } from "@/lib/rateLimit";
 
 const MAX_BODY_BYTES = 32_768;
 
@@ -19,7 +19,7 @@ export async function POST(request: Request) {
     request.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
     request.headers.get("x-real-ip") ??
     "unknown";
-  const { allowed } = await checkRateLimit(`client-log:${ip}`, 10, 60_000);
+  const { allowed } = checkRateLimitSync(`client-log:${ip}`, 10, 60_000);
   if (!allowed) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }

@@ -1,4 +1,5 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import type { NextRequest } from "next/server";
@@ -279,7 +280,12 @@ export async function createServerAppClient() {
   });
 }
 
-export async function getServerAuthContext(): Promise<ServerAuthContext> {
+// React `cache()` dedupes this per request: the dashboard layout, pages, and
+// server actions all resolve auth, and each uncached call cost a Supabase auth
+// round trip plus a profiles query.
+export const getServerAuthContext = cache(getServerAuthContextUncached);
+
+async function getServerAuthContextUncached(): Promise<ServerAuthContext> {
   const cookieStore = await cookies();
   if (isValidBypassCookieValue(cookieStore.get(BYPASS_COOKIE_NAME)?.value)) {
     const profile = await resolveAllowedProfile();

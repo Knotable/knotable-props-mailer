@@ -8,7 +8,7 @@ const DISMISSED_KEY = "health_banner_dismissed_v1";
 const REPORT_CACHE_KEY = "health_banner_report_v1";
 const REPORT_TTL_MS = 5 * 60 * 1000;
 const HEALTH_FETCH_DELAY_MS = 1200;
-const HEALTH_WARNING_RECHECK_MS = 30 * 1000;
+const HEALTH_WARNING_RECHECK_MS = 5 * 60 * 1000;
 
 type CachedReport = {
   savedAt: number;
@@ -49,7 +49,7 @@ export function HealthBanner() {
     const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
     const controller = new AbortController();
     const load = () => {
-      fetch("/api/health", { cache: "no-store", signal: controller.signal })
+      fetch("/api/health", { signal: controller.signal })
         .then((r) => r.json())
         .then((data: HealthReport) => {
           setReport(data);
@@ -79,7 +79,7 @@ export function HealthBanner() {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
       const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
-      fetch("/api/health", { cache: "no-store", signal: controller.signal })
+      fetch("/api/health", { signal: controller.signal })
         .then((r) => r.json())
         .then((data: HealthReport) => {
           setReport(data);

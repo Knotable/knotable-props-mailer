@@ -287,23 +287,6 @@ export async function POST(request: Request) {
 
   const supabase = getSupabaseAdmin();
 
-  // ── Deduplication ──────────────────────────────────────────────────────────
-  // SNS guarantees at-least-once delivery; retries after a 500 would create
-  // duplicate rows without this check. Open and Click are engagement events,
-  // so retain repeated opens/clicks instead of collapsing them to one row.
-  if (messageId && sesEventType !== "Open" && sesEventType !== "Click") {
-    const { data: existing } = await supabase
-      .from("provider_events")
-      .select("id")
-      .eq("message_id", messageId)
-      .eq("event_type", eventType)
-      .maybeSingle();
-
-    if (existing) {
-      return NextResponse.json({ ok: true, action: "duplicate_ignored" });
-    }
-  }
-
   // ── Look up email_id via ses_message_id ────────────────────────────────────
   let emailId: string | null = null;
   let queueId: string | null = null;
@@ -361,6 +344,12 @@ export async function POST(request: Request) {
   }
 
   // ── Insert event ───────────────────────────────────────────────────────────
+  // Deduplication: SNS delivers at-least-once, so retries after a 500 would
+  // create duplicate rows. The partial unique index
+  // provider_events_message_event_unique_idx rejects repeats of the same
+  // (message_id, event_type) — except Open/Click, which are engagement events
+  // and intentionally keep one row per occurrence. Letting the index handle it
+  // saves a pre-select round trip on every event.
   const { error } = await supabase.from("provider_events").insert({
     provider: "ses",
     event_type: eventType,
@@ -369,6 +358,10 @@ export async function POST(request: Request) {
     email_id: emailId,
     payload: sesEvent as import("@/supabase/types").Json,
   });
+
+  if (error?.code === "23505") {
+    return NextResponse.json({ ok: true, action: "duplicate_ignored" });
+  }
 
   if (error) {
     console.error("[ses-webhook] Failed to insert provider_event", error);
