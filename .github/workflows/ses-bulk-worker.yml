@@ -35,7 +35,7 @@ concurrency:
 jobs:
   drain-campaign:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -47,8 +47,8 @@ jobs:
       APP_BASE_URL: https://knotable-props-mailer.vercel.app
       SES_BULK_CLAIM_SIZE: 20
       SES_BULK_MAX_RECIPIENTS_PER_SECOND: ${{ inputs.max_recipients_per_second }}
-      SES_BULK_RECOVERY_PAUSE_EVERY: 500
-      SES_BULK_RECOVERY_PAUSE_MS: 90000
+      SES_BULK_RECOVERY_PAUSE_EVERY: 100
+      SES_BULK_RECOVERY_PAUSE_MS: 120000
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
