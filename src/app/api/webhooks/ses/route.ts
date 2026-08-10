@@ -20,7 +20,7 @@ import { createVerify } from "crypto";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { logError } from "@/lib/logger";
-import { checkRateLimit } from "@/lib/rateLimit";
+import { checkRateLimitSync } from "@/lib/rateLimit";
 
 // ── SNS message signature verification ────────────────────────────────────────
 // Cache signing certs in memory so we don't fetch the same PEM on every event.
@@ -165,7 +165,10 @@ export async function POST(request: Request) {
     request.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
     request.headers.get("x-real-ip") ??
     "unknown";
-  const { allowed } = await checkRateLimit(`ses-webhook:${ip}`, 300, 60_000);
+  // Avoid two database operations per SNS delivery. During a large campaign,
+  // DB-backed webhook limiting amplifies SNS retries precisely when Supabase
+  // is under pressure. SNS signature verification below remains authoritative.
+  const { allowed } = checkRateLimitSync(`ses-webhook:${ip}`, 300, 60_000);
   if (!allowed) {
     return NextResponse.json({ error: "Too many requests" }, { status: 429 });
   }
