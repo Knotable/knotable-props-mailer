@@ -146,20 +146,54 @@ while (remainingQuota > 0) {
   if (!candidates?.length) break;
 
   const candidateIds = candidates.map((candidate) => candidate.id);
-  const { data: items, error: claimError } = await supabase
-    .from("mail_queue")
-    .update({
-      status: "processing",
-      locked_at: now,
-      last_heartbeat: now,
-      correlation_id: workerId,
-      updated_at: now,
-    })
-    .eq("email_id", emailId)
-    .eq("status", "pending")
-    .in("id", candidateIds)
-    .select("id, payload, list_id, attempts, max_attempts");
-  if (claimError) throw new Error(`Unable to claim queue batch: ${claimError.message}`);
+  let items;
+  let claimError;
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    const claim = await supabase
+      .from("mail_queue")
+      .update({
+        status: "processing",
+        locked_at: now,
+        last_heartbeat: now,
+        correlation_id: workerId,
+        updated_at: now,
+      })
+      .eq("email_id", emailId)
+      .eq("status", "pending")
+      .in("id", candidateIds)
+      .select("id, payload, list_id, attempts, max_attempts");
+    if (!claim.error && claim.data?.length === candidateIds.length) {
+      items = claim.data;
+      break;
+    }
+
+    claimError = claim.error ?? new Error(`Claim returned ${claim.data?.length ?? 0}/${candidateIds.length} rows`);
+    const recovered = await retrySupabaseRead(
+      "recover ambiguous queue claim",
+      () => supabase
+        .from("mail_queue")
+        .select("id, payload, list_id, attempts, max_attempts")
+        .eq("email_id", emailId)
+        .eq("status", "processing")
+        .eq("correlation_id", workerId)
+        .in("id", candidateIds),
+      5,
+    );
+    if (!recovered.error && recovered.data?.length === candidateIds.length) {
+      items = recovered.data;
+      console.warn(`claim response was ambiguous but all ${candidateIds.length} rows were recovered before SES send`);
+      break;
+    }
+    if (!recovered.error && recovered.data?.length) {
+      throw new Error(`Partial queue claim detected: ${recovered.data.length}/${candidateIds.length}. Stop and reconcile before sending.`);
+    }
+    if (attempt < 8) {
+      const retryDelayMs = Math.min(60_000, 2_000 * 2 ** (attempt - 1));
+      console.warn(`claim attempt ${attempt}/8 failed (${conciseError(claimError)}); retrying in ${retryDelayMs}ms`);
+      await sleep(retryDelayMs);
+    }
+  }
+  if (!items) throw new Error(`Unable to claim queue batch after retries: ${conciseError(claimError)}`);
   if (items?.length !== candidateIds.length) {
     throw new Error(`Queue claim race detected: ${items?.length ?? 0}/${candidateIds.length} rows transitioned. Stop and reconcile before retrying.`);
   }
