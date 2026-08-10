@@ -13,6 +13,22 @@ import {
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
 
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+const conciseError = (error) => String(error?.message ?? error ?? "unknown error").replace(/\s+/g, " ").slice(0, 240);
+async function retrySupabaseRead(label, operation, maxAttempts = 8) {
+  let lastResult;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    lastResult = await operation();
+    if (!lastResult.error) return lastResult;
+    if (attempt < maxAttempts) {
+      const retryDelayMs = Math.min(60_000, 2_000 * 2 ** (attempt - 1));
+      console.warn(`${label} attempt ${attempt}/${maxAttempts} failed (${conciseError(lastResult.error)}); retrying in ${retryDelayMs}ms`);
+      await sleep(retryDelayMs);
+    }
+  }
+  return lastResult;
+}
+
 const emailId = args.get("--email-id");
 const mode = args.get("--mode") ?? "dry-run";
 const confirmation = args.get("--confirmation") ?? "";
@@ -90,11 +106,13 @@ if (!Number.isFinite(configuredRateCap) || configuredRateCap < 1) {
 const effectiveSendRate = Math.min(maxRate * 0.9, configuredRateCap);
 const sendRequestSize = Math.max(1, Math.min(50, Math.floor(effectiveSendRate)));
 const sendRequestIntervalMs = Math.ceil((sendRequestSize / effectiveSendRate) * 1000) + 100;
+const recoveryPauseEvery = Math.max(0, Number(process.env.SES_BULK_RECOVERY_PAUSE_EVERY ?? 0));
+const recoveryPauseMs = Math.max(0, Number(process.env.SES_BULK_RECOVERY_PAUSE_MS ?? 0));
 const workerId = `ses-bulk:${process.env.GITHUB_RUN_ID ?? "local"}:${crypto.randomUUID()}`;
 const configurationSet = process.env.AWS_SES_CONFIGURATION_SET?.trim();
 const headers = email.reply_to ? [{ Name: "List-Unsubscribe", Value: `<mailto:${email.reply_to}?subject=Unsubscribe>` }] : [];
 
-console.log(JSON.stringify({ sesMaxRate: maxRate, configuredRateCap, effectiveSendRate, sendRequestSize, sendRequestIntervalMs, claimSize }));
+console.log(JSON.stringify({ sesMaxRate: maxRate, configuredRateCap, effectiveSendRate, sendRequestSize, sendRequestIntervalMs, claimSize, recoveryPauseEvery, recoveryPauseMs }));
 
 const { error: activateError } = await supabase.from("emails").update({ status: "sending", updated_at: new Date().toISOString() }).eq("id", emailId).in("status", ["queued", "sending"]);
 if (activateError) throw new Error(`Unable to activate campaign: ${activateError.message}`);
@@ -103,6 +121,7 @@ let accepted = 0;
 let failed = 0;
 let remainingQuota = quotaRemaining;
 let requestCount = 0;
+let nextRecoveryPauseAt = recoveryPauseEvery;
 while (remainingQuota > 0) {
   const limit = Math.min(claimSize, remainingQuota);
   const now = new Date().toISOString();
@@ -112,14 +131,17 @@ while (remainingQuota > 0) {
   // use the existing email/status/created_at index to select a bounded set and
   // then conditionally transition exactly those ids. The conditional update
   // still fails closed if another worker somehow races this one.
-  const { data: candidates, error: candidateError } = await supabase
-    .from("mail_queue")
-    .select("id")
-    .eq("email_id", emailId)
-    .eq("status", "pending")
-    .order("created_at", { ascending: true })
-    .order("id", { ascending: true })
-    .limit(limit);
+  const { data: candidates, error: candidateError } = await retrySupabaseRead(
+    "select queue batch",
+    () => supabase
+      .from("mail_queue")
+      .select("id")
+      .eq("email_id", emailId)
+      .eq("status", "pending")
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true })
+      .limit(limit),
+  );
   if (candidateError) throw new Error(`Unable to select queue batch: ${candidateError.message}`);
   if (!candidates?.length) break;
 
@@ -190,7 +212,7 @@ while (remainingQuota > 0) {
         claimResults.push(...results);
         requestCount += 1;
         console.log(`request=${requestCount} recipients=${requestEntries.length}`);
-        await new Promise((resolve) => setTimeout(resolve, sendRequestIntervalMs));
+        await sleep(sendRequestIntervalMs);
       }
     }
   }
@@ -230,7 +252,7 @@ while (remainingQuota > 0) {
     if (attempt < 8) {
       const retryDelayMs = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
       console.warn(`checkpoint attempt ${attempt}/8 failed (${checkpointError}); retrying in ${retryDelayMs}ms`);
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      await sleep(retryDelayMs);
     }
   }
   if (!checkpointed) {
@@ -243,6 +265,17 @@ while (remainingQuota > 0) {
   failed += claimFailed;
   remainingQuota -= claimAccepted;
   console.log(`claim=${items.length} accepted=${claimAccepted} failed=${claimFailed} total_accepted=${accepted}`);
+  if (
+    recoveryPauseEvery > 0
+    && recoveryPauseMs > 0
+    && accepted >= nextRecoveryPauseAt
+    && candidates.length === limit
+    && remainingQuota > 0
+  ) {
+    console.log(`recovery_pause=${recoveryPauseMs}ms accepted=${accepted}`);
+    await sleep(recoveryPauseMs);
+    while (nextRecoveryPauseAt <= accepted) nextRecoveryPauseAt += recoveryPauseEvery;
+  }
 }
 
 const { data: finalRows, error: finalError } = await supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [emailId], p_now: new Date().toISOString() });

@@ -46,6 +46,8 @@ jobs:
       APP_BASE_URL: https://knotable-props-mailer.vercel.app
       SES_BULK_CLAIM_SIZE: 20
       SES_BULK_MAX_RECIPIENTS_PER_SECOND: ${{ inputs.max_recipients_per_second }}
+      SES_BULK_RECOVERY_PAUSE_EVERY: 500
+      SES_BULK_RECOVERY_PAUSE_MS: 90000
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
