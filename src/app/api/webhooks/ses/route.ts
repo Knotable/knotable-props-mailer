@@ -159,8 +159,16 @@ const SES_EVENT_MAP: Record<string, string> = {
 };
 
 const MAX_WEBHOOK_BODY_BYTES = 256_000;
+const SES_RECOVERY_DEFER_UNTIL = Date.parse("2026-08-10T11:18:00Z");
 
 export async function POST(request: Request) {
+  if (Date.now() < SES_RECOVERY_DEFER_UNTIL) {
+    return NextResponse.json(
+      { error: "SES event ingestion temporarily deferred for database recovery" },
+      { status: 503, headers: { "Retry-After": "60" } },
+    );
+  }
+
   const ip =
     request.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
     request.headers.get("x-real-ip") ??
