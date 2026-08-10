@@ -257,6 +257,38 @@ create index if not exists provider_events_email_received_idx
   on public.provider_events (email_id, received_at desc)
   where email_id is not null;
 
+-- Compact campaign history retained after verified row-level archives are
+-- exported to gitignored local storage.
+create table if not exists public.email_history_rollups (
+  email_id uuid primary key references public.emails(id) on delete cascade,
+  total_queued bigint not null default 0,
+  succeeded bigint not null default 0,
+  failed bigint not null default 0,
+  dead bigint not null default 0,
+  canceled bigint not null default 0,
+  permanent_failures bigint not null default 0,
+  with_ses_message_id bigint not null default 0,
+  list_ids uuid[] not null default '{}',
+  first_queued_at timestamptz,
+  last_updated_at timestamptz,
+  first_send_date date,
+  last_send_date date,
+  delivered_unique bigint not null default 0,
+  bounced_unique bigint not null default 0,
+  complained_unique bigint not null default 0,
+  opened_unique bigint not null default 0,
+  clicked_unique bigint not null default 0,
+  delivery_events bigint not null default 0,
+  bounce_events bigint not null default 0,
+  complaint_events bigint not null default 0,
+  open_events bigint not null default 0,
+  click_events bigint not null default 0,
+  first_event_at timestamptz,
+  latest_event_at timestamptz,
+  archived_through timestamptz not null,
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists emails_analytics_created_idx
   on public.emails (created_at desc)
   where status <> 'draft';

@@ -248,6 +248,7 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 | `lists` | Mailing lists |
 | `list_members` | List membership (unique on `list_id + email`) |
 | `provider_events` | SES/Mailgun webhook events (delivery, bounce, etc.) |
+| `email_history_rollups` | Compact per-campaign queue and provider-event totals retained after verified row-level history is archived locally |
 | `profiles` | User profile + role (`admin` only for now) |
 | `feature_flags` | DB-backed feature flags; defaults to `true` if key missing |
 | `error_logs` | Client + server error logs. Also used as the backing store for the DB-backed rate limiter (sentinel rows with `source = 'rate_limit:<key>'`) |
@@ -255,6 +256,8 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 | `files` | Supabase Storage metadata |
 
 **Migrations** live in `supabase/migrations/` and are named `YYYYMMDD_*.sql`. Apply them in order on top of `schema.sql`.
+
+**History retention (2026-08-10):** terminal queue rows and verbose operational history are exported as verified gzip NDJSON under gitignored `local-database-archives/` before deletion. `email_history_rollups` keeps campaign totals online; bounce and complaint evidence remains in `provider_events`. Use `scripts/archive-database-history.mjs` for future archive/purge cycles and never purge without a verified manifest.
 
 **Supabase TypeScript types** (`src/supabase/types.ts`) are out of sync with the live schema — several tables (e.g. `mail_queue`, `error_logs`, `email_recipients`) resolve to `never` in the type system. This is a pre-existing drift issue; the code builds and runs correctly at runtime. Do not treat these TS errors as regressions. Regenerate types with `supabase gen types typescript` when doing a schema migration pass.
 

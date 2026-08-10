@@ -30,6 +30,10 @@ patch_autopush.py
 # Private Mailchimp LifeX archive (campaign history, analytics, and contacts)
 /mailchimp lifex gitignore me/
 
+# Verified production database archives. These contain recipient PII and stay
+# local to the repository checkout; commit only the archive tooling/manifests schema.
+/local-database-archives/
+
 # Legacy directories deleted in git history
 webapp
 conf
