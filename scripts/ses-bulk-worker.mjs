@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { SESv2Client, GetAccountCommand, SendBulkEmailCommand } from "@aws-sdk/client-sesv2";
+import pg from "pg";
 import {
   assertSendReadySubject,
   classifySesResult,
@@ -15,6 +16,7 @@ for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], proce
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const conciseError = (error) => String(error?.message ?? error ?? "unknown error").replace(/\s+/g, " ").slice(0, 240);
+const { Pool } = pg;
 async function retrySupabaseRead(label, operation, maxAttempts = 8) {
   let lastResult;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -27,6 +29,22 @@ async function retrySupabaseRead(label, operation, maxAttempts = 8) {
     }
   }
   return lastResult;
+}
+async function retryPostgres(label, operation, maxAttempts = 8) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        const retryDelayMs = Math.min(60_000, 2_000 * 2 ** (attempt - 1));
+        console.warn(`${label} attempt ${attempt}/${maxAttempts} failed (${conciseError(error)}); retrying in ${retryDelayMs}ms`);
+        await sleep(retryDelayMs);
+      }
+    }
+  }
+  throw lastError;
 }
 
 const emailId = args.get("--email-id");
@@ -45,6 +63,17 @@ const supabaseUrl = required("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL");
 const serviceRoleKey = required("SUPABASE_SERVICE_ROLE_KEY");
 const appBaseUrl = required("APP_BASE_URL");
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
+const dbPool = process.env.SUPABASE_DB_CONNECTION
+  ? new Pool({
+      connectionString: process.env.SUPABASE_DB_CONNECTION,
+      ssl: { rejectUnauthorized: false },
+      max: 1,
+      connectionTimeoutMillis: 30_000,
+      idleTimeoutMillis: 30_000,
+      query_timeout: 60_000,
+      statement_timeout: 60_000,
+    })
+  : null;
 
 const { data: email, error: emailError } = await supabase
   .from("emails")
@@ -131,17 +160,36 @@ while (remainingQuota > 0) {
   // use the existing email/status/created_at index to select a bounded set and
   // then conditionally transition exactly those ids. The conditional update
   // still fails closed if another worker somehow races this one.
-  const { data: candidates, error: candidateError } = await retrySupabaseRead(
-    "select queue batch",
-    () => supabase
-      .from("mail_queue")
-      .select("id")
-      .eq("email_id", emailId)
-      .eq("status", "pending")
-      .order("created_at", { ascending: true })
-      .order("id", { ascending: true })
-      .limit(limit),
-  );
+  let candidates;
+  let candidateError;
+  if (dbPool) {
+    try {
+      const selected = await retryPostgres(
+        "select queue batch",
+        () => dbPool.query(
+          "select id from public.mail_queue where email_id = $1 and status = 'pending' order by created_at asc, id asc limit $2",
+          [emailId, limit],
+        ),
+      );
+      candidates = selected.rows;
+    } catch (error) {
+      candidateError = error;
+    }
+  } else {
+    const selected = await retrySupabaseRead(
+      "select queue batch",
+      () => supabase
+        .from("mail_queue")
+        .select("id")
+        .eq("email_id", emailId)
+        .eq("status", "pending")
+        .order("created_at", { ascending: true })
+        .order("id", { ascending: true })
+        .limit(limit),
+    );
+    candidates = selected.data;
+    candidateError = selected.error;
+  }
   if (candidateError) throw new Error(`Unable to select queue batch: ${candidateError.message}`);
   if (!candidates?.length) break;
 
@@ -149,36 +197,71 @@ while (remainingQuota > 0) {
   let items;
   let claimError;
   for (let attempt = 1; attempt <= 8; attempt += 1) {
-    const claim = await supabase
-      .from("mail_queue")
-      .update({
-        status: "processing",
-        locked_at: now,
-        last_heartbeat: now,
-        correlation_id: workerId,
-        updated_at: now,
-      })
-      .eq("email_id", emailId)
-      .eq("status", "pending")
-      .in("id", candidateIds)
-      .select("id, payload, list_id, attempts, max_attempts");
+    let claim;
+    if (dbPool) {
+      try {
+        const claimed = await dbPool.query(
+          `update public.mail_queue
+           set status = 'processing', locked_at = $3, last_heartbeat = $3, correlation_id = $4, updated_at = $3
+           where email_id = $1 and status = 'pending' and id = any($2::uuid[])
+           returning id, payload, list_id, attempts, max_attempts`,
+          [emailId, candidateIds, now, workerId],
+        );
+        claim = { data: claimed.rows, error: null };
+      } catch (error) {
+        claim = { data: null, error };
+      }
+    } else {
+      claim = await supabase
+        .from("mail_queue")
+        .update({
+          status: "processing",
+          locked_at: now,
+          last_heartbeat: now,
+          correlation_id: workerId,
+          updated_at: now,
+        })
+        .eq("email_id", emailId)
+        .eq("status", "pending")
+        .in("id", candidateIds)
+        .select("id, payload, list_id, attempts, max_attempts");
+    }
     if (!claim.error && claim.data?.length === candidateIds.length) {
       items = claim.data;
       break;
     }
 
     claimError = claim.error ?? new Error(`Claim returned ${claim.data?.length ?? 0}/${candidateIds.length} rows`);
-    const recovered = await retrySupabaseRead(
-      "recover ambiguous queue claim",
-      () => supabase
-        .from("mail_queue")
-        .select("id, payload, list_id, attempts, max_attempts")
-        .eq("email_id", emailId)
-        .eq("status", "processing")
-        .eq("correlation_id", workerId)
-        .in("id", candidateIds),
-      5,
-    );
+    let recovered;
+    if (dbPool) {
+      try {
+        const result = await retryPostgres(
+          "recover ambiguous queue claim",
+          () => dbPool.query(
+            `select id, payload, list_id, attempts, max_attempts
+             from public.mail_queue
+             where email_id = $1 and status = 'processing' and correlation_id = $2 and id = any($3::uuid[])`,
+            [emailId, workerId, candidateIds],
+          ),
+          5,
+        );
+        recovered = { data: result.rows, error: null };
+      } catch (error) {
+        recovered = { data: null, error };
+      }
+    } else {
+      recovered = await retrySupabaseRead(
+        "recover ambiguous queue claim",
+        () => supabase
+          .from("mail_queue")
+          .select("id, payload, list_id, attempts, max_attempts")
+          .eq("email_id", emailId)
+          .eq("status", "processing")
+          .eq("correlation_id", workerId)
+          .in("id", candidateIds),
+        5,
+      );
+    }
     if (!recovered.error && recovered.data?.length === candidateIds.length) {
       items = recovered.data;
       console.warn(`claim response was ambiguous but all ${candidateIds.length} rows were recovered before SES send`);
@@ -254,12 +337,29 @@ while (remainingQuota > 0) {
   let checkpointed = false;
   let checkpointError = "unknown checkpoint error";
   for (let attempt = 1; attempt <= 8; attempt += 1) {
-    const { data: applied, error: finalizeError } = await supabase.rpc("finalize_ses_bulk_queue_batch", {
-      p_email_id: emailId,
-      p_worker_id: workerId,
-      p_results: claimResults,
-      p_now: new Date().toISOString(),
-    });
+    const checkpointNow = new Date().toISOString();
+    let applied;
+    let finalizeError;
+    if (dbPool) {
+      try {
+        const finalized = await dbPool.query(
+          "select public.finalize_ses_bulk_queue_batch($1::uuid, $2::text, $3::jsonb, $4::timestamptz) as applied",
+          [emailId, workerId, JSON.stringify(claimResults), checkpointNow],
+        );
+        applied = Number(finalized.rows[0]?.applied ?? 0);
+      } catch (error) {
+        finalizeError = error;
+      }
+    } else {
+      const finalized = await supabase.rpc("finalize_ses_bulk_queue_batch", {
+        p_email_id: emailId,
+        p_worker_id: workerId,
+        p_results: claimResults,
+        p_now: checkpointNow,
+      });
+      applied = finalized.data;
+      finalizeError = finalized.error;
+    }
     if (!finalizeError && applied === claimResults.length) {
       checkpointed = true;
       break;
@@ -267,11 +367,27 @@ while (remainingQuota > 0) {
 
     checkpointError = finalizeError?.message ?? `${applied}/${claimResults.length} applied`;
     const expectedById = new Map(claimResults.map((result) => [result.id, result]));
-    const { data: persistedRows, error: persistedError } = await supabase
-      .from("mail_queue")
-      .select("id, status, ses_message_id")
-      .eq("email_id", emailId)
-      .in("id", [...expectedById.keys()]);
+    let persistedRows;
+    let persistedError;
+    if (dbPool) {
+      try {
+        const persisted = await dbPool.query(
+          "select id, status, ses_message_id from public.mail_queue where email_id = $1 and id = any($2::uuid[])",
+          [emailId, [...expectedById.keys()]],
+        );
+        persistedRows = persisted.rows;
+      } catch (error) {
+        persistedError = error;
+      }
+    } else {
+      const persisted = await supabase
+        .from("mail_queue")
+        .select("id, status, ses_message_id")
+        .eq("email_id", emailId)
+        .in("id", [...expectedById.keys()]);
+      persistedRows = persisted.data;
+      persistedError = persisted.error;
+    }
     const matchesCheckpoint = !persistedError && persistedRows?.length === claimResults.length && persistedRows.every((row) => {
       const expected = expectedById.get(row.id);
       const expectedStatus = expected?.outcome === "retry" ? "pending" : expected?.outcome;
@@ -320,3 +436,4 @@ if (active === 0) {
   if (error) throw new Error(`Campaign drained but final status update failed: ${error.message}`);
 }
 console.log(JSON.stringify({ complete: active === 0, accepted, failed, activeRemaining: active, workerId }, null, 2));
+await dbPool?.end();
