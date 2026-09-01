@@ -1,0 +1,31 @@
+name: Ops Unsubscribe LifeX 2026-09-01
+
+on:
+  push:
+    branches:
+      - ops/unsubscribe-lifex-20260901
+    paths:
+      - .github/workflows/ops-unsubscribe-lifex-20260901.yml
+
+permissions:
+  contents: read
+
+jobs:
+  unsubscribe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SUPABASE_DB_CONNECTION: ${{ secrets.SUPABASE_DB_CONNECTION }}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Ensure PostgreSQL client
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+      - name: Apply LifeX newsletter unsubscribes
+        run: |
+          set -euo pipefail
+          test -n "${SUPABASE_DB_CONNECTION:-}" || { echo "Missing SUPABASE_DB_CONNECTION"; exit 2; }
+          psql "$SUPABASE_DB_CONNECTION" -X -v ON_ERROR_STOP=1 -f ops/unsubscribe-lifex-20260901.sql
