@@ -20,7 +20,6 @@ insert into ai_unsubscribe_input(email) values
 ('carlos@productschool.com'),
 ('cd1845@gmail.com'),
 ('cecilia.salcedo@veritasint.com'),
-('chiefofstaff@macventurecapital.com'),
 ('chris@a16z.com'),
 ('christyw31@gmail.com'),
 ('clara.pombo@gmail.com'),
