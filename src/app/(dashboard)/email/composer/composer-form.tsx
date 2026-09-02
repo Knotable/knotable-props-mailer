@@ -73,11 +73,11 @@ function isOneTimeList(list: List | null) {
 
 export function ComposerForm({ draft, lists, templateMode = false, userEmail, canSend }: Props) {
   const router = useRouter();
-  const initialList = draft?.list_id
-    ? (lists.find((l) => l.id === draft.list_id) ?? null)
-    : null;
+  const initialLists = draft?.list_id
+    ? lists.filter((l) => l.id === draft.list_id)
+    : [];
 
-  const [selectedList, setSelectedList] = useState<List | null>(initialList);
+  const [selectedLists, setSelectedLists] = useState<List[]>(initialLists);
   const [availableLists, setAvailableLists] = useState<List[]>(lists);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [sending, setSending] = useState(false);
@@ -337,7 +337,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
     target: QueueWorkflowTarget = "queue",
   ) => {
     let emailId = emailIdOverride ?? draftId;
-    if (!formRef.current || !selectedList || !emailId) return;
+    if (!formRef.current || selectedLists.length === 0 || !emailId) return;
     cancelAutosave();
     setSending(true);
     setActiveWorkflow(target);
@@ -357,17 +357,20 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         router.replace(`/email/composer?id=${saveRes.id}`, { scroll: false });
       }
 
-      let offset = 0;
       let lastOk: QueueCampaignOk | null = null;
 
-      for (;;) {
+      for (const selectedList of selectedLists) {
+        let offset = 0;
+        for (;;) {
         setActionStatus(
           offset === 0
-            ? `Preparing recipients from "${selectedList.name}"...`
-            : `Preparing the next recipient batch from "${selectedList.name}" at offset ${offset.toLocaleString()}...`,
+            ? `Preparing recipients from ${selectedLists.length} selected list${selectedLists.length === 1 ? "" : "s"}...`
+            : `Preparing the next recipient batch at offset ${offset.toLocaleString()}...`,
         );
         const fd = new FormData(formRef.current);
         fd.set("emailId", emailId);
+        // This helper is called once per list below; the DB dedupe hash
+        // collapses recipients appearing in more than one selected list.
         fd.set("listId", selectedList.id);
         fd.set("offset", String(offset));
         if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
@@ -388,15 +391,16 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
 
         lastOk = res;
         setActionStatus(
-          `Prepared ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} recipients from "${selectedList.name}".`,
+          `Prepared ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} recipients.`,
         );
         setBanner({
           ok: true,
-          message: `Queueing "${selectedList.name}": ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} prepared...`,
+          message: `Queueing recipients: ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} prepared...`,
         });
 
         if (!res.hasMore || !res.nextOffset) break;
         offset = res.nextOffset;
+        }
       }
 
       if (lastOk?.ok) {
@@ -420,7 +424,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
           setActionStatus("Queue preparation finished. Opening the Queue page...");
           setBanner({
             ok: true,
-            message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails to "${selectedList.name}" for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
+            message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
           });
           router.push("/email/schedule");
         }
@@ -446,10 +450,10 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
     setDupWarning(null);
     const fd = new FormData(formRef.current);
 
-    if (selectedList) {
+    if (selectedLists.length > 0) {
       if (target === "sendNow") {
         const confirmed = confirm(
-          `Queue and send "${(fd.get("subject") as string | null) || "this email"}" to "${selectedList.name}" now?`,
+          `Queue and send "${(fd.get("subject") as string | null) || "this email"}" to ${selectedLists.length} selected list${selectedLists.length === 1 ? "" : "s"} now?`,
         );
         if (!confirmed) return;
       }
@@ -570,17 +574,19 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
           <label className="block text-sm font-medium text-slate-700 mb-1">To</label>
           <div className="flex gap-2 items-start">
             <div className="flex-1">
-              {selectedList ? (
-                <div className="flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2">
-                  <span className="text-sm text-slate-800 font-medium flex-1">
+              {selectedLists.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2">
+                  {selectedLists.map((selectedList) => (
+                  <span key={selectedList.id} className="text-sm text-slate-800 font-medium flex-1">
                     {selectedList.name}
                     <span className="ml-1 text-slate-400 font-normal text-xs">
                       &lt;{selectedList.address}&gt;
                     </span>
                   </span>
+                  ))}
                   <button
                     type="button"
-                    onClick={() => setSelectedList(null)}
+                    onClick={() => setSelectedLists([])}
                     className="inline-flex items-center justify-center rounded text-slate-400 hover:text-slate-700"
                     title="Remove list"
                   >
@@ -597,13 +603,13 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                   className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
                 />
               )}
-              {selectedList && (
+              {selectedLists.length > 0 && (
                 <p className="mt-1 text-xs text-slate-500">
-                  Queues individual sends for every active member of this {isOneTimeList(selectedList) ? "one-time audience" : "list"}. You can review and send it later from the Queue page.
+                  Queues active members across {selectedLists.length} selected lists; recipients appearing on multiple lists are sent only once.
                 </p>
               )}
-              {selectedList && (
-                <input type="hidden" name="recipients" value={selectedList.address} />
+              {selectedLists.length > 0 && (
+                <input type="hidden" name="recipients" value={selectedLists.map((list) => list.address).join(",")} />
               )}
             </div>
 
@@ -626,22 +632,23 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                           key={list.id}
                           type="button"
                           onClick={() => {
-                            setSelectedList(list);
-                            setDropdownOpen(false);
+                            setSelectedLists((current) => current.some((item) => item.id === list.id)
+                              ? current.filter((item) => item.id !== list.id)
+                              : [...current, list]);
                           }}
                           className={`w-full text-left rounded-md px-3 py-2 text-sm transition-colors ${
-                            selectedList?.id === list.id
+                            selectedLists.some((item) => item.id === list.id)
                               ? "bg-slate-900 text-white"
                               : "text-slate-700 hover:bg-slate-100"
                           }`}
                         >
                           <span className="font-medium">{list.name}</span>
                           {isOneTimeList(list) && (
-                            <span className={`ml-2 rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase ${selectedList?.id === list.id ? "bg-white/15 text-slate-100" : "bg-blue-50 text-blue-700"}`}>
+                            <span className={`ml-2 rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase ${selectedLists.some((item) => item.id === list.id) ? "bg-white/15 text-slate-100" : "bg-blue-50 text-blue-700"}`}>
                               one-time
                             </span>
                           )}
-                          <span className={`ml-2 text-xs ${selectedList?.id === list.id ? "text-slate-300" : "text-slate-400"}`}>
+                            <span className={`ml-2 text-xs ${selectedLists.some((item) => item.id === list.id) ? "text-slate-300" : "text-slate-400"}`}>
                             {list.address}
                           </span>
                         </button>
@@ -1004,15 +1011,15 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                 ? "Queueing…"
                 : activeWorkflow === "directSend"
                   ? "Sending…"
-                  : selectedList
+                  : selectedLists.length > 0
                     ? "Queue"
                     : "Sending…"
-              : selectedList
+              : selectedLists.length > 0
                 ? "Queue"
                 : "Send"}
           </button>
 
-          {selectedList && (
+          {selectedLists.length > 0 && (
             <button
               type="button"
               onClick={() => void handleQueueOrSend("sendNow")}
