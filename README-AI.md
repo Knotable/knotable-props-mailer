@@ -2,7 +2,7 @@
 
 > **For AI agents**: Read this file at the start of every task on this project. It is the authoritative, human-maintained snapshot of what this codebase is, how it's structured, and the conventions you must follow. It supersedes re-deriving structure from scratch. Update it when you learn something new or make a significant structural change.
 
-> **Operator/UI tasks**: If the user is asking for live app help, Supabase/Vercel screen guidance, latest sends, analytics/history checks, queue/send operations, or any task that may not require code, also read `docs/ai-operator-runbook.md` before deciding what to do. Many requests in this repo are operator workflows first and coding tasks only if live investigation shows code is the problem.
+> **Canonical AI guide**: This file consolidates the former `AGENTS.md`, `CLAUDE.md`, and `docs/ai-operator-runbook.md` instructions. Read this file completely at the start of every task; the other files are compatibility pointers only.
 
 > **Startup behavior**: If the user's opening request is broad, vague, or asks what you can do in this project, offer the AI Startup Menu below. If the user asks for a specific task, do that task instead of showing the menu.
 
@@ -34,6 +34,8 @@ When the user opens this project without a specific task, offer this concise men
 ---
 
 ## OPERATOR STATUS - READ THIS FIRST
+
+**Past-mailings reference:** The durable campaign-history package is [`docs/past-sends-package.md`](docs/past-sends-package.md). It contains the reviewed chronology, audience/content summaries, campaign IDs, and accepted/dead/canceled totals through 2026-07-23. It is historical evidence, not permission to send. Because row-level history was archived and purged from production, use the local archive or this package for recipient-level questions; do not infer prior contact from current queue rows.
 
 **2026-08-11 VERIFIED LIVE STATE — supersedes all older queue counts in this file.** Direct SQL verification on 2026-08-11 ~09:00 UTC found: `mail_queue` has `0` rows (`pg_stat` shows `449,057` tuples deleted), `queue_metrics` `0` rows, `error_logs` `93` rows (`~804k` deleted, of which `454k` were rate-limiter sentinels removed by the applied 20260810 migration), and `provider_events` only `3,300` rows remain (`~143k` deleted) — surviving events are mostly bounces plus opens/clicks from 2026-08-09/10. `emails` (48 rows), `lists` (16), and `list_members` (246,691) are intact. The formerly paused LifeX campaign `837e2da9-...` now has `emails.status = 'sent'` (updated 2026-08-10T18:16Z) and no queue rows. **Explanation (verified):** commit `3780fe0` ("Rationalize archived mail history", 2026-08-10 22:21 +0200) ran a deliberate archive-and-purge via `scripts/archive-database-history.mjs` — history was exported as verified gzip NDJSON to gitignored `local-database-archives/` (81 MB across two runs on this machine) before deletion, and `email_history_rollups` keeps per-campaign totals online (48 campaigns, 313,624 succeeded sends). This was not data loss. Remaining consequence: **the duplicate/recent-send preflight is per-recipient and now has no recipient-level history to warn from — treat any new send to previously-mailed lists as a potential re-contact risk**, and consult the local archives for recipient-level questions about past sends. Database size is now ~147 MB (under the free-tier limit); the previously planned mail_queue archive/VACUUM work is moot.
 
@@ -1253,6 +1255,58 @@ See `.env.example` for full list.
 - **Email copy convention**: Never use the header phrase `From the phone of Amol` in drafts, templates, or sent email copy. Amol explicitly retired it on 2026-05-31.
 - **Schema changes**: Add a new file to `supabase/migrations/` with the format `YYYYMMDD_description.sql`. Update `schema.sql` to match. Then regenerate types: `supabase gen types typescript > src/supabase/types.ts`.
 - **Next.js version**: Always check `node_modules/next/dist/docs/` before using Next.js APIs — this is v16, not v14/15.
+
+---
+
+## Consolidated Operator Runbook
+
+This section is the canonical runbook for operational, UI-adjacent, Supabase,
+analytics, queue, and campaign work. It supersedes the former standalone
+`docs/ai-operator-runbook.md`.
+
+### Safety rules
+
+- Never use Gmail or a Gmail connector for project, campaign, newsletter, list,
+  test, resend, or follow-up mail. Outbound mail uses Props Mailer and SES.
+- Inspect first. Sending, queue release, monitor runs, and production writes are
+  external side effects. Require explicit approval naming the exact campaign,
+  sender, body, audience, and recipient count before release or send.
+- Confirm the exact `email_id` and `list_id`; ordinary monitor work must use
+  `/email/monitor?emailId=<uuid>`, never an unscoped global drain.
+- If code touches Next.js, read the relevant guide under
+  `node_modules/next/dist/docs/` before editing.
+
+### Standard sequence
+
+1. Identify the exact campaign, list, or UI action.
+2. Perform read-only checks: campaign status, active audience size, and exact
+   pending/processing/held counts.
+3. For queueing, keep rows held at `2999-12-31T23:59:59Z` until approved.
+4. For release, verify SES headroom (`65,400` rolling 24-hour recipients and
+   `15` recipients/second), obtain explicit approval, then use the scoped path.
+5. After sending, report accepted, delivered, bounced/complained, failed,
+   dead, canceled, pending, and processing counts separately.
+
+### Reporting semantics
+
+- `mail_queue.succeeded` means Props Mailer submitted the message and SES
+  accepted it; it does not prove inbox placement.
+- `provider_events.event_type = delivered` means SES/SNS confirmed acceptance
+  by the recipient's receiving mail server.
+- Opens and clicks are tracking signals, not proof of delivery.
+- For row-level history after the 2026-08 archive purge, consult the gitignored
+  `local-database-archives/` exports and
+  [`docs/past-sends-package.md`](docs/past-sends-package.md).
+
+### Troubleshooting and communication
+
+For queue errors, verify the draft, audience, active count, duplicate warning,
+`error_logs`, and partial queue insertion. For failed releases, inspect the
+campaign's held/due/processing rows, confirmation, and quota headroom. For a
+stalled monitor, verify the exact `emailId`, `CRON_SECRET`, stale `processing`
+rows, `last_error`, and SES throttling; never blindly retry an ambiguous claim.
+Keep “drafted,” “queued,” “released,” and “sent” distinct, and state what was
+inspected, whether anything mutated, and the exact identifiers and counts.
 
 ---
 
