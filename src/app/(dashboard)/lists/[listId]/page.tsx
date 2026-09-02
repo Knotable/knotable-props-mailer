@@ -2,6 +2,7 @@ import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { unstable_cache } from "next/cache";
 import { suppressListMemberAction } from "../actions";
 
 const PAGE_SIZE = 50;
@@ -52,6 +53,36 @@ type EmailActivity = {
   subject: string | null;
   sent_at: string | null;
 };
+
+type SendStat = { total_received: number; last_received_at: string | null; subject: string | null };
+
+async function loadCachedSendStats(listId: string, memberEmails: string[]) {
+  const normalizedEmails = [...new Set(memberEmails.map((email) => email.toLowerCase()))].sort();
+  const load = unstable_cache(
+    async () => {
+      const supabase = getSupabaseAdmin();
+      const { data: sendStats } = await supabase
+        .from("list_member_send_stats")
+        .select("recipient_email, total_received, last_received_at, last_email_id")
+        .eq("list_id", listId)
+        .in("recipient_email", normalizedEmails);
+      const statEmailIds = [...new Set((sendStats ?? []).map((stat) => stat.last_email_id).filter(Boolean))];
+      const { data: statEmails } = statEmailIds.length
+        ? await supabase.from("emails").select("id, subject").in("id", statEmailIds)
+        : { data: [] as { id: string; subject: string }[] };
+      const subjects = new Map((statEmails ?? []).map((email) => [email.id, email.subject]));
+      return (sendStats ?? []).map((stat) => ({
+        recipient_email: stat.recipient_email,
+        total_received: Number(stat.total_received),
+        last_received_at: stat.last_received_at,
+        subject: stat.last_email_id ? subjects.get(stat.last_email_id) ?? null : null,
+      }));
+    },
+    ["list-member-send-stats", listId, normalizedEmails.join(",")],
+    { revalidate: 60, tags: [`list-member-send-stats:${listId}`] },
+  );
+  return load();
+}
 
 export default async function ListDetailPage({
   params,
@@ -111,8 +142,17 @@ export default async function ListDetailPage({
   // Fetch most recent email activity for each member on this page
   const memberEmails = members?.map((m) => m.email) ?? [];
   const recipientMap: Record<string, EmailActivity> = {};
+  const sendStatsMap: Record<string, SendStat> = {};
 
   if (memberEmails.length > 0) {
+    const sendStats = await loadCachedSendStats(listId, memberEmails);
+    for (const stat of sendStats) {
+      sendStatsMap[stat.recipient_email] = {
+        total_received: stat.total_received,
+        last_received_at: stat.last_received_at,
+        subject: stat.subject,
+      };
+    }
     const { data: recipients } = await supabase
       .from("email_recipients")
       .select("recipient_address, status, last_event, updated_at, emails(subject, sent_at)")
@@ -261,23 +301,26 @@ export default async function ListDetailPage({
                           : "—"}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-500">
-                        {activity?.sent_at ? (
+                        {sendStatsMap[member.email.toLowerCase()]?.last_received_at ? (
                           <span>
                             <span className="block">
-                              {new Date(activity.sent_at).toLocaleDateString(undefined, {
+                              {new Date(sendStatsMap[member.email.toLowerCase()].last_received_at!).toLocaleDateString(undefined, {
                                 year: "numeric",
                                 month: "short",
                                 day: "numeric",
                               })}
                             </span>
-                            {activity.subject && (
+                            {sendStatsMap[member.email.toLowerCase()].subject && (
                               <span
                                 className="block max-w-[200px] truncate text-slate-400"
-                                title={activity.subject}
+                                title={sendStatsMap[member.email.toLowerCase()].subject!}
                               >
-                                {activity.subject}
+                                {sendStatsMap[member.email.toLowerCase()].subject}
                               </span>
                             )}
+                            <span className="block text-slate-400">
+                              {sendStatsMap[member.email.toLowerCase()].total_received} received
+                            </span>
                           </span>
                         ) : (
                           <span className="text-slate-400">Never</span>

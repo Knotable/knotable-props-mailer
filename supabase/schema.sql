@@ -35,6 +35,20 @@ create table if not exists public.email_recipients (
 
 create index if not exists email_recipients_email_idx on public.email_recipients(email_id);
 
+-- Durable per-list recipient send history. Unlike mail_queue, this survives
+-- queue-history compaction and is used by the Lists UI.
+create table if not exists public.list_member_send_stats (
+  list_id uuid not null references public.lists on delete cascade,
+  recipient_email text not null,
+  total_received bigint not null default 0,
+  last_received_at timestamptz,
+  last_email_id uuid references public.emails on delete set null,
+  updated_at timestamptz not null default now(),
+  primary key (list_id, recipient_email)
+);
+create index if not exists list_member_send_stats_email_idx
+  on public.list_member_send_stats(recipient_email);
+
 -- Draft snapshots for autosave + history
 create table if not exists public.draft_snapshots (
   id uuid primary key default gen_random_uuid(),
