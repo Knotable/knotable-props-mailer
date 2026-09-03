@@ -143,19 +143,30 @@ export async function sendPasswordReset(formData: FormData) {
   await logAuthTrace(correlationId, "Password reset request started", { email, ip, userAgent });
   const supabase = await createServerSupabaseClient();
   const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: appUrl("/loginWithToken"),
+    // Supabase SSR uses PKCE and redirects back with `?code=...`. Preserve the
+    // recovery intent because the authorization-code callback does not include
+    // an OTP type the way token-hash templates do.
+    redirectTo: appUrl("/loginWithToken?next=/reset-password"),
   });
 
   if (error) {
+    const retrySecondsMatch = error.message?.match(/after\s+(\d+)\s+second/i);
+    const retrySeconds = retrySecondsMatch ? parseInt(retrySecondsMatch[1], 10) : null;
+    const isRateLimit = error.status === 429 || retrySeconds !== null;
+
     await logAuthTrace(correlationId, "Password reset request failed", {
       email,
       ip,
       userAgent,
       errorCode: error.status,
       errorMessage: error.message,
+      isRateLimit,
+      retrySeconds,
     });
     redirect(
-      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=reset-password`,
+      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=${encodeURIComponent(
+        isRateLimit ? `reset-rate:${retrySeconds ?? 60}` : "reset-password",
+      )}`,
     );
   }
 

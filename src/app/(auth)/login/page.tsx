@@ -23,18 +23,23 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const error = pickParam(params.error);
   const trace = pickParam(params.trace);
   const rateLimitMatch = error.match(/^rate:(\d+)$/);
+  const resetRateLimitMatch = error.match(/^reset-rate:(\d+)$/);
 
   const errorMessage =
     error === "missing-email"
       ? "Enter your email address first."
       : rateLimitMatch
       ? `Too many sign-in attempts. Try again in ${rateLimitMatch[1]} seconds.`
+      : resetRateLimitMatch
+      ? `A reset email was just sent. Try again in ${resetRateLimitMatch[1]} seconds, or use the newest email.`
       : error === "account-not-found"
       ? "No account exists for that email yet. Create an account first."
       : error === "send-code"
       ? "We couldn’t send the sign-in code. Check the address and try again."
       : error === "reset-password"
       ? "We couldn’t send the password reset email. Check the username and try again."
+      : error === "invalid-recovery-link"
+      ? "That password reset link is invalid or expired. Request a new one below."
       : error === "missing-credentials"
       ? "Enter your username and password."
       : error === "invalid-credentials"
