@@ -8,10 +8,15 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "worker:ses-bulk": "node scripts/ses-bulk-worker.mjs"
+    "worker:ses-bulk": "node scripts/ses-bulk-worker.mjs",
+    "worker:ses-native": "node scripts/ses-native-worker.mjs",
+    "campaign:snapshot": "node scripts/build-ses-native-campaign.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.1126.0",
+    "@aws-sdk/client-s3": "3.1126.0",
     "@aws-sdk/client-sesv2": "^3.1106.0",
+    "@aws-sdk/lib-dynamodb": "3.1126.0",
     "@supabase/ssr": "^0.10.0",
     "@supabase/supabase-js": "^2.102.1",
     "class-variance-authority": "^0.7.1",

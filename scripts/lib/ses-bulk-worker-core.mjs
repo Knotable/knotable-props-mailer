@@ -83,9 +83,15 @@ function compilePart(input, prefix, html) {
 }
 
 export function compileTemplate({ subject, html, text, appBaseUrl }) {
-  const base = appBaseUrl.replace(/\/+$/, "");
-  const pixel = `<img src="${base}/api/email/open/{{queueId}}" width="1" height="1" alt="" style="border:0;width:1px;height:1px;display:block;opacity:0;" aria-hidden="true" />`;
-  const trackedHtml = /<\/body\s*>/i.test(html) ? html.replace(/<\/body\s*>/i, `${pixel}</body>`) : `${html}\n${pixel}`;
+  const base = appBaseUrl?.replace(/\/+$/, "");
+  const pixel = base
+    ? `<img src="${base}/api/email/open/{{queueId}}" width="1" height="1" alt="" style="border:0;width:1px;height:1px;display:block;opacity:0;" aria-hidden="true" />`
+    : "";
+  const trackedHtml = pixel
+    ? /<\/body\s*>/i.test(html)
+      ? html.replace(/<\/body\s*>/i, `${pixel}</body>`)
+      : `${html}\n${pixel}`
+    : html;
   const subjectPart = compilePart(subject, "s", false);
   const htmlPart = compilePart(trackedHtml, "h", true);
   const textPart = text ? compilePart(text, "t", false) : { template: undefined, tokens: [] };
