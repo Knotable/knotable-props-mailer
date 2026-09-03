@@ -1,0 +1,64 @@
+name: SES Native Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      campaign_id:
+        description: Exact campaign UUID
+        required: true
+        type: string
+      manifest_key:
+        description: Immutable S3 campaign.json key from the snapshot command
+        required: true
+        type: string
+      mode:
+        description: Dry run is read-only; send drains the immutable manifest
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - send
+      confirmation:
+        description: For send mode, copy the exact token emitted by dry-run
+        required: false
+        type: string
+      max_recipients_per_second:
+        description: Worker cap; the worker also stays below 90% of the live SES rate
+        required: true
+        default: 13
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ses-native-${{ inputs.campaign_id }}
+  cancel-in-progress: false
+
+jobs:
+  drain-campaign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_SES_CONFIGURATION_SET: ${{ vars.AWS_SES_NATIVE_CONFIGURATION_SET }}
+      SES_CAMPAIGN_BUCKET: ${{ vars.SES_CAMPAIGN_BUCKET }}
+      SES_CAMPAIGN_STATE_TABLE: ${{ vars.SES_CAMPAIGN_STATE_TABLE }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Validate or drain immutable AWS campaign
+        run: >-
+          node scripts/ses-native-worker.mjs
+          --campaign-id "${{ inputs.campaign_id }}"
+          --manifest-key "${{ inputs.manifest_key }}"
+          --mode "${{ inputs.mode }}"
+          --confirmation "${{ inputs.confirmation }}"
+          --max-recipients-per-second "${{ inputs.max_recipients_per_second }}"

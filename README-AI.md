@@ -8,6 +8,8 @@
 
 > **Commit and push edits**: When an AI agent makes repo edits, commit the intentional changes and push the branch to GitHub so the live Vercel deployment can pick them up, unless the user explicitly says not to. Stage only the files changed for the task; never sweep unrelated local work into the commit.
 
+> **AWS-native transition prompt (added 2026-09-03):** Until the checklist in **AWS-Native 150k Send Architecture** is complete, proactively tell Amol at the start of the next substantive Props Mailer interaction: “The AWS-native send path is implemented locally but not deployed. Before a 150k send we still need to deploy the CloudFormation stack, set the GitHub AWS variables, request and verify SES quota of at least 180k/24h plus a materially higher send rate, move campaign launch into the app, run a 100-recipient canary, and prove bounce/complaint events plus suppression in DynamoDB/S3.” Do not imply that the legacy Supabase-backed worker is ready for 150k.
+
 ---
 
 ## AI STARTUP MENU
@@ -34,6 +36,8 @@ When the user opens this project without a specific task, offer this concise men
 ---
 
 ## OPERATOR STATUS - READ THIS FIRST
+
+**2026-09-03 USER-REPORTED COMPLETION + AWS-NATIVE TRANSITION:** Amol reports that the last campaign finally sent. This has not been independently reconciled in this documentation update, so obtain the campaign UUID and verify terminal queue/provider state before using it as historical evidence. The next intended send is approximately `150,000` recipients, with no browser tab and no Vercel or Supabase persistence in the delivery hot path. The repository now contains the first implementation of that target: immutable S3 campaign packages, DynamoDB conditional recipient state, an autonomous GitHub Actions SES worker, and SES configuration-set events through SNS/Lambda into DynamoDB plus append-only S3 records. **Nothing in this new path is deployed or authorized to send yet.** The last verified SES capacity remains `65,400` recipients per rolling 24 hours at `15` recipients/second, which is categorically insufficient for a single 150k release. The new worker therefore refuses a partial campaign when live quota headroom is smaller than the remaining audience.
 
 **Past-mailings reference:** The durable campaign-history package is [`docs/past-sends-package.md`](docs/past-sends-package.md). It contains the reviewed chronology, audience/content summaries, campaign IDs, and accepted/dead/canceled totals through 2026-07-23. It is historical evidence, not permission to send. Because row-level history was archived and purged from production, use the local archive or this package for recipient-level questions; do not infer prior contact from current queue rows.
 
@@ -136,9 +140,122 @@ curl -fsS https://knotable-props-mailer.vercel.app/api/health | jq '{ok, critica
 
 ---
 
+## AWS-Native 150k Send Architecture
+
+### Decision
+
+For campaigns above `10,000` recipients, make AWS—not a browser tab, Vercel request, or Supabase queue—the execution authority. Keep the existing app for drafting, list maintenance, audience selection, and read-only status presentation. At launch, freeze the email and deduplicated audience into an immutable private S3 package. From that point through final SES/provider evidence, the worker reads and writes only AWS services.
+
+This is a control-plane/data-plane separation:
+
+```text
+AUTHORING / CONTROL PLANE                         DURABLE AWS EXECUTION PLANE
+
+Next.js composer + Supabase lists
+        |
+        | one read-only, deduplicated snapshot
+        v
+private versioned S3 campaign.json + recipients.ndjson.gz
+        |
+        | exact digest-bound approval token
+        v
+GitHub Actions worker (now) -> SES v2 SendBulkEmail
+        |                         |
+        | conditional claims      | configuration-set events
+        v                         v
+DynamoDB recipient state     SNS -> Lambda
+        ^                         |-> DynamoDB latest provider state/suppression
+        |                         `-> append-only S3 event JSON
+        `-------------- restart/reconciliation evidence
+```
+
+The immediate autonomous runner is GitHub Actions because it already exists, has a campaign concurrency lock, and can run long enough for the present SES rate. The durable state is AWS-owned, so replacing Actions later with Step Functions plus ECS Fargate does not change campaign or recipient semantics. For a permanent first-class in-app launch, API Gateway/Lambda should validate the same digest-bound approval and start the AWS runner; Vercel may initiate that request, but it must never keep the send alive or own its checkpoint.
+
+### Why this resolves the recurrent failures
+
+| Recurrent problem | Architectural response |
+|---|---|
+| Browser monitor had to remain open | The GitHub/AWS worker is autonomous; browser closure has no effect. |
+| Vercel request ceilings and cron fragility | No Vercel request is in the drain loop. |
+| Supabase overload from hundreds of thousands of queue/event rows | S3 carries the immutable bulk payload; DynamoDB carries small conditional state; provider events are archived directly to S3. |
+| Ambiguous database checkpoint after SES acceptance | A recipient is conditionally `CLAIMED` before SES; `ACCEPTED` stores the SES message id. An interrupted `CLAIMED` row is never retried automatically. |
+| Duplicate recipients across lists | Snapshot construction normalizes email addresses and collapses the union before upload. The S3 object SHA-256 binds the audience to the approval. |
+| Past bounce reactivation | SES bounce/complaint events create global DynamoDB `!SUPPRESSION` records; future workers check them before every send batch. |
+| Artificial two-recipient/second recovery pacing | The native worker has no Supabase webhook-write dependency and defaults to `13` recipients/second, while remaining below 90% of the live SES rate. |
+| SES daily quota cuts a campaign in half | Send mode fails closed unless live rolling quota headroom covers every remaining manifest recipient. |
+
+### Implemented locally on 2026-09-03 (not deployed)
+
+- `scripts/build-ses-native-campaign.mjs` reads a saved campaign and selected active lists from Supabase once, validates every recipient's merge data, deduplicates normalized addresses across lists, writes a gzipped NDJSON audience, calculates SHA-256, and optionally uploads an immutable package to S3. It does not create `mail_queue` rows.
+- `scripts/ses-native-worker.mjs` downloads and verifies that package before any send, reads live SES quota/rate, requires `send:<campaignId>:<digest-prefix>`, refuses partial quota, acquires a DynamoDB lease, conditionally claims at most 25 recipients, sends with SES v2, and atomically checkpoints results.
+- `.github/workflows/ses-native-worker.yml` runs the native worker for up to six hours with a per-campaign concurrency lock; dry-run is the default.
+- `infra/ses-native-worker/cloudformation.yml` defines a private versioned S3 bucket, encrypted/PITR DynamoDB table, SES configuration set, SNS event destination, and Lambda event consumer. The consumer updates latest provider state, creates global bounce/complaint suppressions, and writes each raw event as immutable S3 JSON.
+- The AWS-native template omits the old Vercel-hosted open pixel. SES configuration-set open/click publishing supplies those events without an app callback.
+- Unit coverage lives in `scripts/lib/ses-native-core.test.mjs` and `scripts/lib/ses-bulk-worker-core.test.mjs`.
+
+### Not yet done—the actual production cutover
+
+1. **Reconcile the just-finished campaign.** Record its exact UUID and prove `pending=0`, `processing=0`, accepted totals, provider-event freshness, bounces, and complaints. User testimony establishes intent/history, not database postconditions.
+2. **Raise SES capacity before 150k.** Request at least `180,000` recipients per rolling 24 hours (150k audience plus 20% operational headroom) and preferably `50` recipients/second in `us-east-1`. Verify the granted values with SES `GetAccount`; a request is not a grant.
+3. **Deploy the AWS stack.** Deploy `infra/ses-native-worker/cloudformation.yml` in the SES region. Preserve the retained S3 bucket and DynamoDB table on future stack changes.
+4. **Configure GitHub.** Set repository variables `AWS_REGION`, `AWS_SES_NATIVE_CONFIGURATION_SET`, `SES_CAMPAIGN_BUCKET`, and `SES_CAMPAIGN_STATE_TABLE`. The current AWS secrets can bootstrap the dry run, but replace long-lived access keys with a least-privilege GitHub OIDC role before routine operation.
+5. **Prove event and suppression flow.** Send only to SES mailbox simulator/canary addresses; verify `SEND`, `DELIVERY`, `BOUNCE`, and `COMPLAINT` records in S3, DynamoDB provider state, and new `!SUPPRESSION` items. Test that a suppressed recipient is canceled before SES.
+6. **Add the app control surface.** Replace large-campaign **Queue/Send Now** with **Freeze AWS Campaign**, show S3 digest/audience/count/quota/time estimate, require the digest-bound confirmation, and launch through API Gateway/Lambda. The status page must read AWS state; it must not revive the browser worker.
+7. **Add one-click unsubscribe before 150k.** Reply-to unsubscribe alone is inadequate at this volume. Provide an HTTPS unsubscribe endpoint/list-management path and emit both `List-Unsubscribe` and `List-Unsubscribe-Post` headers; mirror suppressions into the AWS table before release.
+8. **Run graduated canaries.** Use the exact production HTML and configuration set for `100`, then `1,000`, then `10,000` opted-in recipients. Stop on abnormal bounce/complaint, rendering, or event-loss signals. Only then freeze the 150k manifest.
+9. **Retire the legacy hot path.** After two successful AWS-native campaigns, disable large-list creation of Supabase `mail_queue` rows and mark `.github/workflows/ses-bulk-worker.yml`, monitor auto-drain, and Vercel worker endpoints as legacy repair-only. Preserve read-only historical reporting.
+10. **Move the runner into AWS.** GitHub Actions is an acceptable bridge, not the ultimate scheduler. Add Step Functions/ECS Fargate when the app launch path is ready, or sooner if sends may exceed the six-hour Actions ceiling.
+
+### 150k capacity arithmetic and gates
+
+- The last verified quota, `65,400/24h`, cannot accommodate `150,000`; it is short by `84,600` recipients before considering other sends.
+- At the last verified `15 recipients/second`, a theoretical 150k drain is `2h 46m 40s`; the worker's 90% safety ceiling is `13.5/second`, or about `3h 5m`. The current implementation's default cap of `13/second` is about `3h 12m`, comfortably within a six-hour Actions job if there are no pauses.
+- At a granted `50/second`, use at most `45/second` sustained initially; 150k then takes about `56 minutes`. Raise rate only after the event consumer, suppression, and complaint monitoring pass canaries.
+- The manifest must contain exactly the intended consented audience. Capacity engineering is not permission to contact people; duplicate, suppression, consent, and unsubscribe checks remain release gates.
+- A 150k send requires live quota headroom for the entire remaining audience. The native worker intentionally will not “send as much as possible” and strand a partial campaign.
+
+### Native snapshot and send runbook
+
+Create and inspect a local, PII-bearing package (the `private/` tree is gitignored):
+
+```bash
+npm run campaign:snapshot -- \
+  --email-id EMAIL_ID_HERE \
+  --list-ids LIST_ID_1,LIST_ID_2
+```
+
+After reviewing the exact subject, lists, unique count, duplicate count, and local artifact, upload the immutable package:
+
+```bash
+npm run campaign:snapshot -- \
+  --email-id EMAIL_ID_HERE \
+  --list-ids LIST_ID_1,LIST_ID_2 \
+  --upload true \
+  --confirmation snapshot:EMAIL_ID_HERE
+```
+
+Run **SES Native Worker** in GitHub with `mode=dry-run`, the exact campaign UUID, and emitted immutable `manifest_key`. The dry run verifies S3 SHA-256/count, merge rendering, DynamoDB state, and live SES capacity; it prints the exact digest-bound send token. Only after a human rechecks the campaign/body/audience/count may the same workflow be run with `mode=send` and that token.
+
+Native state meanings:
+
+- `CLAIMED`: reserved immediately before an SES call. If it survives an interruption, it is ambiguous and blocks automatic retry.
+- `ACCEPTED`: SES returned success and the exact SES message id is durable. This is not inbox delivery.
+- `RETRY`: SES returned a known retryable per-recipient result and did not accept it; a later explicitly approved rerun may claim it.
+- `DEAD`: permanent SES result or retry exhaustion.
+- `CANCELED`: globally suppressed before SES.
+- `provider_status`: latest event such as `DELIVERY`, `BOUNCE`, `COMPLAINT`, `OPEN`, or `CLICK`; raw immutable events remain under the S3 `events/` prefix.
+
+Never auto-reset `CLAIMED`. Reconcile S3 SES events, provider message ids, and DynamoDB before deciding whether any ambiguous address can be retried.
+
+### Rollback and coexistence
+
+The new stack is additive and no production queue/schema was mutated. Until cutover, the legacy Supabase worker remains available for already-queued campaigns only. Do not materialize the same campaign in both systems. Rollback means stop launching the native workflow, retain S3/DynamoDB evidence, and leave any `CLAIMED` recipient untouched until reconciliation; it never means enqueueing the full audience into Supabase as an automatic fallback.
+
+---
+
 ## What This Project Is
 
-A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, queue them, send via Amazon SES, manage mailing lists, and track analytics. Ordinary/test sends use SES SMTP; large campaigns can drain through the manually dispatched GitHub Actions SES v2 bulk worker without holding open a Vercel request.
+A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on Vercel. It replaced a legacy Meteor codebase. The app lets admins compose HTML emails, manage mailing lists, and review analytics. Ordinary/test sends still use SES SMTP. Large-campaign execution is migrating to an AWS-native plane in which Supabase is a read-only authoring/audience source at snapshot time, S3 owns the immutable campaign, DynamoDB owns recipient state and suppression, SES sends, and SNS/Lambda/S3 persist provider events. Vercel and the browser are not part of that drain path.
 
 **Owner:** Amol (a@sarva.co)
 **Repo:** GitHub → Vercel auto-deploy
@@ -157,7 +274,9 @@ A Next.js 16 + Supabase email marketing console ("Props Mailer V2"), deployed on
 | Validation | Zod v4 |
 | Icons | lucide-react |
 | Testing | Vitest |
-| Deployment | Vercel UI/API + manually dispatched GitHub Actions bulk worker |
+| Large-send persistence | Target: private versioned S3 manifests + DynamoDB state; legacy: Supabase `mail_queue` |
+| Provider event persistence | Target: SES configuration set → SNS → Lambda → DynamoDB latest state + append-only S3 event JSON |
+| Deployment | Vercel UI/API + autonomous GitHub Actions SES worker; later move orchestration to AWS Step Functions/ECS |
 
 **Important:** This is **Next.js 16** — not the Next.js 14/15 you may know from training data. APIs and conventions may differ. Always read `node_modules/next/dist/docs/` before writing new Next.js-specific code (per `AGENTS.md`).
 
@@ -223,8 +342,18 @@ supabase/
   migrations/               # Incremental SQL migrations (apply in date order)
 
 scripts/
+  build-ses-native-campaign.mjs # Read-only Supabase audience snapshot -> immutable local/S3 package
+  ses-native-worker.mjs     # S3 + DynamoDB + SES v2 autonomous large-send worker
+  lib/ses-native-core.mjs   # Hashing, validation, confirmations, and outcome helpers
   update-schema-hash.mjs    # Hash the schema for drift detection
   verify-schema.mjs         # Verify schema matches hash
+
+infra/ses-native-worker/
+  cloudformation.yml        # S3, DynamoDB, SES events, SNS, and Lambda persistence stack
+
+.github/workflows/
+  ses-native-worker.yml     # Target large-send runner; no Vercel/Supabase execution writes
+  ses-bulk-worker.yml       # Legacy Supabase-backed bulk worker for existing queues only
 
 docs/
   ai-operator-runbook.md    # AI playbook for live-app, UI-adjacent, Supabase, analytics, send, and operator tasks
@@ -271,6 +400,17 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 
 ## How Email Sending Works
 
+### Target path for large campaigns
+
+1. Draft and select one or more lists in the app; Supabase remains the editable source at this stage.
+2. Run the snapshot builder. It performs a read-only list traversal, normalized-email deduplication, merge-tag validation, and suppression-aware active-member selection.
+3. Review the local package, then explicitly upload it to private S3. The SHA-256 and count make the audience immutable and reviewable.
+4. Run the GitHub **SES Native Worker** in `dry-run`. It verifies the whole artifact, reads DynamoDB state, and checks live SES quota/rate.
+5. With exact approval, run `send` using the dry-run's digest-bound token. The runner persists claims/checkpoints in DynamoDB and needs no open tab, Vercel function, or Supabase write.
+6. SES publishes provider events to SNS. Lambda writes latest state/suppression to DynamoDB and raw immutable events to S3.
+
+### Legacy Supabase queue path
+
 1. **Composer** (`/email/composer`): User drafts an email. Server action in `email/actions.ts` saves to `emails` table as `draft`.
 2. **Queue**: Queueing action creates rows in `mail_queue` (one per recipient), sets `emails.status = 'queued'`.
 3. **Send Monitor** (`/email/monitor?emailId=<uuid>`): Browser page that fires `POST /api/email/send-monitor` every 31 seconds while open for a specific email. 31s is intentional — just over Vercel's 30s hobby-tier timeout so each worker call finishes before the next fires. `/email/monitor` without an `emailId` shows a global snapshot and can run a guarded global worker for due rows whose parent email is `queued`, `sending`, or `sent`; avoid that except for explicit repair/debug tasks.
@@ -284,6 +424,8 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
    - `dedupe_hash` (SHA-256 of `emailId:recipientEmail`) stamped on every queue row at insert; unique DB index makes queue creation retry-safe
    - Claims due rows through `claim_mail_queue_batch()` so concurrent monitors cannot select the same pending rows
 5. **SES Webhooks** (`/api/webhooks/ses`): SNS signature-verified; ingests delivery/bounce events into `provider_events`; auto-suppresses hard bounces and complaints in `list_members`.
+
+Do not use this legacy path for the proposed 150k campaign. It remains documented for already-materialized queues, small/test sends, and incident recovery during the migration.
 
 **Daily send limit** is defined in `dailyQuota.ts` — check that file for the current cap constant.
 
@@ -1219,15 +1361,17 @@ See `.env.example` for full list.
 ## Deployment
 
 - **Git push → GitHub → Vercel** (auto-deploy, no manual step)
-- No Vercel Cron jobs configured — queue draining is done via the monitor page
-- `vercel.json` is currently empty `{}` — do not add Cron entries; the monitor-page approach is intentional
+- No Vercel Cron jobs are configured. The legacy queue drain uses the monitor page; the target large-send path uses the autonomous **SES Native Worker** workflow.
+- `vercel.json` is currently empty `{}` — do not add Cron entries. Vercel must not become the large-send scheduler or state store.
 - No Docker in production; `.dockerignore` exists for local dev use
+- The AWS-native CloudFormation stack is not deployed as of 2026-09-03. Deploy and verify it before setting the native workflow to `send`.
 
 ---
 
 ## Known TODOs / In-Progress Work
 
 - **Operational status lives at the top of this file.** Check `OPERATOR STATUS - READ THIS FIRST` before queueing or releasing any large send.
+- **Priority transition:** complete the production-cutover checklist in **AWS-Native 150k Send Architecture**. The code is local; AWS infrastructure, GitHub variables, SES quota/rate increases, OIDC, canaries, one-click unsubscribe, and the app control/status surface remain incomplete.
 - Verify SES/SNS tracking freshness before the next 186k send; production health was otherwise green but provider events were stale as of 2026-05-21.
 - Verify `supabase/migrations/20260505_big_send_queue_rpcs.sql` is applied before large sends; it provides atomic queue claims and multi-day release scheduling.
 - Supabase TypeScript types (`src/supabase/types.ts`) are stale — regenerate with `supabase gen types typescript` after any schema migration; many tables currently resolve to `never` (pre-existing, not a regression)
@@ -1246,7 +1390,9 @@ See `.env.example` for full list.
 - **Server actions** live in `actions.ts` co-located with their page directory.
 - **Zod** is used for all API input validation.
 - **Never send through Gmail**: Do not use Gmail, Gmail drafts, or the Gmail connector for any outbound project/campaign/list/newsletter/test/resend email. Use Props Mailer / SES flows only.
-- **No Cron**: Do not add Vercel Cron entries — queue draining is handled by the monitor page (`/email/monitor`), which fires the worker every 31s while open. `vercel.json` intentionally stays `{}`.
+- **No Vercel Cron**: Do not add Vercel Cron entries. The monitor page remains only for the legacy Supabase queue; new large campaigns use the autonomous AWS-native workflow. `vercel.json` intentionally stays `{}`.
+- **Large-send execution boundary**: For new campaigns above 10k recipients, the architectural target is S3 + DynamoDB + SES + SNS/Lambda. Supabase may be read once to build a frozen audience but must not receive one queue row per recipient or provider event in the native path. Until deployment/canaries are complete, do not treat this target as production-ready.
+- **One execution system per campaign**: Never snapshot an audience for AWS-native send after also materializing that campaign in Supabase `mail_queue`, and never use the legacy worker as an automatic fallback for a native campaign.
 - **Rate limiting**: Use `checkRateLimit(key, max, windowMs)` (async, DB-backed via `error_logs` sentinel rows) for any endpoint that needs cross-instance protection. Use `checkRateLimitSync` only where async is impossible (currently: login server action). The DB version writes rows with `source = 'rate_limit:<key>'` and `message = 'hit'` — don't mistake these for real errors when reading `error_logs`.
 - **Monitor page auth**: `/api/email/send-monitor` uses the same `CRON_SECRET` bearer token as `/api/email/queue`. The server component at `/email/monitor/page.tsx` passes `process.env.CRON_SECRET` to the client component so the browser can authenticate its polling calls. `CRON_SECRET` must be set in Vercel env vars or the monitor page will show a warning and refuse to fire.
 - **Scoped queue drains by default**: Worker POST routes and `runQueueWorker` accept a missing `emailId` for a guarded global drain of due rows whose parent email is `queued`, `sending`, or `sent`. Treat that as repair/debug only. Ordinary campaign sends should use a row's **Send Now** action or `/email/monitor?emailId=<uuid>` so the worker is scoped to one email.

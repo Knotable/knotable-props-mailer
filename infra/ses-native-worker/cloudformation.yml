@@ -1,0 +1,223 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: AWS-native durable execution state and SES event ingestion for Props Mailer.
+
+Parameters:
+  ConfigurationSetName:
+    Type: String
+    Default: knotable-native-tracking
+  CampaignBucketName:
+    Type: String
+    Description: Globally unique private S3 bucket name for immutable campaign manifests.
+
+Resources:
+  CampaignBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref CampaignBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  CampaignState:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: campaign_id
+          AttributeType: S
+        - AttributeName: recipient_hash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: campaign_id
+          KeyType: HASH
+        - AttributeName: recipient_hash
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  SesEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: alias/aws/sns
+
+  SesEventsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref SesEventsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref SesEventsTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  SesConfigurationSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: !Ref ConfigurationSetName
+
+  SesEventDestination:
+    Type: AWS::SES::ConfigurationSetEventDestination
+    DependsOn: SesEventsTopicPolicy
+    Properties:
+      ConfigurationSetName: !Ref SesConfigurationSet
+      EventDestination:
+        Name: aws-native-state
+        Enabled: true
+        MatchingEventTypes:
+          - SEND
+          - REJECT
+          - BOUNCE
+          - COMPLAINT
+          - DELIVERY
+          - OPEN
+          - CLICK
+          - RENDERING_FAILURE
+        SnsDestination:
+          TopicARN: !Ref SesEventsTopic
+
+  EventHandlerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: UpdateCampaignState
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt CampaignState.Arn
+              - Effect: Allow
+                Action: s3:PutObject
+                Resource: !Sub "${CampaignBucket.Arn}/events/*"
+
+  SesEventHandler:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt EventHandlerRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref CampaignState
+          EVENT_BUCKET: !Ref CampaignBucket
+      Code:
+        ZipFile: |
+          import hashlib, json, os
+          from datetime import datetime, timezone
+          import boto3
+
+          table = boto3.resource("dynamodb").Table(os.environ["STATE_TABLE"])
+          s3 = boto3.client("s3")
+
+          def first_tag(tags, name):
+              value = (tags or {}).get(name)
+              return value[0] if isinstance(value, list) and value else value
+
+          def handler(event, context):
+              for record in event.get("Records", []):
+                  message = json.loads(record["Sns"]["Message"])
+                  mail = message.get("mail", {})
+                  tags = mail.get("tags", {})
+                  campaign_id = first_tag(tags, "campaign_id")
+                  recipient_hash = first_tag(tags, "recipient_hash")
+                  event_type = message.get("eventType") or message.get("notificationType") or "Unknown"
+                  timestamp = (message.get(event_type[:1].lower() + event_type[1:]) or {}).get("timestamp") or datetime.now(timezone.utc).isoformat()
+                  event_day = timestamp[:10].replace("-", "/")
+                  event_id = record["Sns"].get("MessageId", context.aws_request_id)
+                  s3.put_object(
+                      Bucket=os.environ["EVENT_BUCKET"],
+                      Key=f"events/{event_day}/{campaign_id or 'unknown'}/{mail.get('messageId', 'unknown')}/{event_id}.json",
+                      Body=json.dumps(message, separators=(",", ":")).encode("utf-8"),
+                      ContentType="application/json",
+                      ServerSideEncryption="AES256",
+                  )
+                  if campaign_id and recipient_hash:
+                      table.update_item(
+                          Key={"campaign_id": campaign_id, "recipient_hash": recipient_hash},
+                          UpdateExpression="SET provider_status = :status, provider_updated_at = :at, provider_message_id = :message",
+                          ExpressionAttributeValues={":status": event_type.upper().replace(" ", "_"), ":at": timestamp, ":message": mail.get("messageId", "")},
+                      )
+                  if event_type in ("Bounce", "Complaint"):
+                      recipients = []
+                      if event_type == "Bounce":
+                          recipients = [row.get("emailAddress") for row in message.get("bounce", {}).get("bouncedRecipients", [])]
+                      else:
+                          recipients = [row.get("emailAddress") for row in message.get("complaint", {}).get("complainedRecipients", [])]
+                      for recipient in filter(None, recipients):
+                          normalized = recipient.strip().lower()
+                          digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+                          table.put_item(Item={
+                              "campaign_id": "!SUPPRESSION",
+                              "recipient_hash": digest,
+                              "email": normalized,
+                              "reason": event_type.upper(),
+                              "source_campaign_id": campaign_id or "unknown",
+                              "updated_at": timestamp,
+                          })
+              return {"processed": len(event.get("Records", []))}
+
+  SesEventInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref SesEventHandler
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref SesEventsTopic
+
+  SesEventSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn: SesEventInvokePermission
+    Properties:
+      TopicArn: !Ref SesEventsTopic
+      Protocol: lambda
+      Endpoint: !GetAtt SesEventHandler.Arn
+
+Outputs:
+  CampaignBucket:
+    Value: !Ref CampaignBucket
+  CampaignStateTable:
+    Value: !Ref CampaignState
+  ConfigurationSet:
+    Value: !Ref SesConfigurationSet
+  SesEventsTopicArn:
+    Value: !Ref SesEventsTopic
