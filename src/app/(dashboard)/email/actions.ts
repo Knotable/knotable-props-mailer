@@ -1249,6 +1249,15 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       return { error: "No queued recipients are ready for this email." };
     }
 
+    // A row reaches processing before SES acceptance is durably checkpointed.
+    // A second worker here could therefore create duplicate deliveries. Never
+    // make a campaign look newly released while such a claim is unresolved.
+    if (preflight.processing > 0) {
+      return {
+        error: `${preflight.processing} processing recipient${preflight.processing === 1 ? " is" : "s are"} unresolved. Reconcile SES acceptance before releasing another worker.`,
+      };
+    }
+
     if (!isQueueReleaseConfirmed(id, formData.get("releaseConfirmation"))) {
       return {
         error: `Release confirmation required for ${describeQueueReleasePreflight(preflight)}.`,
@@ -1265,7 +1274,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       .update({ status: "sending" })
       .eq("id", id);
     if (resumeError) return { error: resumeError.message };
-    const remainingQueued = preflight.pendingDue + preflight.pendingHeld + preflight.processing;
+    const remainingQueued = preflight.pendingDue + preflight.pendingHeld;
 
     logAudit({
       userId,

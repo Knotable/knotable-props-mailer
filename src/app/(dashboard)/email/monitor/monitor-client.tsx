@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useState, useTransition } from "react";
 import { ProgressStatus } from "@/components/progress-status";
 import { DataFreshness } from "@/components/data-freshness";
 
@@ -42,6 +42,8 @@ type QueueSnapshot = {
   pendingDue: number;
   pendingHeld: number;
   processing: number;
+  oldestProcessingLockedAt?: string | null;
+  stalledProcessing?: boolean;
   succeeded: number;
   failed: number;
   dead: number;
@@ -49,20 +51,11 @@ type QueueSnapshot = {
   recipientLog?: RecipientLogRow[];
 };
 
-type WorkerResult = {
-  processed?: number;
-  succeeded?: number;
-  failed?: number;
-  message?: string;
-};
-
 type Props = {
   emailId?: string;
-  autoStart?: boolean;
-  canRunWorker: boolean;
 };
 
-const POLL_MS = 31_000;
+const POLL_MS = 15_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -89,19 +82,14 @@ function formatError(error: unknown, fallback: string) {
   }
 }
 
-export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Props) {
+export function MonitorClient({ emailId }: Props) {
   const scopedEmailId = emailId && UUID_RE.test(emailId) ? emailId : undefined;
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
-  const [autoRun, setAutoRun] = useState(autoStart && Boolean(scopedEmailId && canRunWorker));
-  const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [runState, setRunState] = useState<"idle" | "running">("idle");
-  const [lastRequestAt, setLastRequestAt] = useState<string | null>(null);
   const [lastResponseAt, setLastResponseAt] = useState<string | null>(null);
   const [progressMessage, setProgressMessage] = useState("Loading queue status from Supabase...");
   const [pending, startTransition] = useTransition();
   const [recipientLog, setRecipientLog] = useState<RecipientLogRow[]>([]);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const refresh = useCallback(async () => {
     const params = new URLSearchParams();
@@ -125,40 +113,6 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
     return next;
   }, [scopedEmailId]);
 
-  const runOnce = useCallback(async () => {
-    setError(null);
-    setRunState("running");
-    setLastRequestAt(new Date().toISOString());
-    setProgressMessage(
-      scopedEmailId
-        ? "Calling the scoped queue worker. This can take up to one Vercel function window."
-        : "Calling the global queue worker for eligible queued/sending/sent campaigns.",
-    );
-
-    try {
-      const response = await fetch("/api/email/send-monitor", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(scopedEmailId ? { emailId: scopedEmailId } : {}),
-      });
-      const result = await readJson<WorkerResult>(response);
-      setLastResponseAt(new Date().toISOString());
-      setProgressMessage("Worker returned. Refreshing queue counts and recipient log...");
-      setMessage(
-        (result.processed ?? 0) === 0
-          ? result.message ?? "Queue checked; no rows were processed."
-          : `Processed ${result.processed ?? 0}: ${result.succeeded ?? 0} sent${
-              (result.failed ?? 0) > 0 ? `, ${result.failed} failed` : ""
-            }.`,
-      );
-      return refresh();
-    } finally {
-      setRunState("idle");
-    }
-  }, [scopedEmailId, refresh]);
-
   useEffect(() => {
     startTransition(async () => {
       try {
@@ -170,37 +124,24 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
   }, [refresh]);
 
   useEffect(() => {
-    if (!autoRun) return;
-
-    const tick = () => {
+    const interval = window.setInterval(() => {
       startTransition(async () => {
         try {
-          const next = await runOnce();
-          if (next.pending === 0 && next.processing === 0) {
-            setAutoRun(false);
-            return;
-          }
+          await refresh();
         } catch (err) {
-          setAutoRun(false);
-          setError(err instanceof Error ? err.message : "Queue worker failed.");
-          return;
+          setError(err instanceof Error ? err.message : "Unable to refresh queue status.");
         }
-        timerRef.current = setTimeout(tick, POLL_MS);
       });
-    };
-
-    timerRef.current = setTimeout(tick, 500);
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [autoRun, runOnce]);
+    }, POLL_MS);
+    return () => window.clearInterval(interval);
+  }, [refresh]);
 
   const total = snapshot?.total ?? 0;
   const done = snapshot?.resolved ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const terminalFailures = snapshot?.terminalFailures ?? 0;
   const isCampaignScoped = Boolean(snapshot?.emailId);
-  const isWorking = pending || runState === "running";
+  const isWorking = pending;
   const terminalFailuresText = terminalFailures.toLocaleString();
   const statusTone =
     snapshot?.isDrained && terminalFailures === 0
@@ -218,51 +159,14 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
             {snapshot?.subject ?? "Outbound Queue"}
           </h2>
           <p className="text-sm text-slate-500">
-            The background worker continues safely even if you close this page.
+            Status refreshes here; closing this page does not start, stop, or sustain a campaign worker.
           </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              startTransition(async () => {
-                try {
-                  await runOnce();
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : "Queue worker failed.");
-                }
-              })
-            }
-            disabled={isWorking || !canRunWorker}
-            className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-          >
-            {isWorking ? (scopedEmailId ? "Running scoped worker..." : "Running global worker...") : "Run once"}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setError(null);
-              setMessage(null);
-              setAutoRun((value) => !value);
-            }}
-            disabled={!canRunWorker}
-            className={`rounded-md px-4 py-2 text-sm font-semibold text-white ${
-              autoRun ? "bg-red-700 hover:bg-red-800" : "bg-slate-900 hover:bg-slate-700"
-            } disabled:opacity-50`}
-          >
-            {autoRun ? "Stop auto-run" : "Start auto-run"}
-          </button>
         </div>
       </header>
 
-      {!canRunWorker && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          This account can view queue status, but an admin has not enabled sending.
-        </div>
-      )}
       {!scopedEmailId && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          Global drain is enabled for due rows whose parent email is queued, sending, or sent. Draft emails are skipped.
+          This is a read-only global view. It never drains queue rows.
         </div>
       )}
       {error && (
@@ -270,18 +174,11 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
           {error}
         </div>
       )}
-      {message && (
-        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-          {message}
-        </div>
-      )}
       {(isWorking || !snapshot) && (
         <ProgressStatus
           title={progressMessage}
           detail={
-            autoRun
-              ? "Auto-run waits about 31 seconds between worker calls to avoid overlapping sends."
-              : "Waiting for the remote request to complete."
+            "Waiting for the remote status request to complete."
           }
         />
       )}

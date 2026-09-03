@@ -6,8 +6,8 @@
  *
  * POST /api/email/send-monitor
  *
- * Fires the queue worker. When emailId is omitted it drains due rows only for
- * campaigns whose parent email is queued, sending, or sent.
+ * The former browser-triggered worker is intentionally disabled. Browser
+ * lifecycles are not durable enough to own an outbound campaign.
  *
  * Auth: browser requests use the signed-in user session. GET requires any
  * account; POST requires can_send. CRON_SECRET bearer auth is still accepted
@@ -19,7 +19,7 @@ import { requireCanSendAuthContext, requireServerAuthContext } from "@/lib/authA
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { QUOTA_WINDOW_HOURS, getMailerRuntimeLimits, todayUTC } from "@/lib/dailyQuota";
 import { parseUuid } from "@/lib/ids";
-import { effectiveSesSendRate, runQueueWorker } from "@/lib/queueWorker";
+import { effectiveSesSendRate } from "@/lib/queueWorker";
 
 export const dynamic = "force-dynamic";
 
@@ -135,7 +135,12 @@ async function buildMonitorSnapshot(emailId?: string) {
     };
   }
 
-  const [runtime, { data: summaryRows, error: summaryError }, { data: emailData, error: emailError }] =
+  const [
+    runtime,
+    { data: summaryRows, error: summaryError },
+    { data: emailData, error: emailError },
+    { data: oldestProcessing, error: processingError },
+  ] =
     await Promise.all([
       getMailerRuntimeLimits(emailId, now),
       supabase.rpc("get_queue_campaign_summaries", {
@@ -143,9 +148,18 @@ async function buildMonitorSnapshot(emailId?: string) {
         p_now: nowIso,
       }),
       supabase.from("emails").select("subject, status").eq("id", emailId).maybeSingle(),
+      supabase
+        .from("mail_queue")
+        .select("locked_at")
+        .eq("email_id", emailId)
+        .eq("status", "processing")
+        .order("locked_at", { ascending: true })
+        .limit(1)
+        .maybeSingle(),
     ]);
   if (summaryError) throw summaryError;
   if (emailError) throw emailError;
+  if (processingError) throw processingError;
   const counts = (summaryRows ?? []).reduce(
     (total, row) => ({
       pendingDue: total.pendingDue + Number(row.pending_due ?? 0),
@@ -180,9 +194,15 @@ async function buildMonitorSnapshot(emailId?: string) {
   const total = pending + processing + succeeded + failed + dead + canceled;
   const resolved = succeeded + failed + dead + canceled;
   const isDrained = total > 0 && pending === 0 && processing === 0;
+  const oldestProcessingLockedAt = oldestProcessing?.locked_at ?? null;
+  const stalledProcessing = Boolean(
+    oldestProcessingLockedAt && new Date(oldestProcessingLockedAt).getTime() < now.getTime() - 15 * 60 * 1000,
+  );
   const displayStatus =
     total === 0
       ? emailStatus ?? "No queue rows"
+      : stalledProcessing
+        ? "Stalled — reconciliation required"
       : pending > 0 || processing > 0
         ? "Sending"
         : succeeded > 0 && terminalFailures > 0
@@ -197,6 +217,8 @@ async function buildMonitorSnapshot(emailId?: string) {
   const statusDetail =
     total === 0
       ? "No queue rows exist for this email."
+      : stalledProcessing
+        ? `${processing.toLocaleString()} processing row${processing === 1 ? " is" : "s are"} stale. No browser worker is running; reconcile before retrying to avoid duplicate delivery.`
       : pending > 0 || processing > 0
         ? `${pending + processing} recipient${pending + processing === 1 ? "" : "s"} still waiting or sending.`
         : terminalFailures > 0
@@ -233,6 +255,8 @@ async function buildMonitorSnapshot(emailId?: string) {
     pendingDue,
     pendingHeld,
     processing,
+    oldestProcessingLockedAt,
+    stalledProcessing,
     succeeded,
     failed,
     dead,
@@ -268,31 +292,11 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let emailId: string | null | undefined;
-  try {
-    const body = (await request.json()) as { emailId?: unknown };
-    if (body.emailId == null) {
-      emailId = null;
-    } else {
-      emailId = parseUuid(body.emailId) ?? undefined;
-    }
-  } catch {
-    emailId = null;
-  }
-
-  if (emailId === undefined) {
-    return NextResponse.json(
-      { error: "emailId must be a valid UUID when provided." },
-      { status: 400 },
-    );
-  }
-
-  try {
-    const result = await runQueueWorker({ emailId });
-    return NextResponse.json(result);
-  } catch (error) {
-    const message = errorMessage(error, "Worker failed");
-    console.error("[send-monitor] worker error", error);
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  return NextResponse.json(
+    {
+      error:
+        "Browser queue workers are disabled. Use the durable campaign worker after reconciling any processing rows.",
+    },
+    { status: 410 },
+  );
 }
