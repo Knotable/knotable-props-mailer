@@ -23,7 +23,7 @@ export const dashboardNav: NavItem[] = [
   {
     label: "Monitor",
     href: "/email/monitor",
-    description: "Scoped queue drain",
+    description: "Campaign status",
   },
   {
     label: "Analytics",
