@@ -19,8 +19,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { QUOTA_WINDOW_HOURS, getQuotaUsageSnapshot, todayUTC } from "@/lib/dailyQuota";
 import { getSesMaxSendRatePerSecond } from "@/lib/appSettings";
-import { parseUuid } from "@/lib/ids";
-import { effectiveSesSendRate, runQueueWorker } from "@/lib/queueWorker";
+import { effectiveSesSendRate } from "@/lib/queueWorker";
 
 export async function POST(request: Request) {
   // ── Auth ─────────────────────────────────────────────────────────────────
@@ -35,33 +34,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let emailId: string | null | undefined;
-  try {
-    const body = (await request.json()) as { emailId?: unknown };
-    if (body.emailId == null) {
-      emailId = null;
-    } else {
-      emailId = parseUuid(body.emailId) ?? undefined;
-    }
-  } catch {
-    emailId = null;
-  }
-
-  if (emailId === undefined) {
-    return NextResponse.json(
-      { error: "emailId must be a valid UUID when provided." },
-      { status: 400 },
-    );
-  }
-
-  try {
-    const result = await runQueueWorker({ emailId });
-    return NextResponse.json(result);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Queue worker failed";
-    console.error("[queue worker] fatal error", error);
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+  return NextResponse.json(
+    {
+      error:
+        "Vercel queue workers are disabled. Reconcile processing rows, then use the campaign-scoped GitHub Actions worker.",
+    },
+    { status: 410 },
+  );
 }
 
 // GET: quota + queue status — same CRON_SECRET auth as POST

@@ -10,7 +10,6 @@ import { sendEmail } from "@/lib/emailProvider";
 import { getQuotaUsageSnapshot, buildSendSchedule, todayUTC } from "@/lib/dailyQuota";
 import { logAudit } from "@/lib/logger";
 import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/queueReleaseGuard";
-import { runQueueWorker } from "@/lib/queueWorker";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
@@ -1028,15 +1027,11 @@ export async function triggerQueueAction(emailId: string): Promise<{ processed: 
   await requireCanSendAuthContext();
   const parsed = EmailIdSchema.safeParse({ id: emailId });
   if (!parsed.success) throw new Error("Invalid email id");
-
-  const data = await runQueueWorker({ emailId: parsed.data.id });
-  revalidatePath("/email/schedule");
-  revalidatePath("/email/sends");
   return {
-    processed: data.processed ?? 0,
-    succeeded: data.succeeded ?? 0,
-    failed: data.failed ?? 0,
-    message: data.message ?? `Processed ${data.processed ?? 0} items`,
+    processed: 0,
+    succeeded: 0,
+    failed: 0,
+    message: "Browser queue workers are disabled. Use the durable GitHub Actions worker after reconciliation.",
   };
 }
 

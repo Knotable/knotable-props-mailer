@@ -144,7 +144,9 @@ export function MonitorClient({ emailId }: Props) {
   const isWorking = pending;
   const terminalFailuresText = terminalFailures.toLocaleString();
   const statusTone =
-    snapshot?.isDrained && terminalFailures === 0
+    snapshot?.stalledProcessing
+      ? "border-red-200 bg-red-50 text-red-800"
+      : snapshot?.isDrained && terminalFailures === 0
       ? "border-green-200 bg-green-50 text-green-800"
       : snapshot?.isDrained
         ? "border-amber-200 bg-amber-50 text-amber-900"

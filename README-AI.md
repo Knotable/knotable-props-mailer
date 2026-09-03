@@ -87,7 +87,7 @@ Current live-send details:
 - Live-schema drift note: `public.app_settings` returns `daily_send_limit = 65,400`. The live `mail_queue_dedupe_hash_unique_idx` repair was applied and verified on 2026-06-20, so the generic conflict-safe queue upsert path is available again.
 - Release gotcha: `release_mail_queue_campaign` timed out when updating all 185,907 rows in one statement. The release schedule was applied in bounded chunks instead.
 - Drain gotcha: the initial unpaced worker loop hit transient SES `454 Maximum sending rate exceeded` responses. Those addresses succeeded on retry. Run local scoped worker calls with a 5-second pause between batches.
-- Continuation gotcha: the local `CRON_SECRET` does not authenticate the deployed worker endpoint, and this desktop session could not register a thread heartbeat. Resume through a local Next dev server and the local scoped `/api/email/send-monitor` endpoint.
+- Continuation gotcha: `CRON_SECRET` no longer authorizes a campaign drain. `/api/email/send-monitor`, `/api/email/queue`, and `/api/workers/send-queued` POST routes now fail closed; use the durable GitHub Actions worker only after reconciliation.
 
 Next-send checklist:
 
@@ -95,7 +95,7 @@ Next-send checklist:
 - Clean up stale parent email statuses if the UI still shows completed sends as queued. Known examples: LifeX `532a06ae...` and Paris `0949ffd6...` both have `0` pending and `0` processing rows but still show `emails.status = queued`.
 - `mail_queue.dedupe_hash` uniqueness was repaired live on 2026-06-20 and the generic UI queue upsert conflict target was verified in a rolled-back transaction.
 - Older unrelated queue rows no longer appear held in production health as of 2026-06-15.
-- Before opening `/email/monitor`, verify the target email id and queue counts so no unrelated campaign drains.
+- Before opening `/email/monitor`, verify the target email id and queue counts; the page is read-only and cannot drain unrelated campaigns.
 
 ### Running Repair / Readiness Checklist
 
@@ -103,11 +103,11 @@ Update this section as work progresses so future agents do not re-derive the sta
 
 | Item | Status | Notes / Checks |
 |---|---|---|
-| Resolve monitor UI conflict markers | Done 2026-05-20 | Kept the API-route implementation that calls `/api/email/send-monitor` with `CRON_SECRET`; removed stale server-action conflict branch. Verified no conflict markers remain in the monitor client. |
-| Disable accidental global queue drains | Superseded by guarded global drain | 2026-05-21 removed broad accidental drains. Later code allows `/api/email/send-monitor` and `/api/email/queue` to run a guarded global drain only for due rows whose parent email is `queued`, `sending`, or `sent`; ordinary sends should still use a scoped `emailId`. |
+| Replace browser-owned monitor worker | Done 2026-09-03 | Monitor is status-only; browser, `/api/email/send-monitor`, `/api/email/queue`, and `/api/workers/send-queued` cannot drain queue rows. |
+| Disable accidental global queue drains | Done 2026-09-03 | All Vercel worker entry points fail closed with 410. The GitHub Actions worker requires one exact campaign UUID and rejects `processing > 0`. |
 | Require explicit per-email release confirmation | Done 2026-05-21 | `Send Now` now requires a campaign-specific `release:<emailId>` confirmation token; the server action preflights email status plus due/held/processing counts before calling `release_mail_queue_campaign`. Direct action calls without the token fail before mutating queue rows. |
 | Centralize strict email id parsing | Done 2026-05-21 | Worker/report endpoints now share `parseUuid`; malformed 36-character strings no longer pass the report endpoint's looser UUID check, and invalid monitor `emailId` query strings return 400 instead of behaving like a valid campaign filter. |
-| Harden worker core against global mutation | Superseded by guarded global drain | `runQueueWorker` accepts a missing `emailId` for the guarded global repair/debug path. With a scoped `emailId`, stale `processing` row recovery is scoped to that campaign. |
+| Harden worker core against global mutation | Done 2026-09-03 | Production routes no longer expose `runQueueWorker`; automatic recovery/retry of stale processing rows is prohibited pending reconciliation. |
 | Bound schedule page queue lookups | Done 2026-05-21 | `/email/schedule` no longer fetches every `mail_queue` row for visible emails just to render list badges; it samples at most 25 queue rows per email so a 186k queued campaign does not make the page pull a 186k-row result set. |
 | Surface queue due snapshot in health | Done 2026-05-31 | `/api/health` includes a warning check with global due pending, processing, and held pending queue counts so readiness reviews see accidental due work without opening the monitor. The deployed 2026-05-31 safety fix makes count-query errors surface instead of rendering timed-out counts as zero. |
 | Rationalize Queue page counts | Pending feature | The Queue screen currently repeats the same row count as page-level active queue rows, campaign queued recipients, held rows, and pending rows. Redesign the row summary to show one primary state such as `12,947 held recipients - 0 ready - 0 sending`, with list/direct-recipient breakdown separate and raw DB statuses de-emphasized or moved to details. |
@@ -279,17 +279,10 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 
 1. **Composer** (`/email/composer`): User drafts an email. Server action in `email/actions.ts` saves to `emails` table as `draft`.
 2. **Queue**: Queueing action creates rows in `mail_queue` (one per recipient), sets `emails.status = 'queued'`.
-3. **Send Monitor** (`/email/monitor?emailId=<uuid>`): Browser page that fires `POST /api/email/send-monitor` every 31 seconds while open for a specific email. 31s is intentional — just over Vercel's 30s hobby-tier timeout so each worker call finishes before the next fires. `/email/monitor` without an `emailId` shows a global snapshot and can run a guarded global worker for due rows whose parent email is `queued`, `sending`, or `sent`; avoid that except for explicit repair/debug tasks.
-4. **Queue Worker** (`src/lib/queueWorker.ts`):
-   - Reclaims stuck `processing` rows older than 15 min
-   - Checks daily quota via `dailyQuota.ts`
-   - Fetches up to 200 `pending` items (`WORKER_BATCH_SIZE`)
-   - Sends in parallel windows of 5 (`WORKER_CONCURRENCY`) via `Promise.allSettled`, matching nodemailer's `maxConnections: 5` — sustains ~14 msg/sec (SES SMTP rate limit)
-   - Permanent failures (SMTP 5xx) → `dead` immediately; transient → exponential backoff up to `max_attempts`
-   - Calls `reconcileEmailStatuses()` to roll up `emails.status` after each batch
-   - `dedupe_hash` (SHA-256 of `emailId:recipientEmail`) stamped on every queue row at insert; unique DB index makes queue creation retry-safe
-   - Claims due rows through `claim_mail_queue_batch()` so concurrent monitors cannot select the same pending rows
-5. **SES Webhooks** (`/api/webhooks/ses`): SNS signature-verified; ingests delivery/bounce events into `provider_events`; auto-suppresses hard bounces and complaints in `list_members`.
+3. **Send Monitor** (`/email/monitor?emailId=<uuid>`): Read-only status page. It refreshes a snapshot every 15 seconds but never starts, sustains, or stops a campaign worker. A campaign with processing rows older than 15 minutes displays **Stalled — reconciliation required**.
+4. **Durable Queue Worker** (`.github/workflows/ses-bulk-worker.yml`): Campaign-scoped GitHub Actions job, manually dispatched until a narrowly scoped server-side GitHub dispatch token is provisioned. It refuses to send if any `processing` row exists, uses the workflow's conservative claim/rate settings, checkpoints every SES result, and is the only approved drain path. Tune it only after a staged load test; never trade checkpoint safety for a larger batch.
+5. **Legacy Vercel worker** (`src/lib/queueWorker.ts`): Retained as implementation history only. All public Vercel worker routes and browser controls fail closed and must not be re-enabled as a campaign drain.
+6. **SES Webhooks** (`/api/webhooks/ses`): SNS signature-verified; ingests delivery/bounce events into `provider_events`; auto-suppresses hard bounces and complaints in `list_members`.
 
 **Daily send limit** is defined in `dailyQuota.ts` — check that file for the current cap constant.
 
@@ -871,21 +864,9 @@ Queueing and releasing are separate operations.
 - Queue from `/email/composer` after saving a draft and selecting a list.
 - `queueCampaignAction` creates `mail_queue` rows with `status = 'pending'` and `available_at = '2999-12-31T23:59:59Z'`. Those rows are held and will not send yet.
 - Duplicate/recent-send warnings are intentional. Do not bypass them unless the operator explicitly confirms the audience should be contacted.
-- Release from `/email/schedule` with the row's **Send Now** action. The UI adds the required confirmation token, calls `sendQueuedEmailAction`, releases rows according to the daily cap, runs one scoped worker batch, then opens `/email/monitor?emailId=<id>&auto=1`.
-- Keep the scoped monitor open until `pending = 0` and `processing = 0`.
-
-Manual/debug worker call for rows that are already due:
-
-```bash
-curl -fsS \
-  -H "Authorization: Bearer $CRON_SECRET" \
-  -H "Content-Type: application/json" \
-  -X POST \
-  -d '{"emailId":"EMAIL_ID_HERE"}' \
-  "$APP_BASE_URL/api/email/send-monitor" | jq .
-```
-
-The code currently supports a global worker run when `emailId` is omitted; it drains due rows whose parent email is `queued`, `sending`, or `sent`. Treat that as a repair/debug path only. For ordinary sends, always scope by `emailId`.
+- Release from `/email/schedule` with the row's **Send Now** action only after an exact campaign-specific confirmation. It must refuse when `processing > 0`.
+- Launch the campaign-scoped GitHub Actions worker with `email_id`, `mode=send`, and `confirmation=send:<emailId>`. Never use `/api/email/send-monitor`, `/api/email/queue`, or `/api/workers/send-queued` to drain rows; their POST handlers return `410 Gone` by design.
+- The monitor may be closed. It is status-only; the GitHub Actions job owns the send.
 
 ### Queue without sending
 
@@ -896,7 +877,7 @@ Best UI path:
 1. Save the draft in `/email/composer`.
 2. Select the target list.
 3. Use the queue action, handle duplicate/recent-send warnings only with explicit operator confirmation.
-4. Stop there. Do not click **Send Now** and do not open `/email/monitor?auto=1`.
+4. Stop there. Do not click **Send Now**. The monitor is safe to open for read-only status.
 
 Expected result: `mail_queue` has `pending` rows held at year 2999, `pendingDue = 0`, and `processing = 0`.
 
@@ -1225,8 +1206,8 @@ See `.env.example` for full list.
 ## Deployment
 
 - **Git push → GitHub → Vercel** (auto-deploy, no manual step)
-- No Vercel Cron jobs configured — queue draining is done via the monitor page
-- `vercel.json` is currently empty `{}` — do not add Cron entries; the monitor-page approach is intentional
+- No Vercel Cron jobs configured — the monitor page is read-only and campaign draining is handled by GitHub Actions
+- `vercel.json` is currently empty `{}` — do not add Cron entries or restore a browser-owned worker
 - No Docker in production; `.dockerignore` exists for local dev use
 
 ---
@@ -1252,10 +1233,10 @@ See `.env.example` for full list.
 - **Server actions** live in `actions.ts` co-located with their page directory.
 - **Zod** is used for all API input validation.
 - **Never send through Gmail**: Do not use Gmail, Gmail drafts, or the Gmail connector for any outbound project/campaign/list/newsletter/test/resend email. Use Props Mailer / SES flows only.
-- **No Cron**: Do not add Vercel Cron entries — queue draining is handled by the monitor page (`/email/monitor`), which fires the worker every 31s while open. `vercel.json` intentionally stays `{}`.
+- **No Vercel queue worker**: Do not add Vercel Cron entries or re-enable browser/Vercel queue drains. `vercel.json` intentionally stays `{}`. The durable sender is the campaign-scoped GitHub Actions workflow.
 - **Rate limiting**: Use `checkRateLimit(key, max, windowMs)` (async, DB-backed via `error_logs` sentinel rows) for any endpoint that needs cross-instance protection. Use `checkRateLimitSync` only where async is impossible (currently: login server action). The DB version writes rows with `source = 'rate_limit:<key>'` and `message = 'hit'` — don't mistake these for real errors when reading `error_logs`.
-- **Monitor page auth**: `/api/email/send-monitor` uses the same `CRON_SECRET` bearer token as `/api/email/queue`. The server component at `/email/monitor/page.tsx` passes `process.env.CRON_SECRET` to the client component so the browser can authenticate its polling calls. `CRON_SECRET` must be set in Vercel env vars or the monitor page will show a warning and refuse to fire.
-- **Scoped queue drains by default**: Worker POST routes and `runQueueWorker` accept a missing `emailId` for a guarded global drain of due rows whose parent email is `queued`, `sending`, or `sent`. Treat that as repair/debug only. Ordinary campaign sends should use a row's **Send Now** action or `/email/monitor?emailId=<uuid>` so the worker is scoped to one email.
+- **Monitor auth**: `/api/email/send-monitor` GET uses the signed-in session (or the legacy `CRON_SECRET`) for read-only snapshots. Its POST, `/api/email/queue` POST, and `/api/workers/send-queued` POST fail closed with `410 Gone`.
+- **Scoped queue drains only**: The GitHub Actions worker requires a concrete campaign UUID and a `send:<emailId>` confirmation. It refuses if `processing > 0`; resolve ambiguity first rather than using a global repair drain.
 - **Queue hold pattern**: When `queueCampaignAction` inserts queue rows, all rows get `available_at = '2999-12-31T23:59:59Z'` (the `QUEUE_HOLD_AT` constant). `sendQueuedEmailAction` requires a per-email release confirmation token, preflights counts, and then updates `available_at` to `now()` for the rows being released. This two-step pattern lets you inspect and cancel before anything goes out.
 - **Feature flags**: Use `getFeatureFlag(key)` from `featureFlags.ts`; defaults to `true` if the key doesn't exist in the DB.
 - **Email copy convention**: Never use the header phrase `From the phone of Amol` in drafts, templates, or sent email copy. Amol explicitly retired it on 2026-05-31.
@@ -1277,8 +1258,8 @@ analytics, queue, and campaign work. It supersedes the former standalone
 - Inspect first. Sending, queue release, monitor runs, and production writes are
   external side effects. Require explicit approval naming the exact campaign,
   sender, body, audience, and recipient count before release or send.
-- Confirm the exact `email_id` and `list_id`; ordinary monitor work must use
-  `/email/monitor?emailId=<uuid>`, never an unscoped global drain.
+- Confirm the exact `email_id` and `list_id`; ordinary monitor work uses
+  `/email/monitor?emailId=<uuid>` as a read-only campaign snapshot.
 - If code touches Next.js, read the relevant guide under
   `node_modules/next/dist/docs/` before editing.
 
