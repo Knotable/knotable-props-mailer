@@ -267,17 +267,7 @@ export function MonitorClient({ emailId }: Props) {
             <span className="font-medium text-slate-900">{snapshot?.emailStatus ?? "all queue"}</span>
           </p>
           <p>
-            Auto-run:{" "}
-            <span className="font-medium text-slate-900">
-              {autoRun ? (isWorking ? "active, request in flight" : "active") : "off"}
-            </span>
-          </p>
-          <p>
-            Last request:{" "}
-            <span className="font-medium text-slate-900">{formatTimestamp(lastRequestAt)}</span>
-          </p>
-          <p>
-            Last response:{" "}
+            Last status refresh:{" "}
             <span className="font-medium text-slate-900">{formatTimestamp(lastResponseAt)}</span>
           </p>
           {terminalFailures > 0 && (
