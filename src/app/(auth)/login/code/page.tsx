@@ -38,8 +38,8 @@ export default async function LoginCodePage({ searchParams }: LoginCodePageProps
       ? "Paste the code from the email to finish signing in."
       : error === "invalid-code"
       ? "That code didn’t work. Request a fresh one and try again."
-      : error === "token" || error === "use-code"
-      ? "Magic links are no longer supported here. Request a sign-in code instead."
+      : error === "token" || error === "use-code" || error === "invalid-link"
+      ? "That sign-in link is invalid or expired. Request a fresh sign-in code instead."
       : null;
 
   return (
