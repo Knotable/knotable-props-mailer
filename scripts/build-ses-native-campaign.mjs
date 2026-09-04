@@ -1,13 +1,22 @@
 #!/usr/bin/env node
 import crypto from "node:crypto";
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { join, resolve } from "node:path";
 import { createGzip } from "node:zlib";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient, TransactWriteCommand } from "@aws-sdk/lib-dynamodb";
 import { createClient } from "@supabase/supabase-js";
 import { assertSendReadySubject, compileTemplate, recipientData } from "./lib/ses-bulk-worker-core.mjs";
-import { campaignApprovalDigest, normalizeEmail, recipientHash, validateRecipient } from "./lib/ses-native-core.mjs";
+import {
+  batchRecordKey,
+  campaignApprovalDigest,
+  normalizeEmail,
+  planRecipientBatches,
+  recipientHash,
+  validateRecipient,
+} from "./lib/ses-native-core.mjs";
 
 const PAGE_SIZE = 1_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -82,6 +91,51 @@ async function uploadFile(s3, bucket, key, path, contentType, contentEncoding) {
   }));
 }
 
+async function initializeCampaignState(db, tableName, manifest, manifestKey) {
+  const now = new Date().toISOString();
+  const sharedValues = {
+    ":sha": manifest.approvalSha256,
+    ":manifest": manifestKey,
+    ":now": now,
+  };
+  const updates = [
+    {
+      Update: {
+        TableName: tableName,
+        Key: { campaign_id: manifest.campaign.id, recipient_hash: "!META" },
+        UpdateExpression: "SET record_type = :type, approval_sha256 = if_not_exists(approval_sha256, :sha), manifest_key = :manifest, recipient_count = :count, batch_count = :batch_count, campaign_subject = :subject, updated_at = :now, created_at = if_not_exists(created_at, :now)",
+        ConditionExpression: "attribute_not_exists(approval_sha256) OR approval_sha256 = :sha",
+        ExpressionAttributeValues: {
+          ...sharedValues,
+          ":type": "CAMPAIGN",
+          ":count": manifest.recipients.count,
+          ":batch_count": manifest.batches.length,
+          ":subject": manifest.campaign.subject,
+        },
+      },
+    },
+    ...manifest.batches.map((batch) => ({
+      Update: {
+        TableName: tableName,
+        Key: { campaign_id: manifest.campaign.id, recipient_hash: batchRecordKey(batch.batchNumber) },
+        UpdateExpression: "SET record_type = :type, approval_sha256 = if_not_exists(approval_sha256, :sha), manifest_key = :manifest, batch_number = :batch_number, start_ordinal = :start, end_ordinal = :end, recipient_count = :count, release_state = if_not_exists(release_state, :release_state), accepted = if_not_exists(accepted, :zero), claimed = if_not_exists(claimed, :zero), retry = if_not_exists(retry, :zero), dead = if_not_exists(dead, :zero), canceled = if_not_exists(canceled, :zero), updated_at = :now, created_at = if_not_exists(created_at, :now)",
+        ConditionExpression: "attribute_not_exists(approval_sha256) OR approval_sha256 = :sha",
+        ExpressionAttributeValues: {
+          ...sharedValues,
+          ":type": "BATCH",
+          ":batch_number": batch.batchNumber,
+          ":start": batch.startOrdinal,
+          ":end": batch.endOrdinal,
+          ":count": batch.count,
+          ":release_state": batch.batchNumber === 1 ? "READY_FOR_APPROVAL" : "QUEUED_FOR_APPROVAL",
+          ":zero": 0,
+        },
+      },
+    })),
+  ];
+  await db.send(new TransactWriteCommand({ TransactItems: updates }));
+}
+
 async function main() {
   loadDotEnvLocal();
   const args = parseArgs(process.argv);
@@ -95,21 +149,26 @@ async function main() {
   const supabase = createClient(required("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"), required("SUPABASE_SERVICE_ROLE_KEY"), {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const [{ data: email, error: emailError }, { data: lists, error: listsError }] = await Promise.all([
+  const [{ data: email, error: emailError }, { data: lists, error: listsError }, queueProbe] = await Promise.all([
     supabase.from("emails").select("id, from_address, reply_to, subject, html, text, status, tags, campaigns").eq("id", emailId).single(),
     supabase.from("lists").select("id, name, address").in("id", listIds),
+    supabase.from("mail_queue").select("id", { count: "exact", head: true }).eq("email_id", emailId),
   ]);
   if (emailError) throw new Error(`Unable to load campaign: ${emailError.message}`);
   if (listsError) throw new Error(`Unable to load lists: ${listsError.message}`);
   if ((lists ?? []).length !== listIds.length) throw new Error(`Resolved ${(lists ?? []).length}/${listIds.length} requested lists.`);
+  if (queueProbe.error) throw new Error(`Unable to verify the legacy queue is empty: ${queueProbe.error.message}`);
+  if ((queueProbe.count ?? 0) > 0) {
+    throw new Error(`Campaign ${emailId} already has ${queueProbe.count} legacy mail_queue row(s). Refusing dual execution ownership.`);
+  }
   assertSendReadySubject(email.subject);
   if (!["draft", "queued"].includes(email.status)) throw new Error(`Campaign status ${email.status} is not eligible for a new immutable snapshot.`);
 
   const outputRoot = resolve(args.get("--output-dir") ?? "private/ses-native-campaigns");
   const stagingDir = join(outputRoot, emailId, ".staging");
   mkdirSync(stagingDir, { recursive: true });
-  const stagingRecipientsPath = join(stagingDir, "recipients.ndjson.gz");
-  const output = createWriteStream(stagingRecipientsPath, { flags: "w" });
+  const stagingRecipientsPath = join(stagingDir, `recipients-${crypto.randomUUID()}.ndjson.gz`);
+  const output = createWriteStream(stagingRecipientsPath, { flags: "wx" });
   const gzip = createGzip({ level: 9 });
   gzip.pipe(output);
 
@@ -161,8 +220,9 @@ async function main() {
 
   const recipientSha256 = await sha256File(stagingRecipientsPath);
   const recipientKey = `campaigns/${emailId}/recipients/${recipientSha256}.ndjson.gz`;
+  const batches = planRecipientBatches(total, Math.min(3, total));
   let manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     createdAt: new Date().toISOString(),
     source: { kind: "supabase-read-only-snapshot", emailId, listIds, lists, countsByList, duplicateMemberships },
     campaign: {
@@ -176,20 +236,31 @@ async function main() {
       campaigns: email.campaigns ?? [],
     },
     recipients: { count: total, key: recipientKey, sha256: recipientSha256 },
+    batches,
   };
   manifest.approvalSha256 = campaignApprovalDigest(manifest);
   const manifestKey = `campaigns/${emailId}/${manifest.approvalSha256}/campaign.json`;
   const artifactDir = join(outputRoot, emailId, manifest.approvalSha256.slice(0, 16));
   mkdirSync(artifactDir, { recursive: true });
   const recipientsPath = join(artifactDir, "recipients.ndjson.gz");
-  renameSync(stagingRecipientsPath, recipientsPath);
+  if (existsSync(recipientsPath)) {
+    const existingRecipientSha256 = await sha256File(recipientsPath);
+    if (existingRecipientSha256 !== recipientSha256) {
+      throw new Error(`Refusing to overwrite a different immutable recipient package at ${recipientsPath}.`);
+    }
+    unlinkSync(stagingRecipientsPath);
+  } else {
+    renameSync(stagingRecipientsPath, recipientsPath);
+  }
   const manifestPath = join(artifactDir, "campaign.json");
   if (existsSync(manifestPath)) {
     const existing = JSON.parse(readFileSync(manifestPath, "utf8"));
-    const sameArtifact = existing?.campaign?.id === manifest.campaign.id
+    const sameArtifact = existing?.schemaVersion === manifest.schemaVersion
+      && existing?.campaign?.id === manifest.campaign.id
       && existing?.recipients?.sha256 === manifest.recipients.sha256
       && existing?.recipients?.count === manifest.recipients.count
-      && JSON.stringify(existing?.campaign) === JSON.stringify(manifest.campaign);
+      && JSON.stringify(existing?.campaign) === JSON.stringify(manifest.campaign)
+      && JSON.stringify(existing?.batches) === JSON.stringify(manifest.batches);
     if (!sameArtifact) throw new Error(`Refusing to overwrite a different immutable campaign package at ${manifestPath}.`);
     manifest = existing;
   } else {
@@ -199,9 +270,14 @@ async function main() {
   let bucket = null;
   if (upload) {
     bucket = required("SES_CAMPAIGN_BUCKET");
-    const s3 = new S3Client({ region: required("AWS_REGION") });
+    const region = required("AWS_REGION");
+    const s3 = new S3Client({ region });
     await uploadFile(s3, bucket, recipientKey, recipientsPath, "application/x-ndjson", "gzip");
     await uploadFile(s3, bucket, manifestKey, manifestPath, "application/json");
+    const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region }), {
+      marshallOptions: { removeUndefinedValues: true },
+    });
+    await initializeCampaignState(db, required("SES_CAMPAIGN_STATE_TABLE"), manifest, manifestKey);
   }
   console.log(JSON.stringify({
     campaignId: emailId,
@@ -210,6 +286,7 @@ async function main() {
     uniqueRecipients: total,
     duplicateMembershipsCollapsed: duplicateMemberships,
     recipientSha256,
+    batches,
     artifactDir,
     uploaded: upload,
     bucket,

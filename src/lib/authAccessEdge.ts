@@ -3,8 +3,18 @@ import type { NextRequest } from "next/server";
 export const ALLOWED_EMAIL = process.env.ALLOWED_EMAIL ?? "a@sarva.co";
 export const BYPASS_COOKIE_NAME = "props-mailer-bypass";
 
-const BYPASS_COOKIE_HMAC_KEY =
-  "074e9acec6c6dbd092dc617febf7cf5ce24c80ab2013c06aea1f4639092a3bf5";
+const HEX_256 = /^[0-9a-f]{64}$/i;
+
+const bypassCookieHmacKey = () => {
+  const value = process.env.BYPASS_COOKIE_HMAC_KEY?.trim();
+  return value && HEX_256.test(value) ? value.toLowerCase() : null;
+};
+
+const bypassSecretsConfigured = () => {
+  const passwordHash = process.env.BYPASS_PASSWORD_SHA256?.trim().toLowerCase();
+  const hmacKey = bypassCookieHmacKey();
+  return Boolean(passwordHash && HEX_256.test(passwordHash) && hmacKey && passwordHash !== hmacKey);
+};
 
 const hexToBytes = (hex: string) => {
   if (hex.length % 2 !== 0) return null;
@@ -39,12 +49,13 @@ const secureCompareHex = (left: string, right: string) => {
 };
 
 const signBypassExpiry = async (expiresAtMs: number) => {
-  const keyBytes = hexToBytes(BYPASS_COOKIE_HMAC_KEY);
+  const keyHex = bypassCookieHmacKey();
+  const keyBytes = keyHex ? hexToBytes(keyHex) : null;
   if (!keyBytes) {
     throw new Error("Invalid bypass HMAC key");
   }
 
-  const key = await crypto.subtle.importKey(
+  const cryptoKey = await crypto.subtle.importKey(
     "raw",
     keyBytes,
     { name: "HMAC", hash: "SHA-256" },
@@ -54,7 +65,7 @@ const signBypassExpiry = async (expiresAtMs: number) => {
 
   const signature = await crypto.subtle.sign(
     "HMAC",
-    key,
+    cryptoKey,
     new TextEncoder().encode(String(expiresAtMs)),
   );
 
@@ -62,7 +73,7 @@ const signBypassExpiry = async (expiresAtMs: number) => {
 };
 
 export const isValidBypassCookieValue = async (rawValue: string | undefined) => {
-  if (!rawValue) return false;
+  if (!rawValue || !bypassSecretsConfigured()) return false;
 
   const [expiresAtRaw, signature] = rawValue.split(".");
   const expiresAtMs = Number(expiresAtRaw);

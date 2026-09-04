@@ -29,6 +29,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
         buildInfo={buildInfo}
         canSend={canSend}
         canManageUsers={canManageUsers}
+        awsNativeEnabled={process.env.AWS_NATIVE_CONTROL_ENABLED === "true"}
       >
         {children}
       </AppShell>

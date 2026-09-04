@@ -19,6 +19,7 @@ describe("approval-gated SES batch policy", () => {
   it("requires a 20% batch quota buffer and enough rate for a 75-minute batch", () => {
     expect(requiredSesCapacity({ audience: 50_000, maxDurationMinutes: 75 })).toEqual({
       requiredDailyQuota: 60_000,
+      requiredRollingHeadroom: 50_001,
       requiredSesRate: 13,
     });
   });
@@ -32,6 +33,11 @@ describe("approval-gated SES batch policy", () => {
     expect(evaluateSesCapacity({ audience: 50_000, max24Hour: 65_400, sentLast24Hours: 0, maxRate: 10, maxDurationMinutes: 75 })).toMatchObject({
       quotaReady: true,
       rateReady: false,
+    });
+    expect(evaluateSesCapacity({ audience: 50_000, max24Hour: 65_400, sentLast24Hours: 15_400, maxRate: 15, maxDurationMinutes: 75 })).toMatchObject({
+      quotaReady: false,
+      headroom: 50_000,
+      requiredRollingHeadroom: 50_001,
     });
   });
 });

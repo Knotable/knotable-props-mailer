@@ -8,21 +8,23 @@ import { createGunzip } from "node:zlib";
 import readline from "node:readline";
 import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import {
   BatchGetCommand,
   DynamoDBDocumentClient,
-  QueryCommand,
+  GetCommand,
   TransactWriteCommand,
   UpdateCommand,
 } from "@aws-sdk/lib-dynamodb";
-import { GetAccountCommand, SendBulkEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
+import { GetAccountCommand, SendBulkEmailCommand, SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
 import { assertSendReadySubject, compileTemplate, recipientData } from "./lib/ses-bulk-worker-core.mjs";
 import {
-  campaignConfirmation,
+  batchConfirmation,
+  batchRecordKey,
   classifyNativeSesResult,
   isTerminalState,
+  oneClickUnsubscribeUrl,
   recipientHash,
-  summarizeCampaignState,
   validateCampaignManifest,
   validateRecipient,
 } from "./lib/ses-native-core.mjs";
@@ -69,7 +71,7 @@ async function* recipientLines(path) {
     lineNumber += 1;
     if (!line.trim()) continue;
     try {
-      yield validateRecipient(JSON.parse(line));
+      yield { ...validateRecipient(JSON.parse(line)), ordinal: lineNumber - 1 };
     } catch (error) {
       throw new Error(`Invalid recipient manifest line ${lineNumber}: ${error.message}`);
     }
@@ -90,21 +92,35 @@ async function inspectRecipientFile(path) {
   return { count, sample };
 }
 
-async function readCampaignState(db, tableName, campaignId) {
-  const items = [];
-  let exclusiveStartKey;
-  do {
-    const response = await db.send(new QueryCommand({
-      TableName: tableName,
-      KeyConditionExpression: "campaign_id = :campaign",
-      ExpressionAttributeValues: { ":campaign": campaignId },
-      ExclusiveStartKey: exclusiveStartKey,
-      ConsistentRead: true,
-    }));
-    items.push(...(response.Items ?? []).filter((item) => item.recipient_hash !== META_RECIPIENT_HASH));
-    exclusiveStartKey = response.LastEvaluatedKey;
-  } while (exclusiveStartKey);
-  return items;
+async function getControlRecord(db, tableName, campaignId, recipientHashValue) {
+  const response = await db.send(new GetCommand({
+    TableName: tableName,
+    Key: { campaign_id: campaignId, recipient_hash: recipientHashValue },
+    ConsistentRead: true,
+  }));
+  return response.Item ?? null;
+}
+
+function summarizeBatchRecord(record) {
+  return {
+    accepted: Number(record?.accepted ?? 0),
+    claimed: Number(record?.claimed ?? 0),
+    retry: Number(record?.retry ?? 0),
+    dead: Number(record?.dead ?? 0),
+    canceled: Number(record?.canceled ?? 0),
+  };
+}
+
+function terminalCount(state) {
+  return state.accepted + state.dead + state.canceled;
+}
+
+async function readUnsubscribeSecret(secrets, secretId) {
+  const response = await secrets.send(new GetSecretValueCommand({ SecretId: secretId }));
+  const value = response.SecretString
+    ?? (response.SecretBinary ? Buffer.from(response.SecretBinary).toString("utf8") : "");
+  if (!value) throw new Error(`Unsubscribe signing secret ${secretId} is empty.`);
+  return value;
 }
 
 async function batchReadStates(db, tableName, campaignId, recipients) {
@@ -129,14 +145,15 @@ async function transact(db, items) {
   await db.send(new TransactWriteCommand({ TransactItems: items }));
 }
 
-async function claimBatch(db, tableName, campaignId, approvalSha, entries, claimToken) {
+async function claimBatch(db, tableName, campaignId, approvalSha, batchNumber, entries, claimToken) {
   const now = new Date().toISOString();
-  await transact(db, entries.map(({ recipient, hash }) => ({
+  const retryClaims = entries.filter(({ previous }) => previous?.status === "RETRY").length;
+  const recipientUpdates = entries.map(({ recipient, hash }) => ({
     Update: {
       TableName: tableName,
       Key: { campaign_id: campaignId, recipient_hash: hash },
-      UpdateExpression: "SET #status = :claimed, email = :email, recipient_name = :name, approval_sha256 = :sha, claim_token = :token, claimed_at = :now, updated_at = :now, attempts = if_not_exists(attempts, :zero) + :one",
-      ConditionExpression: "attribute_not_exists(#status) OR #status = :retry",
+      UpdateExpression: "SET #status = :claimed, email = :email, recipient_name = :name, approval_sha256 = :sha, batch_number = :batch, recipient_ordinal = :ordinal, claim_token = :token, claimed_at = :now, updated_at = :now, attempts = if_not_exists(attempts, :zero) + :one",
+      ConditionExpression: "(attribute_not_exists(#status) OR #status = :retry) AND (attribute_not_exists(batch_number) OR batch_number = :batch)",
       ExpressionAttributeNames: { "#status": "status" },
       ExpressionAttributeValues: {
         ":claimed": "CLAIMED",
@@ -144,17 +161,37 @@ async function claimBatch(db, tableName, campaignId, approvalSha, entries, claim
         ":email": recipient.email,
         ":name": recipient.name ?? null,
         ":sha": approvalSha,
+        ":batch": batchNumber,
+        ":ordinal": recipient.ordinal,
         ":token": claimToken,
         ":now": now,
         ":zero": 0,
         ":one": 1,
       },
     },
-  })));
+  }));
+  await transact(db, [
+    ...recipientUpdates,
+    {
+      Update: {
+        TableName: tableName,
+        Key: { campaign_id: campaignId, recipient_hash: batchRecordKey(batchNumber) },
+        UpdateExpression: "SET updated_at = :now ADD claimed :claimed, retry :retry",
+        ConditionExpression: "release_state = :approved AND approval_sha256 = :sha",
+        ExpressionAttributeValues: {
+          ":now": now,
+          ":claimed": entries.length,
+          ":retry": -retryClaims,
+          ":approved": "APPROVED",
+          ":sha": approvalSha,
+        },
+      },
+    },
+  ]);
   return entries.map((entry) => ({ ...entry, attempts: Number(entry.previous?.attempts ?? 0) + 1 }));
 }
 
-async function checkpointBatch(db, tableName, campaignId, claimToken, results) {
+async function checkpointBatch(db, tableName, campaignId, batchNumber, claimToken, results) {
   const now = new Date().toISOString();
   const writes = results.map((result) => ({
     Update: {
@@ -174,6 +211,28 @@ async function checkpointBatch(db, tableName, campaignId, claimToken, results) {
       },
     },
   }));
+  const outcomeCounts = {
+    accepted: results.filter((result) => result.status === "ACCEPTED").length,
+    retry: results.filter((result) => result.status === "RETRY").length,
+    dead: results.filter((result) => result.status === "DEAD").length,
+  };
+  writes.push({
+    Update: {
+      TableName: tableName,
+      Key: { campaign_id: campaignId, recipient_hash: batchRecordKey(batchNumber) },
+      UpdateExpression: "SET updated_at = :now ADD claimed :claimed, accepted :accepted, retry :retry, dead :dead",
+      ConditionExpression: "release_state = :approved AND claimed >= :checkpoint_count",
+      ExpressionAttributeValues: {
+        ":now": now,
+        ":claimed": -results.length,
+        ":accepted": outcomeCounts.accepted,
+        ":retry": outcomeCounts.retry,
+        ":dead": outcomeCounts.dead,
+        ":approved": "APPROVED",
+        ":checkpoint_count": results.length,
+      },
+    },
+  });
   try {
     await transact(db, writes);
   } catch (error) {
@@ -220,24 +279,215 @@ async function releaseLease(db, tableName, campaignId, owner) {
   })).catch((error) => console.warn(`Unable to release campaign lease: ${error.message}`));
 }
 
+async function authorizeBatch(db, tableName, campaignId, approvalSha, batchNumber, confirmation) {
+  const now = new Date().toISOString();
+  await db.send(new UpdateCommand({
+    TableName: tableName,
+    Key: { campaign_id: campaignId, recipient_hash: batchRecordKey(batchNumber) },
+    UpdateExpression: "SET release_state = :approved, approval_token = if_not_exists(approval_token, :token), approved_at = if_not_exists(approved_at, :now), updated_at = :now",
+    ConditionExpression: "approval_sha256 = :sha AND (release_state = :ready OR (release_state = :approved AND approval_token = :token))",
+    ExpressionAttributeValues: {
+      ":approved": "APPROVED",
+      ":ready": "READY_FOR_APPROVAL",
+      ":token": confirmation,
+      ":sha": approvalSha,
+      ":now": now,
+    },
+  }));
+}
+
+async function cancelSuppressedRecipient(db, tableName, campaignId, batchNumber, approvalSha, recipient, hash, previous, reason) {
+  const now = new Date().toISOString();
+  const wasRetry = previous?.status === "RETRY" ? 1 : 0;
+  await transact(db, [
+    {
+      Update: {
+        TableName: tableName,
+        Key: { campaign_id: campaignId, recipient_hash: hash },
+        UpdateExpression: "SET #status = :status, email = :email, approval_sha256 = :sha, batch_number = :batch, recipient_ordinal = :ordinal, last_error = :reason, updated_at = :now",
+        ConditionExpression: "(attribute_not_exists(#status) OR #status = :retry) AND (attribute_not_exists(batch_number) OR batch_number = :batch)",
+        ExpressionAttributeNames: { "#status": "status" },
+        ExpressionAttributeValues: {
+          ":status": "CANCELED",
+          ":retry": "RETRY",
+          ":email": recipient.email,
+          ":sha": approvalSha,
+          ":batch": batchNumber,
+          ":ordinal": recipient.ordinal,
+          ":reason": reason,
+          ":now": now,
+        },
+      },
+    },
+    {
+      Update: {
+        TableName: tableName,
+        Key: { campaign_id: campaignId, recipient_hash: batchRecordKey(batchNumber) },
+        UpdateExpression: "SET updated_at = :now ADD canceled :one, retry :retry",
+        ConditionExpression: "release_state = :approved AND approval_sha256 = :sha",
+        ExpressionAttributeValues: {
+          ":now": now,
+          ":one": 1,
+          ":retry": -wasRetry,
+          ":approved": "APPROVED",
+          ":sha": approvalSha,
+        },
+      },
+    },
+  ]);
+}
+
+async function completeBatchAndPromoteNext(db, tableName, campaignId, approvalSha, batch, state, nextBatch) {
+  const now = new Date().toISOString();
+  const currentUpdate = {
+    Update: {
+      TableName: tableName,
+      Key: { campaign_id: campaignId, recipient_hash: batchRecordKey(batch.batchNumber) },
+      UpdateExpression: "SET release_state = :completed, completed_at = if_not_exists(completed_at, :now), updated_at = :now",
+      ConditionExpression: "approval_sha256 = :sha AND release_state = :approved AND accepted = :accepted AND dead = :dead AND canceled = :canceled AND claimed = :zero AND retry = :zero",
+      ExpressionAttributeValues: {
+        ":completed": "COMPLETED",
+        ":approved": "APPROVED",
+        ":sha": approvalSha,
+        ":accepted": state.accepted,
+        ":dead": state.dead,
+        ":canceled": state.canceled,
+        ":zero": 0,
+        ":now": now,
+      },
+    },
+  };
+  const writes = [currentUpdate];
+  if (nextBatch) {
+    writes.push({
+      Update: {
+        TableName: tableName,
+        Key: { campaign_id: campaignId, recipient_hash: batchRecordKey(nextBatch.batchNumber) },
+        UpdateExpression: "SET release_state = :ready, ready_at = if_not_exists(ready_at, :now), updated_at = :now",
+        ConditionExpression: "approval_sha256 = :sha AND release_state = :queued",
+        ExpressionAttributeValues: {
+          ":ready": "READY_FOR_APPROVAL",
+          ":queued": "QUEUED_FOR_APPROVAL",
+          ":sha": approvalSha,
+          ":now": now,
+        },
+      },
+    });
+  }
+  await transact(db, writes);
+}
+
+async function sendOperatorNotice({ db, tableName, ses, configurationSet, manifest, batch, state, nextBatch, operatorEmail, appUrl }) {
+  const key = { campaign_id: manifest.campaign.id, recipient_hash: batchRecordKey(batch.batchNumber) };
+  const noticeClaimedAt = new Date().toISOString();
+  try {
+    await db.send(new UpdateCommand({
+      TableName: tableName,
+      Key: key,
+      UpdateExpression: "SET operator_notice_state = :sending, operator_notice_claimed_at = :now, updated_at = :now",
+      ConditionExpression: "release_state = :completed AND attribute_not_exists(operator_notice_sent_at) AND attribute_not_exists(operator_notice_claimed_at)",
+      ExpressionAttributeValues: { ":sending": "SENDING", ":completed": "COMPLETED", ":now": noticeClaimedAt },
+    }));
+  } catch (error) {
+    if (error?.name === "ConditionalCheckFailedException") return { sent: false, reason: "already-claimed-or-sent" };
+    throw error;
+  }
+
+  const statusUrl = new URL("/email/aws-native", appUrl);
+  statusUrl.searchParams.set("campaignId", manifest.campaign.id);
+  const subject = nextBatch
+    ? `Batch ${batch.batchNumber} finished — approve batch ${nextBatch.batchNumber}`
+    : `Campaign complete — ${manifest.campaign.subject}`;
+  const nextStep = nextBatch
+    ? `Batch ${nextBatch.batchNumber} is ready for your explicit approval. Nothing else will send until you return to the app.`
+    : "All campaign batches are complete.";
+  const text = [
+    `Campaign: ${manifest.campaign.subject}`,
+    `Campaign ID: ${manifest.campaign.id}`,
+    `Manifest: ${manifest.approvalSha256}`,
+    `Batch: ${batch.batchNumber} of ${manifest.batches.length}`,
+    `SES accepted: ${state.accepted}`,
+    `Dead: ${state.dead}`,
+    `Canceled/suppressed: ${state.canceled}`,
+    "",
+    nextStep,
+    statusUrl.toString(),
+  ].join("\n");
+  try {
+    const response = await ses.send(new SendEmailCommand({
+      FromEmailAddress: manifest.campaign.fromAddress,
+      Destination: { ToAddresses: [operatorEmail] },
+      ConfigurationSetName: configurationSet,
+      EmailTags: [
+        { Name: "campaign_id", Value: manifest.campaign.id },
+        { Name: "message_type", Value: "operator_notice" },
+      ],
+      Content: {
+        Simple: {
+          Subject: { Data: subject, Charset: "UTF-8" },
+          Body: { Text: { Data: text, Charset: "UTF-8" } },
+        },
+      },
+    }));
+    const sentAt = new Date().toISOString();
+    await db.send(new UpdateCommand({
+      TableName: tableName,
+      Key: key,
+      UpdateExpression: "SET operator_notice_state = :sent, operator_notice_sent_at = :now, operator_notice_message_id = :message, updated_at = :now",
+      ConditionExpression: "operator_notice_state = :sending AND operator_notice_claimed_at = :claimed",
+      ExpressionAttributeValues: {
+        ":sent": "SENT",
+        ":sending": "SENDING",
+        ":claimed": noticeClaimedAt,
+        ":now": sentAt,
+        ":message": response.MessageId ?? "",
+      },
+    }));
+    return { sent: true, messageId: response.MessageId ?? null };
+  } catch (error) {
+    await db.send(new UpdateCommand({
+      TableName: tableName,
+      Key: key,
+      UpdateExpression: "SET operator_notice_state = :ambiguous, operator_notice_error = :error, updated_at = :now",
+      ConditionExpression: "operator_notice_claimed_at = :claimed",
+      ExpressionAttributeValues: {
+        ":ambiguous": "AMBIGUOUS",
+        ":error": String(error?.message ?? error),
+        ":claimed": noticeClaimedAt,
+        ":now": new Date().toISOString(),
+      },
+    })).catch(() => {});
+    throw new Error(`Operator notice outcome is ambiguous; it will not be retried automatically. ${error.message}`);
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const campaignId = args.get("--campaign-id");
   const manifestKey = args.get("--manifest-key");
   const mode = args.get("--mode") ?? "dry-run";
+  const batchNumber = Number(args.get("--batch-number"));
   if (!campaignId || !UUID.test(campaignId)) throw new Error("--campaign-id must be a UUID.");
   if (!manifestKey) throw new Error("--manifest-key is required.");
   if (!["dry-run", "send"].includes(mode)) throw new Error("--mode must be dry-run or send.");
+  if (!Number.isSafeInteger(batchNumber) || batchNumber < 1) throw new Error("--batch-number must be a positive integer.");
 
   const region = required("AWS_REGION");
   const bucket = required("SES_CAMPAIGN_BUCKET");
   const tableName = required("SES_CAMPAIGN_STATE_TABLE");
   const configurationSet = required("AWS_SES_CONFIGURATION_SET");
+  const unsubscribeBaseUrl = required("SES_UNSUBSCRIBE_BASE_URL");
+  const unsubscribeSecretArn = required("SES_UNSUBSCRIBE_SECRET_ARN");
+  const operatorEmail = required("SES_OPERATOR_EMAIL");
+  const appUrl = required("SES_APP_URL");
   const s3 = new S3Client({ region });
   const db = DynamoDBDocumentClient.from(new DynamoDBClient({ region }), { marshallOptions: { removeUndefinedValues: true } });
   const ses = new SESv2Client({ region });
+  const secrets = new SecretsManagerClient({ region });
 
   const manifest = validateCampaignManifest(await downloadJson(s3, bucket, manifestKey), campaignId);
+  const selectedBatch = manifest.batches.find((batch) => batch.batchNumber === batchNumber);
+  if (!selectedBatch) throw new Error(`Manifest has no batch ${batchNumber}.`);
   assertSendReadySubject(manifest.campaign.subject);
   const recipientPath = join(tmpdir(), `props-ses-${campaignId}-${crypto.randomUUID()}.ndjson.gz`);
   await downloadFile(s3, bucket, manifest.recipients.key, recipientPath);
@@ -248,29 +498,82 @@ async function main() {
   const compiled = compileTemplate({ subject: manifest.campaign.subject, html: manifest.campaign.html, text: manifest.campaign.text });
   compiled.replacementData(recipientData({ to: inspected.sample.email, toName: inspected.sample.name, merge: inspected.sample.merge }, recipientHash(inspected.sample.email)));
 
-  const [account, existingItems] = await Promise.all([
+  const [account, campaignRecord, batchRecord, unsubscribeSecret] = await Promise.all([
     ses.send(new GetAccountCommand({})),
-    readCampaignState(db, tableName, campaignId),
+    getControlRecord(db, tableName, campaignId, META_RECIPIENT_HASH),
+    getControlRecord(db, tableName, campaignId, batchRecordKey(batchNumber)),
+    readUnsubscribeSecret(secrets, unsubscribeSecretArn),
   ]);
-  const state = summarizeCampaignState(existingItems);
-  const alreadyTerminal = state.accepted + state.dead + state.canceled;
-  const remaining = manifest.recipients.count - alreadyTerminal;
+  if (campaignRecord?.approval_sha256 !== manifest.approvalSha256 || campaignRecord?.manifest_key !== manifestKey) {
+    throw new Error("DynamoDB campaign control record does not match the immutable manifest.");
+  }
+  if (batchRecord?.approval_sha256 !== manifest.approvalSha256
+    || Number(batchRecord?.batch_number) !== batchNumber
+    || Number(batchRecord?.start_ordinal) !== selectedBatch.startOrdinal
+    || Number(batchRecord?.end_ordinal) !== selectedBatch.endOrdinal
+    || Number(batchRecord?.recipient_count) !== selectedBatch.count) {
+    throw new Error(`DynamoDB batch ${batchNumber} control record does not match the immutable manifest.`);
+  }
+  const state = summarizeBatchRecord(batchRecord);
+  const remainingInBatch = selectedBatch.count - terminalCount(state);
   const quota = {
     max24Hour: Number(account.SendQuota?.Max24HourSend ?? 0),
     sentLast24Hours: Number(account.SendQuota?.SentLast24Hours ?? 0),
     maxRate: Number(account.SendQuota?.MaxSendRate ?? 0),
   };
   quota.remaining = Math.max(0, Math.floor(quota.max24Hour - quota.sentLast24Hours));
-  const confirmation = campaignConfirmation(campaignId, manifest.approvalSha256);
-  console.log(JSON.stringify({ mode, campaign: { id: campaignId, subject: manifest.campaign.subject }, manifestKey, recipients: manifest.recipients.count, state, remaining, quota, requiredConfirmation: confirmation }, null, 2));
+  const noticeNeedsSend = !batchRecord.operator_notice_sent_at && !batchRecord.operator_notice_claimed_at;
+  const requiredHeadroom = remainingInBatch + (noticeNeedsSend ? 1 : 0);
+  const confirmation = batchConfirmation(campaignId, manifest.approvalSha256, batchNumber);
+  console.log(JSON.stringify({
+    mode,
+    campaign: { id: campaignId, subject: manifest.campaign.subject },
+    manifestKey,
+    recipients: manifest.recipients.count,
+    batch: { ...selectedBatch, releaseState: batchRecord.release_state },
+    state,
+    remainingInBatch,
+    requiredHeadroom,
+    quota,
+    unsubscribe: { baseUrl: unsubscribeBaseUrl, secretResolved: Boolean(unsubscribeSecret) },
+    operatorNotice: { email: operatorEmail, appUrl },
+    requiredConfirmation: confirmation,
+  }, null, 2));
   if (mode === "dry-run") {
     console.log("Dry run complete. No DynamoDB state was changed and no email was sent.");
     return;
   }
   if (args.get("--confirmation") !== confirmation) throw new Error(`Send mode requires --confirmation ${confirmation}.`);
+  if (account.ProductionAccessEnabled !== true) throw new Error("SES production access is not enabled in the configured region.");
   if (state.claimed > 0) throw new Error(`${state.claimed} recipient(s) are in ambiguous CLAIMED state. Reconcile SES events before retrying.`);
-  if (remaining <= 0) throw new Error("No recipients remain to send.");
-  if (quota.remaining < remaining) throw new Error(`SES rolling quota has room for ${quota.remaining}, but ${remaining} recipients remain. Raise the quota or wait; partial campaigns are refused.`);
+  if (state.retry < 0 || state.claimed < 0 || terminalCount(state) > selectedBatch.count) {
+    throw new Error(`Batch ${batchNumber} counters are internally inconsistent; do not send.`);
+  }
+  if (quota.remaining < requiredHeadroom) {
+    throw new Error(`SES rolling quota has room for ${quota.remaining}, but batch ${batchNumber} needs ${remainingInBatch} recipient sends${noticeNeedsSend ? " plus one operator notice" : ""}. Wait for rolling headroom; partial batches are refused.`);
+  }
+  if (!["READY_FOR_APPROVAL", "APPROVED", "COMPLETED"].includes(batchRecord.release_state)) {
+    throw new Error(`Batch ${batchNumber} is ${batchRecord.release_state ?? "uninitialized"}, not ready for approval.`);
+  }
+  if (batchRecord.release_state !== "COMPLETED") {
+    await authorizeBatch(db, tableName, campaignId, manifest.approvalSha256, batchNumber, confirmation);
+  } else {
+    const nextBatch = manifest.batches.find((batch) => batch.batchNumber === batchNumber + 1) ?? null;
+    const notice = await sendOperatorNotice({
+      db,
+      tableName,
+      ses,
+      configurationSet,
+      manifest,
+      batch: selectedBatch,
+      state,
+      nextBatch,
+      operatorEmail,
+      appUrl,
+    });
+    console.log(JSON.stringify({ complete: true, alreadyCompleted: true, state, operatorNotice: notice }, null, 2));
+    return;
+  }
 
   const configuredRate = Number(args.get("--max-recipients-per-second") ?? process.env.SES_BULK_MAX_RECIPIENTS_PER_SECOND ?? 13);
   if (!Number.isFinite(configuredRate) || configuredRate < 1) throw new Error("Maximum recipient rate must be at least 1.");
@@ -297,16 +600,17 @@ async function main() {
       if (isTerminalState(previous?.status)) continue;
       if (previous?.status === "CLAIMED") throw new Error(`Recipient ${recipient.email} entered ambiguous CLAIMED state. Stop and reconcile.`);
       if (suppression) {
-        await transact(db, [{
-          Update: {
-            TableName: tableName,
-            Key: { campaign_id: campaignId, recipient_hash: hash },
-            UpdateExpression: "SET #status = :status, email = :email, last_error = :reason, updated_at = :now",
-            ConditionExpression: "attribute_not_exists(#status) OR #status = :retry",
-            ExpressionAttributeNames: { "#status": "status" },
-            ExpressionAttributeValues: { ":status": "CANCELED", ":email": recipient.email, ":reason": `Suppressed: ${suppression.reason ?? "global AWS suppression"}`, ":now": new Date().toISOString(), ":retry": "RETRY" },
-          },
-        }]);
+        await cancelSuppressedRecipient(
+          db,
+          tableName,
+          campaignId,
+          batchNumber,
+          manifest.approvalSha256,
+          recipient,
+          hash,
+          previous,
+          `Suppressed: ${suppression.reason ?? "global AWS suppression"}`,
+        );
         suppressed += 1;
         continue;
       }
@@ -319,7 +623,7 @@ async function main() {
     }
     if (!eligible.length) return;
     const claimToken = crypto.randomUUID();
-    const claimed = await claimBatch(db, tableName, campaignId, manifest.approvalSha256, eligible, claimToken);
+    const claimed = await claimBatch(db, tableName, campaignId, manifest.approvalSha256, batchNumber, eligible, claimToken);
     let response;
     try {
       response = await ses.send(new SendBulkEmailCommand({
@@ -337,15 +641,28 @@ async function main() {
             Headers: manifest.campaign.replyTo ? [{ Name: "List-Unsubscribe", Value: `<mailto:${manifest.campaign.replyTo}?subject=Unsubscribe>` }] : undefined,
           },
         },
-        BulkEmailEntries: claimed.map(({ recipient, hash, replacementData }) => ({
-          Destination: { ToAddresses: [recipient.email] },
-          ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(replacementData) } },
-          ReplacementTags: [
-            { Name: "campaign_id", Value: campaignId },
-            { Name: "manifest", Value: manifest.approvalSha256.slice(0, 16) },
-            { Name: "recipient_hash", Value: hash },
-          ],
-        })),
+        BulkEmailEntries: claimed.map(({ recipient, hash, replacementData }) => {
+          const unsubscribeUrl = oneClickUnsubscribeUrl({
+            baseUrl: unsubscribeBaseUrl,
+            secret: unsubscribeSecret,
+            campaignId,
+            email: recipient.email,
+          });
+          return {
+            Destination: { ToAddresses: [recipient.email] },
+            ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(replacementData) } },
+            ReplacementHeaders: [
+              { Name: "List-Unsubscribe", Value: `<${unsubscribeUrl}>` },
+              { Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click" },
+            ],
+            ReplacementTags: [
+              { Name: "campaign_id", Value: campaignId },
+              { Name: "manifest", Value: manifest.approvalSha256.slice(0, 16) },
+              { Name: "recipient_hash", Value: hash },
+              { Name: "batch_number", Value: String(batchNumber) },
+            ],
+          };
+        }),
       }));
     } catch (error) {
       throw new Error(`SES request failed after ${claimed.length} recipients were claimed. Their state is intentionally ambiguous; do not retry until reconciled. ${error.message}`);
@@ -355,7 +672,7 @@ async function main() {
       ...entry,
       ...classifyNativeSesResult(response.BulkEmailEntryResults[index], entry.attempts, MAX_ATTEMPTS),
     }));
-    await checkpointBatch(db, tableName, campaignId, claimToken, results);
+    await checkpointBatch(db, tableName, campaignId, batchNumber, claimToken, results);
     accepted += results.filter((result) => result.status === "ACCEPTED").length;
     dead += results.filter((result) => result.status === "DEAD").length;
     retry += results.filter((result) => result.status === "RETRY").length;
@@ -367,6 +684,8 @@ async function main() {
 
   try {
     for await (const recipient of recipientLines(recipientPath)) {
+      if (recipient.ordinal < selectedBatch.startOrdinal) continue;
+      if (recipient.ordinal >= selectedBatch.endOrdinal) break;
       batch.push(recipient);
       if (batch.length >= batchSize) {
         await sendBatch(batch);
@@ -378,10 +697,44 @@ async function main() {
     await releaseLease(db, tableName, campaignId, leaseOwner);
   }
 
-  const finalItems = await readCampaignState(db, tableName, campaignId);
-  const finalState = summarizeCampaignState(finalItems);
-  const complete = finalState.accepted + finalState.dead + finalState.canceled === manifest.recipients.count && finalState.claimed === 0 && finalState.retry === 0;
-  console.log(JSON.stringify({ complete, acceptedThisRun: accepted, suppressedThisRun: suppressed, finalState }, null, 2));
+  const finalRecord = await getControlRecord(db, tableName, campaignId, batchRecordKey(batchNumber));
+  const finalState = summarizeBatchRecord(finalRecord);
+  const complete = terminalCount(finalState) === selectedBatch.count
+    && finalState.claimed === 0
+    && finalState.retry === 0;
+  let operatorNotice = null;
+  if (complete) {
+    const nextBatch = manifest.batches.find((candidate) => candidate.batchNumber === batchNumber + 1) ?? null;
+    await completeBatchAndPromoteNext(
+      db,
+      tableName,
+      campaignId,
+      manifest.approvalSha256,
+      selectedBatch,
+      finalState,
+      nextBatch,
+    );
+    operatorNotice = await sendOperatorNotice({
+      db,
+      tableName,
+      ses,
+      configurationSet,
+      manifest,
+      batch: selectedBatch,
+      state: finalState,
+      nextBatch,
+      operatorEmail,
+      appUrl,
+    });
+  }
+  console.log(JSON.stringify({
+    complete,
+    batchNumber,
+    acceptedThisRun: accepted,
+    suppressedThisRun: suppressed,
+    finalState,
+    operatorNotice,
+  }, null, 2));
   if (!complete) process.exitCode = 2;
 }
 

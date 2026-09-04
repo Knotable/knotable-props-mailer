@@ -4,6 +4,7 @@ import {
   Activity,
   BarChart3,
   CheckCircle2,
+  CloudCog,
   History,
   List,
   ListChecks,
@@ -27,6 +28,7 @@ const navIconByHref: Record<string, LucideIcon> = {
   "/email/schedule": ListChecks,
   "/email/sends": History,
   "/email/monitor": Radio,
+  "/email/aws-native": CloudCog,
   "/email/analytics": BarChart3,
   "/lists": List,
   "/account": UserCircle,
@@ -156,6 +158,7 @@ type AppShellProps = PropsWithChildren<{
   buildInfo: BuildInfo;
   canSend?: boolean;
   canManageUsers?: boolean;
+  awsNativeEnabled?: boolean;
 }>;
 
 const formatBuildDate = (value: string | null) => {
@@ -180,9 +183,13 @@ export const AppShell = ({
   buildInfo,
   canSend = false,
   canManageUsers = false,
+  awsNativeEnabled = false,
 }: AppShellProps) => {
   const pathname = usePathname();
-  const navItems = dashboardNav.filter((item) => item.href !== "/users" || canManageUsers);
+  const navItems = dashboardNav.filter((item) =>
+    (item.href !== "/users" || canManageUsers)
+    && (item.href !== "/email/aws-native" || (canSend && awsNativeEnabled)),
+  );
 
   return (
     <div className="min-h-dvh bg-slate-100 pb-[calc(env(safe-area-inset-bottom)+5.75rem)] md:pb-[env(safe-area-inset-bottom)]">
