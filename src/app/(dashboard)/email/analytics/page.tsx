@@ -11,6 +11,11 @@ import {
 } from "@/lib/appSettings";
 import { isoDaysAgo } from "@/lib/dateWindows";
 import { DataFreshness } from "@/components/data-freshness";
+import {
+  describeAnalyticsFailure,
+  formatCampaignMetric,
+  type AnalyticsFailure,
+} from "@/lib/analyticsAvailability";
 
 async function updateDailySendLimitAction(formData: FormData) {
   "use server";
@@ -168,7 +173,7 @@ export default async function AnalyticsPage() {
   };
 
   let campaignStats: CampaignAnalyticsRow[] = [];
-  let analyticsRpcMissing = false;
+  let analyticsFailure: AnalyticsFailure | null = null;
 
   const { data: recentAnalyticsStats, error: recentAnalyticsStatsError } = await (
     supabase as unknown as AnalyticsRpcClient
@@ -178,7 +183,7 @@ export default async function AnalyticsPage() {
   });
 
   if (recentAnalyticsStatsError) {
-    analyticsRpcMissing = true;
+    analyticsFailure = describeAnalyticsFailure(recentAnalyticsStatsError);
 
     const { data: recentEmails } = await supabase
       .from("emails")
@@ -247,9 +252,9 @@ export default async function AnalyticsPage() {
   const listNames = new Map((listRows ?? []).map((l) => [l.id, l.name]));
 
   const campaigns = campaignStats.map((c) => {
-    const engagementRate = c.sent > 0 ? Math.round((c.opened / c.sent) * 1000) / 10 : null;
-    const clickRate = c.sent > 0 ? Math.round((c.clicked / c.sent) * 1000) / 10 : null;
-    const bounceRate = c.sent > 0 ? Math.round((c.bounced / c.sent) * 1000) / 10 : null;
+    const engagementRate = !analyticsFailure && c.sent > 0 ? Math.round((c.opened / c.sent) * 1000) / 10 : null;
+    const clickRate = !analyticsFailure && c.sent > 0 ? Math.round((c.clicked / c.sent) * 1000) / 10 : null;
+    const bounceRate = !analyticsFailure && c.sent > 0 ? Math.round((c.bounced / c.sent) * 1000) / 10 : null;
 
     return {
       ...c,
@@ -379,13 +384,13 @@ export default async function AnalyticsPage() {
         />
         <ConfidenceItem
           label="Campaign rows"
-          value={analyticsRpcMissing ? "Fallback mode" : "Exact recent counts"}
+          value={analyticsFailure ? "Totals unavailable" : "Exact recent counts"}
           detail={
-            analyticsRpcMissing
-              ? "Apply the 20260702 analytics RPC migration for full campaign stats."
+            analyticsFailure
+              ? "Campaign names remain visible, but failed aggregates are never presented as zero activity."
               : "Recent rows are counted in Postgres without page-level sampling."
           }
-          tone={analyticsRpcMissing ? "amber" : "green"}
+          tone={analyticsFailure ? "amber" : "green"}
         />
       </section>
 
@@ -440,14 +445,13 @@ export default async function AnalyticsPage() {
           <span className="font-normal text-slate-400">(most recent 50)</span>
         </h3>
 
-        {analyticsRpcMissing && (
+        {analyticsFailure && (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 mb-3">
-            <span className="font-medium">Showing recent emails without exact analytics totals.</span>{" "}
-            Run{" "}
-            <code className="rounded bg-amber-100 px-1">
-              supabase/migrations/20260702_recent_analytics_rpc.sql
-            </code>{" "}
-            for exact queue and provider-event campaign totals.
+            <span className="font-medium">{analyticsFailure.title}</span>{" "}
+            {analyticsFailure.detail}{" "}
+            Run <code className="rounded bg-amber-100 px-1">npm run check:analytics</code> for a
+            read-only diagnosis
+            {analyticsFailure.code ? ` (database code ${analyticsFailure.code})` : ""}.
           </div>
         )}
         {campaigns.length === 0 ? (
@@ -475,12 +479,12 @@ export default async function AnalyticsPage() {
                 </div>
 
                 <div className="mt-4 grid grid-cols-3 gap-2">
-                  <MiniMetric label="sent" value={c.sent} tone="green" />
-                  <MiniMetric label="opened" value={c.opened} tone="blue" />
-                  <MiniMetric label="clicked" value={c.clicked} tone="blue" />
-                  <MiniMetric label="pending" value={c.pending} tone="amber" />
-                  <MiniMetric label="failed" value={c.failed} tone="red" />
-                  <MiniMetric label="bounced" value={c.bounced} tone="amber" />
+                  <MiniMetric label="sent" value={analyticsFailure ? null : c.sent} tone="green" />
+                  <MiniMetric label="opened" value={analyticsFailure ? null : c.opened} tone="blue" />
+                  <MiniMetric label="clicked" value={analyticsFailure ? null : c.clicked} tone="blue" />
+                  <MiniMetric label="pending" value={analyticsFailure ? null : c.pending} tone="amber" />
+                  <MiniMetric label="failed" value={analyticsFailure ? null : c.failed} tone="red" />
+                  <MiniMetric label="bounced" value={analyticsFailure ? null : c.bounced} tone="amber" />
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-2 text-xs">
@@ -539,41 +543,43 @@ export default async function AnalyticsPage() {
                       <span
                         className="inline-flex items-center justify-end gap-1"
                         title={
-                          c.sent > 0
+                          analyticsFailure
+                            ? "Exact campaign totals are unavailable."
+                            : c.sent > 0
                             ? "Accepted by SES according to mail_queue succeeded rows."
                             : "No succeeded queue rows yet."
                         }
                       >
-                        {c.sent > 0 && (
+                        {!analyticsFailure && c.sent > 0 && (
                           <span className="font-semibold text-green-600" aria-label="SES accepted">
                             ✓
                           </span>
                         )}
-                        {c.sent.toLocaleString()}
+                        {formatCampaignMetric(c.sent, !analyticsFailure)}
                       </span>
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? c.delivered.toLocaleString() : "—"}
+                      {hasSnsEvents ? formatCampaignMetric(c.delivered, !analyticsFailure) : "—"}
                     </td>
                     <td
                       className={`px-4 py-3 text-right tabular-nums ${
                         c.pending > 0 ? "text-blue-700" : "text-slate-400"
                       }`}
                     >
-                      {c.pending > 0 ? c.pending.toLocaleString() : "—"}
+                      {formatCampaignMetric(c.pending, !analyticsFailure, true)}
                     </td>
                     <td
                       className={`px-4 py-3 text-right tabular-nums ${
                         c.failed > 0 ? "text-red-600" : "text-slate-400"
                       }`}
                     >
-                      {c.failed > 0 ? c.failed.toLocaleString() : "—"}
+                      {formatCampaignMetric(c.failed, !analyticsFailure, true)}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? c.opened.toLocaleString() : "—"}
+                      {hasSnsEvents ? formatCampaignMetric(c.opened, !analyticsFailure) : "—"}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? c.clicked.toLocaleString() : "—"}
+                      {hasSnsEvents ? formatCampaignMetric(c.clicked, !analyticsFailure) : "—"}
                     </td>
                     <td
                       className={`px-4 py-3 text-right tabular-nums ${
@@ -581,7 +587,9 @@ export default async function AnalyticsPage() {
                       }`}
                     >
                       {hasSnsEvents
-                        ? c.bounced > 0
+                        ? analyticsFailure
+                          ? "—"
+                          : c.bounced > 0
                           ? c.bounced.toLocaleString()
                           : "—"
                         : "—"}
@@ -592,7 +600,9 @@ export default async function AnalyticsPage() {
                       }`}
                     >
                       {hasSnsEvents
-                        ? c.complained > 0
+                        ? analyticsFailure
+                          ? "—"
+                          : c.complained > 0
                           ? c.complained.toLocaleString()
                           : "—"
                         : "—"}
@@ -670,7 +680,7 @@ function MiniMetric({
   tone,
 }: {
   label: string;
-  value: number;
+  value: number | null;
   tone: "green" | "blue" | "amber" | "red";
 }) {
   const toneClasses = {
@@ -683,7 +693,7 @@ function MiniMetric({
   return (
     <div className="rounded-lg border border-slate-100 bg-slate-50 px-2 py-2">
       <p className={`text-base font-semibold tabular-nums ${toneClasses[tone]}`}>
-        {value.toLocaleString()}
+        {value === null ? "—" : value.toLocaleString()}
       </p>
       <p className="text-[11px] uppercase tracking-wide text-slate-400">{label}</p>
     </div>

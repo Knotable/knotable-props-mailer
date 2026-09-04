@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
+    "check:analytics": "node scripts/check-analytics.mjs",
+    "check:150k": "node scripts/check-ses-native-readiness.mjs",
     "worker:ses-bulk": "node scripts/ses-bulk-worker.mjs",
     "worker:ses-native": "node scripts/ses-native-worker.mjs",
     "campaign:snapshot": "node scripts/build-ses-native-campaign.mjs"
