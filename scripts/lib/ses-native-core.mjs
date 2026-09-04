@@ -20,6 +20,7 @@ export function campaignApprovalDigest(manifest) {
       key: manifest.recipients?.key,
       sha256: manifest.recipients?.sha256,
     },
+    batches: manifest.batches,
   };
   return crypto.createHash("sha256").update(JSON.stringify(approval)).digest("hex");
 }
@@ -28,9 +29,61 @@ export function campaignConfirmation(campaignId, approvalSha256) {
   return `send:${campaignId}:${approvalSha256.slice(0, 12)}`;
 }
 
+export function batchConfirmation(campaignId, approvalSha256, batchNumber) {
+  return `${campaignConfirmation(campaignId, approvalSha256)}:batch:${batchNumber}`;
+}
+
+export function batchRecordKey(batchNumber) {
+  if (!Number.isSafeInteger(batchNumber) || batchNumber < 1) throw new Error("Batch number must be a positive integer.");
+  return `!BATCH#${String(batchNumber).padStart(3, "0")}`;
+}
+
+export function planRecipientBatches(audience, batchCount = 3) {
+  if (!Number.isSafeInteger(audience) || audience < 1) throw new Error("Audience must be a positive integer.");
+  if (!Number.isSafeInteger(batchCount) || batchCount < 1 || batchCount > audience) {
+    throw new Error("Batch count must be a positive integer no larger than the audience.");
+  }
+  const baseSize = Math.floor(audience / batchCount);
+  const remainder = audience % batchCount;
+  let startOrdinal = 0;
+  return Array.from({ length: batchCount }, (_, index) => {
+    const count = baseSize + (index < remainder ? 1 : 0);
+    const batch = {
+      batchNumber: index + 1,
+      startOrdinal,
+      endOrdinal: startOrdinal + count,
+      count,
+    };
+    startOrdinal += count;
+    return batch;
+  });
+}
+
+export function batchForOrdinal(batches, ordinal) {
+  if (!Number.isSafeInteger(ordinal) || ordinal < 0) return null;
+  return batches.find((batch) => ordinal >= batch.startOrdinal && ordinal < batch.endOrdinal) ?? null;
+}
+
+export function unsubscribeSignature({ secret, campaignId, email }) {
+  if (!secret) throw new Error("Unsubscribe signing secret is required.");
+  return crypto
+    .createHmac("sha256", secret)
+    .update(`v1\n${campaignId}\n${normalizeEmail(email)}`)
+    .digest("hex");
+}
+
+export function oneClickUnsubscribeUrl({ baseUrl, secret, campaignId, email }) {
+  const normalized = normalizeEmail(email);
+  const url = new URL(baseUrl);
+  url.searchParams.set("campaign", campaignId);
+  url.searchParams.set("recipient", Buffer.from(normalized, "utf8").toString("base64url"));
+  url.searchParams.set("signature", unsubscribeSignature({ secret, campaignId, email: normalized }));
+  return url.toString();
+}
+
 export function validateCampaignManifest(value, expectedCampaignId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Campaign manifest must be a JSON object.");
-  if (value.schemaVersion !== 1) throw new Error(`Unsupported campaign manifest schemaVersion ${value.schemaVersion}.`);
+  if (value.schemaVersion !== 2) throw new Error(`Unsupported campaign manifest schemaVersion ${value.schemaVersion}.`);
   if (!value.campaign || value.campaign.id !== expectedCampaignId) throw new Error("Campaign manifest id does not match --campaign-id.");
   for (const key of ["fromAddress", "subject", "html"]) {
     if (typeof value.campaign[key] !== "string" || !value.campaign[key].trim()) throw new Error(`Campaign manifest is missing campaign.${key}.`);
@@ -40,6 +93,10 @@ export function validateCampaignManifest(value, expectedCampaignId) {
   }
   if (typeof value.recipients.key !== "string" || !value.recipients.key.trim()) throw new Error("Campaign manifest is missing recipients.key.");
   if (!/^[0-9a-f]{64}$/i.test(value.recipients.sha256 ?? "")) throw new Error("Campaign manifest has an invalid recipients.sha256.");
+  const expectedBatches = planRecipientBatches(value.recipients.count, Math.min(3, value.recipients.count));
+  if (JSON.stringify(value.batches) !== JSON.stringify(expectedBatches)) {
+    throw new Error("Campaign manifest must contain the canonical three-batch recipient partition.");
+  }
   if (!/^[0-9a-f]{64}$/i.test(value.approvalSha256 ?? "")) throw new Error("Campaign manifest has an invalid approvalSha256.");
   const expectedApproval = campaignApprovalDigest(value);
   if (value.approvalSha256 !== expectedApproval) throw new Error("Campaign manifest approval digest does not match its content and audience.");

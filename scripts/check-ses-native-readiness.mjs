@@ -51,7 +51,9 @@ add(
 const usesOidc = /id-token:\s*write/.test(workflow)
   && /aws-actions\/configure-aws-credentials@/.test(workflow)
   && /role-to-assume:/.test(workflow)
-  && !/AWS_ACCESS_KEY_ID:\s*\$\{\{\s*secrets\./.test(workflow);
+  && !/AWS_ACCESS_KEY_ID:\s*\$\{\{\s*secrets\./.test(workflow)
+  && /GitHubWorkerRole:/.test(template)
+  && /sts:AssumeRoleWithWebIdentity/.test(template);
 add(
   usesOidc,
   "GitHub-to-AWS authentication",
@@ -69,12 +71,15 @@ add(
 );
 
 const hasOneClickUnsubscribe = /List-Unsubscribe-Post/i.test(`${worker}\n${builder}`)
-  && /List-Unsubscribe/i.test(`${worker}\n${builder}`);
+  && /List-Unsubscribe/i.test(`${worker}\n${builder}`)
+  && /AWS::Lambda::Url/.test(template)
+  && /ONE_CLICK_UNSUBSCRIBE/.test(template)
+  && /SIGNING_SECRET_ARN/.test(template);
 add(
   hasOneClickUnsubscribe,
   "One-click unsubscribe",
-  hasOneClickUnsubscribe ? "Native messages declare RFC 8058 one-click unsubscribe headers." : "The native worker does not yet prove RFC 8058 one-click unsubscribe headers.",
-  "Add per-recipient signed unsubscribe URLs plus List-Unsubscribe and List-Unsubscribe-Post headers, then test suppression before a canary.",
+  hasOneClickUnsubscribe ? "Native messages declare RFC 8058 one-click unsubscribe headers and the AWS endpoint is defined." : "Per-recipient RFC 8058 headers are implemented, but the HMAC-validating AWS endpoint is not yet defined.",
+  "After explicit approval, add the narrow signed unsubscribe endpoint and test suppression before a canary.",
 );
 
 const controlCandidates = [
@@ -83,11 +88,15 @@ const controlCandidates = [
   "src/app/(dashboard)/email/campaigns/[emailId]/native/page.tsx",
 ];
 const hasAppControlSurface = controlCandidates.some((path) => existsSync(path));
+const appActions = existsSync("src/app/(dashboard)/email/aws-native/actions.ts")
+  ? read("src/app/(dashboard)/email/aws-native/actions.ts")
+  : "";
+const appFailsClosed = /AWS_NATIVE_CONTROL_ENABLED\s*!==\s*"true"/.test(appActions);
 add(
-  hasAppControlSurface,
+  hasAppControlSurface && appFailsClosed,
   "In-app native launch and status",
-  hasAppControlSurface ? "An AWS-native app control surface exists." : "No app page launches or reports the AWS-native campaign path yet.",
-  "Add authenticated snapshot/dry-run/launch/status controls backed by S3 and DynamoDB; keep sending outside Vercel request execution.",
+  hasAppControlSurface && appFailsClosed ? "An AWS-native app control surface exists and remains disabled until explicitly enabled." : "The AWS-native control surface is missing or does not fail closed behind its production feature flag.",
+  "Add authenticated dry-run/launch/status controls backed by AWS and keep them disabled until production gates pass.",
 );
 
 add(
@@ -102,7 +111,8 @@ const nativeSources = `${worker}\n${builder}\n${workflow}`;
 const hasApprovalBatches = /QUEUED_FOR_APPROVAL/.test(nativeSources)
   && /READY_FOR_APPROVAL/.test(nativeSources)
   && /--batch-number/.test(nativeSources)
-  && /quota\.remaining\s*<\s*(?:batchRemaining|remainingInBatch)/.test(nativeSources);
+  && /requiredHeadroom/.test(nativeSources)
+  && /quota\.remaining\s*<\s*requiredHeadroom/.test(nativeSources);
 add(
   hasApprovalBatches,
   "Three approval-gated release batches",
@@ -127,22 +137,37 @@ add(
 if (!live) {
   add("SKIP", "Live AWS deployment", "Not checked. Re-run with --live after setting AWS-native environment variables.", "npm run check:150k -- --live");
 } else {
-  const requiredEnv = ["AWS_REGION", "AWS_SES_CONFIGURATION_SET", "SES_CAMPAIGN_BUCKET", "SES_CAMPAIGN_STATE_TABLE"];
+  const requiredEnv = [
+    "AWS_REGION",
+    "AWS_SES_CONFIGURATION_SET",
+    "SES_CAMPAIGN_BUCKET",
+    "SES_CAMPAIGN_STATE_TABLE",
+    "SES_UNSUBSCRIBE_BASE_URL",
+    "SES_UNSUBSCRIBE_SECRET_ARN",
+    "SES_OPERATOR_EMAIL",
+    "SES_APP_URL",
+    "AWS_NATIVE_CONTROL_ENABLED",
+    "GITHUB_ACTIONS_DISPATCH_TOKEN",
+  ];
   const missingEnv = requiredEnv.filter((name) => !process.env[name]);
   if (missingEnv.length) {
     add(false, "Live AWS configuration", `Missing ${missingEnv.join(", ")}.`, "Set the deployed CloudFormation outputs and rerun with --live.");
   } else {
-    const [{ SESv2Client, GetAccountCommand, GetConfigurationSetCommand }, s3Module, ddbModule] = await Promise.all([
+    add(process.env.AWS_NATIVE_CONTROL_ENABLED === "true", "AWS control feature flag", `AWS_NATIVE_CONTROL_ENABLED=${process.env.AWS_NATIVE_CONTROL_ENABLED}.`, "Keep it false during setup; set it to true only for the final live readiness check after credentials and canaries are complete.");
+    const [{ SESv2Client, GetAccountCommand, GetConfigurationSetCommand }, s3Module, ddbModule, secretsModule] = await Promise.all([
       import("@aws-sdk/client-sesv2"),
       import("@aws-sdk/client-s3"),
       import("@aws-sdk/client-dynamodb"),
+      import("@aws-sdk/client-secrets-manager"),
     ]);
     const { S3Client, HeadBucketCommand, GetBucketVersioningCommand } = s3Module;
     const { DynamoDBClient, DescribeTableCommand, DescribeContinuousBackupsCommand } = ddbModule;
+    const { SecretsManagerClient, GetSecretValueCommand } = secretsModule;
     const region = process.env.AWS_REGION;
     const ses = new SESv2Client({ region });
     const s3 = new S3Client({ region });
     const ddb = new DynamoDBClient({ region });
+    const secrets = new SecretsManagerClient({ region });
 
     try {
       const account = await ses.send(new GetAccountCommand({}));
@@ -156,7 +181,7 @@ if (!live) {
         quotaBuffer,
       });
       add(account.ProductionAccessEnabled === true, "SES production access", `Production access: ${Boolean(account.ProductionAccessEnabled)}.`, "Request SES production access in the worker region.");
-      add(capacity.quotaReady, "SES quota and rolling batch headroom", `Quota ${Number(quota.Max24HourSend ?? 0).toLocaleString()}; sent last 24h ${Number(quota.SentLast24Hours ?? 0).toLocaleString()}; headroom ${capacity.headroom.toLocaleString()}; batch ${largestBatch.toLocaleString()}; policy quota minimum ${requirements.requiredDailyQuota.toLocaleString()}.`, "Raise quota or wait until rolling headroom covers the complete approved batch.");
+      add(capacity.quotaReady, "SES quota and rolling batch headroom", `Quota ${Number(quota.Max24HourSend ?? 0).toLocaleString()}; sent last 24h ${Number(quota.SentLast24Hours ?? 0).toLocaleString()}; headroom ${capacity.headroom.toLocaleString()}; required headroom ${capacity.requiredRollingHeadroom.toLocaleString()} including notice; policy quota minimum ${requirements.requiredDailyQuota.toLocaleString()}.`, "Wait until rolling headroom covers the complete approved batch plus its operator notice.");
       add(capacity.rateReady, "SES send rate", `Rate ${Number(quota.MaxSendRate ?? 0)}/s; batch policy minimum ${requirements.requiredSesRate}/s; estimated ${capacity.estimatedMinutes ?? "unknown"} minutes.`, "Request a higher SES maximum send rate or explicitly revise the batch-duration policy.");
     } catch (error) {
       add(false, "SES live access", error.message, "Fix AWS credentials, IAM permissions, and region, then rerun.");
@@ -192,6 +217,20 @@ if (!live) {
     } catch (error) {
       add(false, "Live SES event destination", error.message, "Deploy the configuration set and grant ses:GetConfigurationSet.");
     }
+
+    try {
+      const secret = await secrets.send(new GetSecretValueCommand({ SecretId: process.env.SES_UNSUBSCRIBE_SECRET_ARN }));
+      add(Boolean(secret.SecretString || secret.SecretBinary), "Unsubscribe signing secret", "The configured AWS signing secret is reachable; its value was not printed.", "Create the secret and grant the worker read access.");
+    } catch (error) {
+      add(false, "Unsubscribe signing secret", error.message, "Create the secret and grant the worker read access.");
+    }
+
+    try {
+      const response = await fetch(process.env.SES_UNSUBSCRIBE_BASE_URL, { redirect: "manual" });
+      add(response.status === 400, "Live unsubscribe endpoint", `Unsigned probe returned HTTP ${response.status}; expected the fail-closed HTTP 400 response.`, "Deploy the signed AWS unsubscribe endpoint and set SES_UNSUBSCRIBE_BASE_URL.");
+    } catch (error) {
+      add(false, "Live unsubscribe endpoint", error.message, "Deploy the signed AWS unsubscribe endpoint and set SES_UNSUBSCRIBE_BASE_URL.");
+    }
   }
 }
 
@@ -202,7 +241,7 @@ if (json) {
 } else {
   console.log(`SES-native readiness for ${audience.toLocaleString()} recipients (read-only)`);
   console.log(`Plan: ${batchPlan.map((batch) => `batch ${batch.batchNumber}=${batch.size.toLocaleString()} (${batch.releaseState})`).join("; ")}.`);
-  console.log(`Per-batch policy: quota >= ${requirements.requiredDailyQuota.toLocaleString()}, rolling headroom >= ${largestBatch.toLocaleString()}, rate >= ${requirements.requiredSesRate}/s, batch <= ${maxDurationMinutes} minutes.`);
+  console.log(`Per-batch policy: quota >= ${requirements.requiredDailyQuota.toLocaleString()}, rolling headroom >= ${requirements.requiredRollingHeadroom.toLocaleString()}, rate >= ${requirements.requiredSesRate}/s, batch <= ${maxDurationMinutes} minutes.`);
   for (const check of normalized) {
     console.log(`${check.status.padEnd(4)} ${check.name}: ${check.detail}`);
     if (check.status !== "PASS" && check.next) console.log(`     Next: ${check.next}`);

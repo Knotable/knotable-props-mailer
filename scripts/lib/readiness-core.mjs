@@ -1,11 +1,13 @@
 export function requiredSesCapacity({
   audience,
+  quotaReserve = 1,
   quotaBuffer = 1.2,
   maxDurationMinutes = 60,
   workerUtilization = 0.9,
 }) {
   if (!Number.isFinite(audience) || audience < 1) throw new Error("Audience must be positive.");
   if (!Number.isFinite(quotaBuffer) || quotaBuffer < 1) throw new Error("Quota buffer must be at least 1.");
+  if (!Number.isSafeInteger(quotaReserve) || quotaReserve < 0) throw new Error("Quota reserve must be a non-negative integer.");
   if (!Number.isFinite(maxDurationMinutes) || maxDurationMinutes < 1) throw new Error("Maximum duration must be positive.");
   if (!Number.isFinite(workerUtilization) || workerUtilization <= 0 || workerUtilization > 1) {
     throw new Error("Worker utilization must be greater than 0 and at most 1.");
@@ -13,6 +15,7 @@ export function requiredSesCapacity({
 
   return {
     requiredDailyQuota: Math.ceil(audience * quotaBuffer),
+    requiredRollingHeadroom: audience + quotaReserve,
     requiredSesRate: Math.ceil(audience / (maxDurationMinutes * 60 * workerUtilization)),
   };
 }
@@ -37,7 +40,7 @@ export function evaluateSesCapacity({ audience, max24Hour, sentLast24Hours, maxR
   return {
     ...required,
     headroom,
-    quotaReady: max24Hour >= required.requiredDailyQuota && headroom >= audience,
+    quotaReady: max24Hour >= required.requiredDailyQuota && headroom >= required.requiredRollingHeadroom,
     rateReady: maxRate >= required.requiredSesRate,
     estimatedMinutes: maxRate > 0 ? Math.ceil(audience / (maxRate * (policy.workerUtilization ?? 0.9)) / 60) : null,
   };

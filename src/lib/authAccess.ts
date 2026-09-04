@@ -8,11 +8,24 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 export const ALLOWED_EMAIL = process.env.ALLOWED_EMAIL ?? "a@sarva.co";
 export const BYPASS_COOKIE_NAME = "props-mailer-bypass";
 
-const BYPASS_PASSWORD_SHA256 =
-  "cf1878cb8ecc9dd537b2a25273d5ff92eb8eec876a6dfb008d6f52a1d667cb53";
-const BYPASS_COOKIE_HMAC_KEY =
-  "074e9acec6c6dbd092dc617febf7cf5ce24c80ab2013c06aea1f4639092a3bf5";
 const BYPASS_DURATION_MS = 12 * 60 * 60 * 1000;
+const HEX_256 = /^[0-9a-f]{64}$/i;
+
+const bypassPasswordSha256 = () => {
+  const value = process.env.BYPASS_PASSWORD_SHA256?.trim();
+  return value && HEX_256.test(value) ? value.toLowerCase() : null;
+};
+
+const bypassCookieHmacKey = () => {
+  const value = process.env.BYPASS_COOKIE_HMAC_KEY?.trim();
+  return value && HEX_256.test(value) ? value.toLowerCase() : null;
+};
+
+export const isBypassConfigured = () => {
+  const passwordHash = bypassPasswordSha256();
+  const hmacKey = bypassCookieHmacKey();
+  return Boolean(passwordHash && hmacKey && passwordHash !== hmacKey);
+};
 
 export type ServerAuthContext = {
   userId: string;
@@ -38,21 +51,27 @@ const secureCompareHex = (left: string, right: string) => {
   return leftBuf.length === rightBuf.length && timingSafeEqual(leftBuf, rightBuf);
 };
 
-const signBypassExpiry = (expiresAtMs: number) =>
-  createHmac("sha256", Buffer.from(BYPASS_COOKIE_HMAC_KEY, "hex"))
+const signBypassExpiry = (expiresAtMs: number) => {
+  const key = bypassCookieHmacKey();
+  if (!key) throw new Error("Bypass login is disabled: missing valid BYPASS_COOKIE_HMAC_KEY.");
+  return createHmac("sha256", Buffer.from(key, "hex"))
     .update(String(expiresAtMs))
     .digest("hex");
+};
 
-export const verifyBypassPassword = (candidate: string) =>
-  secureCompareHex(sha256Hex(candidate), BYPASS_PASSWORD_SHA256);
+export const verifyBypassPassword = (candidate: string) => {
+  const expected = bypassPasswordSha256();
+  return Boolean(isBypassConfigured() && expected && secureCompareHex(sha256Hex(candidate), expected));
+};
 
 export const createBypassCookieValue = (expiresAtMs = Date.now() + BYPASS_DURATION_MS) => {
+  if (!isBypassConfigured()) throw new Error("Bypass login is disabled: configure distinct valid server-side secrets.");
   const signature = signBypassExpiry(expiresAtMs);
   return `${expiresAtMs}.${signature}`;
 };
 
 export const isValidBypassCookieValue = (rawValue: string | undefined) => {
-  if (!rawValue) return false;
+  if (!rawValue || !isBypassConfigured()) return false;
   const [expiresAtRaw, signature] = rawValue.split(".");
   const expiresAtMs = Number(expiresAtRaw);
   if (!Number.isFinite(expiresAtMs) || !signature) return false;

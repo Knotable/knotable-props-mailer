@@ -409,7 +409,13 @@ export async function updatePasswordAction(formData: FormData) {
 export async function bypassLogin(formData: FormData) {
   const correlationId = randomUUID();
   const { ip, userAgent } = await getRequestMeta();
+  const { allowed, retryAfterMs } = checkRateLimit(`login-bypass:${ip}`, 5, 15 * 60 * 1000);
   const password = String(formData.get("password") ?? "");
+
+  if (!allowed) {
+    await logAuthTrace(correlationId, "Bypass login rate-limited", { ip, userAgent, retryAfterMs });
+    redirect(`/login/bypass?trace=${encodeURIComponent(correlationId)}&error=${encodeURIComponent(`rate:${Math.ceil(retryAfterMs / 1000)}`)}`);
+  }
 
   await logAuthTrace(correlationId, "Bypass login attempt started", {
     ip,

@@ -26,6 +26,11 @@ export const dashboardNav: NavItem[] = [
     description: "Campaign status",
   },
   {
+    label: "AWS Send",
+    href: "/email/aws-native",
+    description: "Durable batch control",
+  },
+  {
     label: "Analytics",
     href: "/email/analytics",
     description: "Delivery health",

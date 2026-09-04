@@ -1,4 +1,4 @@
-import nodemailer from "nodemailer";
+import nodemailer, { type SentMessageInfo, type Transporter } from "nodemailer";
 
 const smtpHost = process.env.AWS_SES_SMTP_ENDPOINT;
 const smtpUser = process.env.AWS_SES_SMTP_USERNAME;
@@ -9,9 +9,9 @@ const sesConfigurationSet = process.env.AWS_SES_CONFIGURATION_SET;
 // Module-level singleton with connection pooling.
 // Creating a new transporter per call means one TCP handshake per email;
 // the pool reuses up to 5 connections across the 50-item worker batch.
-let _transporter: nodemailer.Transporter | null = null;
+let _transporter: Transporter | null = null;
 
-function extractSesMessageId(info: nodemailer.SentMessageInfo): string | null {
+function extractSesMessageId(info: SentMessageInfo): string | null {
   const response = typeof info.response === "string" ? info.response : "";
   const sesResponseId = response.match(/\b0100[0-9a-fA-F-]{20,}\b/)?.[0];
   if (sesResponseId) return sesResponseId;
@@ -19,7 +19,7 @@ function extractSesMessageId(info: nodemailer.SentMessageInfo): string | null {
   return info.messageId ? info.messageId.replace(/^<|>$/g, "") : null;
 }
 
-function getTransporter(): nodemailer.Transporter {
+function getTransporter(): Transporter {
   if (!smtpHost || !smtpUser || !smtpPass) {
     throw new Error("Missing AWS SES SMTP environment variables");
   }
