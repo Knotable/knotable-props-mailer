@@ -2,7 +2,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import nextEnv from "@next/env";
-import { evaluateSesCapacity, requiredSesCapacity } from "./lib/readiness-core.mjs";
+import { evaluateSesCapacity, planCampaignBatches, requiredSesCapacity } from "./lib/readiness-core.mjs";
 
 nextEnv.loadEnvConfig(process.cwd());
 
@@ -14,9 +14,12 @@ for (const argument of process.argv.slice(2)) {
 const live = args.has("--live");
 const json = args.has("--json");
 const audience = Number(args.get("--audience") ?? 150_000);
-const maxDurationMinutes = Number(args.get("--max-minutes") ?? 60);
+const batchCount = Number(args.get("--batches") ?? 3);
+const maxDurationMinutes = Number(args.get("--max-minutes") ?? 75);
 const quotaBuffer = Number(args.get("--quota-buffer") ?? 1.2);
-const requirements = requiredSesCapacity({ audience, maxDurationMinutes, quotaBuffer });
+const batchPlan = planCampaignBatches({ audience, batches: batchCount });
+const largestBatch = Math.max(...batchPlan.map((batch) => batch.size));
+const requirements = requiredSesCapacity({ audience: largestBatch, maxDurationMinutes, quotaBuffer });
 const checks = [];
 
 function add(status, name, detail, next = null) {
@@ -89,10 +92,36 @@ add(
 
 add(
   /mode === "dry-run"/.test(worker) && /No DynamoDB state was changed and no email was sent/.test(worker)
-    && /state\.claimed > 0/.test(worker) && /quota\.remaining < remaining/.test(worker),
-  "Fail-closed worker",
-  "Dry-run is non-mutating; ambiguous CLAIMED recipients and insufficient quota stop the send.",
-  "Restore dry-run, ambiguous-claim, and whole-campaign quota guards.",
+    && /state\.claimed > 0/.test(worker),
+  "Fail-closed claim handling",
+  "Dry-run is non-mutating and ambiguous CLAIMED recipients stop the send.",
+  "Restore non-mutating dry-run and ambiguous-claim guards.",
+);
+
+const nativeSources = `${worker}\n${builder}\n${workflow}`;
+const hasApprovalBatches = /QUEUED_FOR_APPROVAL/.test(nativeSources)
+  && /READY_FOR_APPROVAL/.test(nativeSources)
+  && /--batch-number/.test(nativeSources)
+  && /quota\.remaining\s*<\s*(?:batchRemaining|remainingInBatch)/.test(nativeSources);
+add(
+  hasApprovalBatches,
+  "Three approval-gated release batches",
+  hasApprovalBatches
+    ? "The native path binds releases to a batch number, preserves later batches as queued, and checks quota for only the approved batch."
+    : "The native worker still treats the immutable manifest as one all-or-nothing release; the three-batch approval state machine is not implemented.",
+  "Persist three digest-bound release records (READY_FOR_APPROVAL, QUEUED_FOR_APPROVAL), accept --batch-number, and fail closed unless that batch has full rolling quota headroom.",
+);
+
+const hasOperatorNotice = /SES_OPERATOR_EMAIL/.test(nativeSources)
+  && /operator_notice_sent_at|operatorNoticeSentAt/.test(nativeSources)
+  && /SES_APP_URL/.test(nativeSources);
+add(
+  hasOperatorNotice,
+  "Idempotent next-batch operator email",
+  hasOperatorNotice
+    ? "A terminal batch can send one durable operator notice with a return-to-app URL."
+    : "No idempotent completion notice invites the operator back to approve the next batch.",
+  "After terminal reconciliation (zero CLAIMED/RETRY), conditionally record the notice once and email SES_OPERATOR_EMAIL a SES_APP_URL link; do not release the next batch.",
 );
 
 if (!live) {
@@ -119,7 +148,7 @@ if (!live) {
       const account = await ses.send(new GetAccountCommand({}));
       const quota = account.SendQuota ?? {};
       const capacity = evaluateSesCapacity({
-        audience,
+        audience: largestBatch,
         max24Hour: Number(quota.Max24HourSend ?? 0),
         sentLast24Hours: Number(quota.SentLast24Hours ?? 0),
         maxRate: Number(quota.MaxSendRate ?? 0),
@@ -127,8 +156,8 @@ if (!live) {
         quotaBuffer,
       });
       add(account.ProductionAccessEnabled === true, "SES production access", `Production access: ${Boolean(account.ProductionAccessEnabled)}.`, "Request SES production access in the worker region.");
-      add(capacity.quotaReady, "SES quota and rolling headroom", `Quota ${Number(quota.Max24HourSend ?? 0).toLocaleString()}; sent last 24h ${Number(quota.SentLast24Hours ?? 0).toLocaleString()}; headroom ${capacity.headroom.toLocaleString()}; policy minimum ${requirements.requiredDailyQuota.toLocaleString()}.`, "Raise quota or wait until rolling headroom covers the complete audience.");
-      add(capacity.rateReady, "SES send rate", `Rate ${Number(quota.MaxSendRate ?? 0)}/s; policy minimum ${requirements.requiredSesRate}/s; estimated ${capacity.estimatedMinutes ?? "unknown"} minutes.`, "Request a higher SES maximum send rate.");
+      add(capacity.quotaReady, "SES quota and rolling batch headroom", `Quota ${Number(quota.Max24HourSend ?? 0).toLocaleString()}; sent last 24h ${Number(quota.SentLast24Hours ?? 0).toLocaleString()}; headroom ${capacity.headroom.toLocaleString()}; batch ${largestBatch.toLocaleString()}; policy quota minimum ${requirements.requiredDailyQuota.toLocaleString()}.`, "Raise quota or wait until rolling headroom covers the complete approved batch.");
+      add(capacity.rateReady, "SES send rate", `Rate ${Number(quota.MaxSendRate ?? 0)}/s; batch policy minimum ${requirements.requiredSesRate}/s; estimated ${capacity.estimatedMinutes ?? "unknown"} minutes.`, "Request a higher SES maximum send rate or explicitly revise the batch-duration policy.");
     } catch (error) {
       add(false, "SES live access", error.message, "Fix AWS credentials, IAM permissions, and region, then rerun.");
     }
@@ -169,10 +198,11 @@ if (!live) {
 const normalized = checks.map((check) => ({ ...check, status: check.status === true ? "PASS" : check.status === false ? "FAIL" : check.status }));
 const failures = normalized.filter((check) => check.status === "FAIL");
 if (json) {
-  console.log(JSON.stringify({ audience, policy: { ...requirements, maxDurationMinutes, quotaBuffer }, ready: failures.length === 0 && live, checks: normalized }, null, 2));
+  console.log(JSON.stringify({ audience, batchPlan, policy: { ...requirements, maxDurationMinutes, quotaBuffer, largestBatch }, ready: failures.length === 0 && live, checks: normalized }, null, 2));
 } else {
   console.log(`SES-native readiness for ${audience.toLocaleString()} recipients (read-only)`);
-  console.log(`Policy: quota >= ${requirements.requiredDailyQuota.toLocaleString()}, rate >= ${requirements.requiredSesRate}/s, full campaign <= ${maxDurationMinutes} minutes.`);
+  console.log(`Plan: ${batchPlan.map((batch) => `batch ${batch.batchNumber}=${batch.size.toLocaleString()} (${batch.releaseState})`).join("; ")}.`);
+  console.log(`Per-batch policy: quota >= ${requirements.requiredDailyQuota.toLocaleString()}, rolling headroom >= ${largestBatch.toLocaleString()}, rate >= ${requirements.requiredSesRate}/s, batch <= ${maxDurationMinutes} minutes.`);
   for (const check of normalized) {
     console.log(`${check.status.padEnd(4)} ${check.name}: ${check.detail}`);
     if (check.status !== "PASS" && check.next) console.log(`     Next: ${check.next}`);
