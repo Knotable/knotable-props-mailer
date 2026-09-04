@@ -37,6 +37,8 @@ When the user opens this project without a specific task, offer this concise men
 
 ## OPERATOR STATUS - READ THIS FIRST
 
+**2026-09-04 ANALYTICS DIAGNOSIS:** The production `get_recent_email_analytics_stats` RPC is installed; the Analytics page's “run `20260702_recent_analytics_rpc.sql`” banner was a misdiagnosis. A read-only live probe returned PostgreSQL `57014 canceling statement due to statement timeout` for the 50-campaign aggregate while recent `emails` rows and fresh SES/provider events were both readable. The old fallback converted every RPC error into “migration missing” and populated zero-valued campaign metrics, which made a backend failure look like no sending activity. Code now classifies missing-function, timeout, and generic failures separately and renders unavailable totals as `—`. `20260904_set_based_recent_analytics.sql` replaces repeated lateral scans with one grouped queue pass and one grouped event pass; it is checked in but not applied to production. Run `npm run check:analytics` before and after applying it to test the exact production query without writing rows or sending mail. AWS-native campaigns ultimately need their status UI to read DynamoDB/S3 instead of this legacy Supabase RPC.
+
 **2026-09-03 USER-REPORTED COMPLETION + AWS-NATIVE TRANSITION:** Amol reports that the last campaign finally sent. This has not been independently reconciled in this documentation update, so verify campaign `4ea3511e-64e7-40a0-94af-08d5381bd110` has terminal queue/provider state before treating it as confirmed history. The next intended send is approximately `150,000` recipients, with no browser tab and no Vercel or Supabase persistence in the delivery hot path. The repository now contains the first implementation of that target: immutable S3 campaign packages, DynamoDB conditional recipient state, an autonomous GitHub Actions SES worker, and SES configuration-set events through SNS/Lambda into DynamoDB plus append-only S3 records. **Nothing in this new path is deployed or authorized to send yet.** The last verified SES capacity remains `65,400` recipients per rolling 24 hours at `15` recipients/second, which is categorically insufficient for a single 150k release. The new worker therefore refuses a partial campaign when live quota headroom is smaller than the remaining audience.
 
 **2026-09-03 preceding incident—retain for reconciliation:** campaign `4ea3511e-64e7-40a0-94af-08d5381bd110` ("LifeX AGM: Health AI’s leading CEOs + Dr. Nir Barzilai", LifeX newsletter, `12,399` recipients) was released on 2026-09-02. A browser/Vercel worker claimed `35` recipients at `2026-09-02T20:12:09Z`, then stopped before recording either SES message IDs or queue checkpoints; `12,364` were pending at that snapshot. The absence of a provider event did **not** prove those 35 were unsent. Preserve this as the baseline for the terminal-state verification.
@@ -124,7 +126,7 @@ Update this section as work progresses so future agents do not re-derive the sta
 | Continue future LifeX slices | Done 2026-06-15 live check | `532a06ae...` has `0` pending and `0` processing rows. Its parent email status still reads `queued`, so clean that status if it confuses the UI. |
 | Repair live-schema queue/settings drift | Done 2026-06-20 | `public.app_settings` is live with `daily_send_limit = 65,400`. Applied `20260502_mail_queue_dedupe_unique.sql` to production; `mail_queue_dedupe_hash_unique_idx` is unique, ready, and valid, and the `ON CONFLICT (dedupe_hash)` path passed a rolled-back transaction test. |
 | Apply Supabase security/IO repair | Needs Supabase Advisor verification | `app_settings` is live. `unsubscribe_requests` was missing despite the earlier status note; migration `20260611_unsubscribe_requests.sql` was applied live on 2026-06-21, API grants were verified, and PostgREST schema visibility was confirmed. Supabase Advisor RLS/Disk IO status is not visible through the app API; verify in the Supabase Dashboard. |
-| Analytics reliability + iPhone mode | In progress 2026-07-02 | PRD added at `docs/analytics-mobile-prd.md`. Code now includes mobile bottom nav, mobile Analytics campaign cards, and `supabase/migrations/20260702_recent_analytics_rpc.sql` for exact recent campaign analytics. Apply the migration in production before treating per-campaign provider counts as exact there. |
+| Analytics reliability + iPhone mode | In progress 2026-09-04 | The RPC is installed in production but the 50-row aggregate exceeds the statement timeout (`57014`). The page now withholds failed totals instead of showing zero, `npm run check:analytics` reproduces the exact read-only check, and `20260904_set_based_recent_analytics.sql` supplies a set-based replacement. Apply/test that migration; AWS-native status must still move to DynamoDB/S3. |
 | Send readiness + campaign analytics detail | Follow-up migration ready 2026-08-03 | Operator applied the base analytics SQL. Live verification: recent summary and clicked-link RPCs work, SES/SNS is fresh, and the six-recipient detail/timeline works. The original detail and timeline queries time out on the 186k LifeX campaign; apply `20260803_optimize_campaign_analytics_detail.sql` to aggregate queue totals once, paginate before event aggregation, and correlate events by SES message ID. No mail was queued, released, or sent by this verification. |
 | Suppress reminder-service domains | Enforced and live-verified 2026-08-08 | `*@followupthen.com` and `*@fut.io` are global block-list domains in app code. Imports mark them `blocked`, queue creation skips them, and the worker cancels stale queued rows. A live exact-count check found `0` active memberships at either domain. The Lists page shows this as automatic behavior and no longer exposes the obsolete manual backfill action. |
 | Verify SES/SNS event freshness | Done 2026-05-31 | Production health is green and fresh provider events were observed on 2026-05-30. |
@@ -198,6 +200,7 @@ The immediate autonomous runner is GitHub Actions because it already exists, has
 - `infra/ses-native-worker/cloudformation.yml` defines a private versioned S3 bucket, encrypted/PITR DynamoDB table, SES configuration set, SNS event destination, and Lambda event consumer. The consumer updates latest provider state, creates global bounce/complaint suppressions, and writes each raw event as immutable S3 JSON.
 - The AWS-native template omits the old Vercel-hosted open pixel. SES configuration-set open/click publishing supplies those events without an app callback.
 - Unit coverage lives in `scripts/lib/ses-native-core.test.mjs` and `scripts/lib/ses-bulk-worker-core.test.mjs`.
+- `npm run check:150k` is a read-only acceptance test for repository gates. `npm run check:150k -- --live` additionally checks SES production access, quota/headroom, send rate, S3 versioning, DynamoDB/PITR, and the live configuration-set events. It never calls an SES send API. The check is intentionally red until OIDC, one-click unsubscribe, and the in-app AWS control/status surface exist.
 
 ### Not yet done—the actual production cutover
 
@@ -221,6 +224,15 @@ The immediate autonomous runner is GitHub Actions because it already exists, has
 - A 150k send requires live quota headroom for the entire remaining audience. The native worker intentionally will not “send as much as possible” and strand a partial campaign.
 
 ### Native snapshot and send runbook
+
+Run the non-sending acceptance test first:
+
+```bash
+npm run check:150k
+npm run check:150k -- --live
+```
+
+The default 150k policy requires at least `180,000/24h`, enough current rolling headroom for the complete audience, and at least `47/second` so the worker's 90% ceiling can finish within one hour. Override only for diagnosis with `--audience=...`, `--max-minutes=...`, or `--quota-buffer=...`; changing a test threshold does not change the real SES grant or authorize a send.
 
 Create and inspect a local, PII-bearing package (the `private/` tree is gitignored):
 
@@ -1364,7 +1376,7 @@ See `.env.example` for full list.
 - Supabase TypeScript types (`src/supabase/types.ts`) are stale — regenerate with `supabase gen types typescript` after any schema migration; many tables currently resolve to `never` (pre-existing, not a regression)
 - RLS policies in `schema.sql` are commented out — need to be enabled manually in Supabase
 - `provider_events` bounce/complaint data is stored and partially surfaced in analytics; detailed deliverability reporting still needs more operator UI.
-- Analytics reliability + iPhone mode PRD lives at `docs/analytics-mobile-prd.md`; next production step is to apply `supabase/migrations/20260702_recent_analytics_rpc.sql` and verify a known large campaign.
+- Analytics reliability + iPhone mode PRD lives at `docs/analytics-mobile-prd.md`. The production summary RPC exists but timed out on 2026-09-04; apply `supabase/migrations/20260904_set_based_recent_analytics.sql`, rerun `npm run check:analytics`, and keep unavailable UI totals blank until the check passes.
 - Campaign detail and readiness UI require `supabase/migrations/20260714_campaign_analytics_detail.sql`, followed by `supabase/migrations/20260803_optimize_campaign_analytics_detail.sql` for six-figure campaigns. AWS/Vercel tracking setup and metric definitions are documented in `docs/analytics-tracking-setup.md`.
 - Route protection via middleware is partially implemented
 - One-time mail-merge audiences intentionally avoid Supabase schema changes for now: CSV imports are stored as `lists.access_level = 'one_time_csv'`, synthetic `one-time-...@props.sarva.co` list addresses, and per-row merge fields in `list_members.metadata.merge`; queued rows copy those fields into `mail_queue.payload.merge`. Future tax: add first-class `audiences` / `audience_members` tables, audience type enums, original CSV storage, cleanup/archive semantics, and migration of these shoehorned list records.

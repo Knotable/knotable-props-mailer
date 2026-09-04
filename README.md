@@ -1,6 +1,10 @@
 # Knotable Props Mailer V2
 
-A small admin console for composing, queuing, and sending HTML email campaigns through **Amazon SES**, with **Supabase** for data/auth and **Vercel** for hosting. No marketing-automation platform, no monthly SaaS fee — just your own AWS bill (pennies) plus free tiers everywhere else.
+An admin console for composing and operating HTML email campaigns through **Amazon SES**. Supabase and Vercel still host the legacy authoring UI and historical data, but campaigns above 10,000 recipients are moving to an AWS-native execution plane: immutable S3 campaign packages, DynamoDB recipient state, SES sending, and SNS/Lambda/S3 events. A browser tab, Vercel request, and Supabase queue must not keep a large send alive.
+
+> **150k status (2026-09-04): not ready to send.** The AWS-native code is checked in but the production stack and OIDC are not proven, current SES capacity was last verified below the required 150k headroom, one-click unsubscribe and the in-app native launch/status surface remain incomplete, and graduated canaries have not passed. Run `npm run check:150k` for the explicit remaining gates; add `-- --live` for read-only AWS checks. Neither command sends mail.
+
+> **Analytics status (2026-09-04):** the production summary function exists, but its 50-campaign aggregate returned PostgreSQL `57014 statement timeout`. The UI now shows unavailable values as `—` instead of zero. Migration `supabase/migrations/20260904_set_based_recent_analytics.sql` replaces repeated per-campaign scans with grouped passes; it is not yet applied to production. Run `npm run check:analytics` before and after applying it. This legacy screen is not yet the status source for AWS-native campaigns.
 
 > ⚠️ **Before you put real subscriber data in this app or deploy it publicly, read [Security — do this before you go live](#security--do-this-before-you-go-live).** A few things in this repo need fixing first (hardcoded auth bypass secret, PII committed to git history). It's a 15-minute fix, not a rewrite — just don't skip it.
 
@@ -137,8 +141,8 @@ Run `curl <your-url>/api/health` any time — it tells you exactly which of thes
 
 ## How sending actually works (so you don't get surprised)
 
-- There's **no cron job**. Composing → Queue puts every recipient into `mail_queue` on **hold** (not due yet). Releasing a campaign requires an explicit confirmation step, then rows become due and the **Monitor** page (kept open in a tab) drains them ~14/sec in the background while you watch.
-- There's a **daily send cap** (defaults to 65,400/day, matching a typical SES production quota — editable in Analytics) so one mistake can't blow through your AWS quota.
+- There's **no Vercel cron or browser-owned drain**. Legacy Supabase campaigns use a campaign-scoped GitHub Actions repair worker. New large campaigns target the AWS-native worker, which survives closing the app because S3 and DynamoDB—not the browser—own its inputs and checkpoints.
+- The native worker reads the live SES rolling quota and send rate, refuses to split a campaign when headroom is insufficient, and stops on ambiguous `CLAIMED` recipients. This code is not production-authorized until `npm run check:150k -- --live` is green and the graduated canaries pass.
 - This app assumes **one admin user** (`ALLOWED_EMAIL`). There's no multi-user invite flow yet.
 
 ---
@@ -161,6 +165,9 @@ npm run dev      # local dev server
 npm run build    # production build
 npm run lint     # eslint
 npm test         # vitest
+npm run check:analytics       # read-only legacy stats/RPC test
+npm run check:150k            # static AWS-native acceptance gates; expected red until cutover is complete
+npm run check:150k -- --live  # read-only live SES/S3/DynamoDB/event checks; never sends
 ```
 
 ---
