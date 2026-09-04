@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { revalidatePath } from "next/cache";
 import { connection } from "next/server";
@@ -12,10 +11,9 @@ import {
 import { isoDaysAgo } from "@/lib/dateWindows";
 import { DataFreshness } from "@/components/data-freshness";
 import {
-  describeAnalyticsFailure,
-  formatCampaignMetric,
-  type AnalyticsFailure,
-} from "@/lib/analyticsAvailability";
+  CampaignAnalyticsList,
+  type CampaignAnalyticsSeed,
+} from "./campaign-analytics-list";
 
 async function updateDailySendLimitAction(formData: FormData) {
   "use server";
@@ -141,132 +139,25 @@ export default async function AnalyticsPage() {
   const allTimeBounces = bouncesAllTime ?? 0;
   const hasSnsEvents = (sesEventsAllTime ?? 0) > 0;
 
-  // ── Per-campaign breakdown — pages from emails, then does exact indexed
-  // counts for only the visible campaigns in Postgres.
-  type CampaignAnalyticsRow = {
-    email_id: string;
+  // Campaign identities render immediately. A client-side queue refreshes one
+  // campaign metric at a time and reuses timestamped browser-cached results.
+  const { data: recentEmails } = await supabase
+    .from("emails")
+    .select("id, subject, status, created_at")
+    .neq("status", "draft")
+    .order("created_at", { ascending: false })
+    .limit(50);
+  const campaigns: CampaignAnalyticsSeed[] = ((recentEmails ?? []) as {
+    id: string;
     subject: string;
-    from_address: string;
     status: string;
     created_at: string | null;
-    list_ids: string[];
-    sent: number;
-    failed: number;
-    pending: number;
-    canceled: number;
-    delivered: number;
-    bounced: number;
-    complained: number;
-    opened: number;
-    clicked: number;
-    first_sent: string | null;
-    last_queued_at: string | null;
-    latest_event_at: string | null;
-    total_count: number | null;
-  };
-
-  type AnalyticsRpcClient = {
-    rpc(
-      fn: "get_recent_email_analytics_stats",
-      args: { p_limit: number; p_offset: number },
-    ): Promise<{ data: CampaignAnalyticsRow[] | null; error: { message?: string } | null }>;
-  };
-
-  let campaignStats: CampaignAnalyticsRow[] = [];
-  let analyticsFailure: AnalyticsFailure | null = null;
-
-  const { data: recentAnalyticsStats, error: recentAnalyticsStatsError } = await (
-    supabase as unknown as AnalyticsRpcClient
-  ).rpc("get_recent_email_analytics_stats", {
-    p_limit: 50,
-    p_offset: 0,
-  });
-
-  if (recentAnalyticsStatsError) {
-    analyticsFailure = describeAnalyticsFailure(recentAnalyticsStatsError);
-
-    const { data: recentEmails } = await supabase
-      .from("emails")
-      .select("id, subject, from_address, status, created_at")
-      .neq("status", "draft")
-      .order("created_at", { ascending: false })
-      .limit(50);
-
-    campaignStats = ((recentEmails ?? []) as {
-      id: string;
-      subject: string;
-      from_address: string;
-      status: string;
-      created_at: string | null;
-    }[]).map((email) => ({
-        email_id: email.id,
-        subject: email.subject,
-        from_address: email.from_address,
-        status: email.status,
-        created_at: email.created_at,
-        list_ids: [],
-        sent: 0,
-        failed: 0,
-        pending: 0,
-        canceled: 0,
-        delivered: 0,
-        bounced: 0,
-        complained: 0,
-        opened: 0,
-        clicked: 0,
-        first_sent: null,
-        last_queued_at: email.created_at,
-        latest_event_at: null,
-        total_count: null,
-      }));
-  } else {
-    campaignStats = ((recentAnalyticsStats ?? []) as CampaignAnalyticsRow[]).map((row) => ({
-      email_id: row.email_id,
-      subject: row.subject,
-      from_address: row.from_address,
-      status: row.status,
-      created_at: row.created_at,
-      list_ids: row.list_ids ?? [],
-      sent: Number(row.sent),
-      failed: Number(row.failed),
-      pending: Number(row.pending),
-      canceled: Number(row.canceled),
-      delivered: Number(row.delivered),
-      bounced: Number(row.bounced),
-      complained: Number(row.complained),
-      opened: Number(row.opened),
-      clicked: Number(row.clicked),
-      first_sent: row.first_sent,
-      last_queued_at: row.last_queued_at ?? row.created_at,
-      latest_event_at: row.latest_event_at,
-      total_count: Number(row.total_count ?? 0),
-    }));
-  }
-
-  // Fetch list names for the campaigns we have.
-  const listIds = [...new Set(campaignStats.flatMap((c) => c.list_ids).filter(Boolean))];
-
-  const { data: listRows } = listIds.length
-    ? await supabase.from("lists").select("id, name").in("id", listIds)
-    : { data: [] as { id: string; name: string }[] };
-  const listNames = new Map((listRows ?? []).map((l) => [l.id, l.name]));
-
-  const campaigns = campaignStats.map((c) => {
-    const engagementRate = !analyticsFailure && c.sent > 0 ? Math.round((c.opened / c.sent) * 1000) / 10 : null;
-    const clickRate = !analyticsFailure && c.sent > 0 ? Math.round((c.clicked / c.sent) * 1000) / 10 : null;
-    const bounceRate = !analyticsFailure && c.sent > 0 ? Math.round((c.bounced / c.sent) * 1000) / 10 : null;
-
-    return {
-      ...c,
-      list_name:
-        c.list_ids.length > 0
-          ? c.list_ids.map((listId) => listNames.get(listId) ?? "Unknown list").join(", ")
-          : null,
-      engagementRate,
-      clickRate,
-      bounceRate,
-    };
-  });
+  }[]).map((email) => ({
+    emailId: email.id,
+    subject: email.subject,
+    status: email.status,
+    createdAt: email.created_at,
+  }));
   const generatedAt = new Date().toISOString();
 
   return (
@@ -384,13 +275,9 @@ export default async function AnalyticsPage() {
         />
         <ConfidenceItem
           label="Campaign rows"
-          value={analyticsFailure ? "Totals unavailable" : "Exact recent counts"}
-          detail={
-            analyticsFailure
-              ? "Campaign names remain visible, but failed aggregates are never presented as zero activity."
-              : "Recent rows are counted in Postgres without page-level sampling."
-          }
-          tone={analyticsFailure ? "amber" : "green"}
+          value="Lazy, one at a time"
+          detail="Rows reuse a timestamped 15-minute browser cache and refresh sequentially while this page remains open."
+          tone="green"
         />
       </section>
 
@@ -445,175 +332,7 @@ export default async function AnalyticsPage() {
           <span className="font-normal text-slate-400">(most recent 50)</span>
         </h3>
 
-        {analyticsFailure && (
-          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800 mb-3">
-            <span className="font-medium">{analyticsFailure.title}</span>{" "}
-            {analyticsFailure.detail}{" "}
-            Run <code className="rounded bg-amber-100 px-1">npm run check:analytics</code> for a
-            read-only diagnosis
-            {analyticsFailure.code ? ` (database code ${analyticsFailure.code})` : ""}.
-          </div>
-        )}
-        {campaigns.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-slate-300 p-6 text-sm text-slate-500">
-            No campaigns sent yet.
-          </div>
-        ) : (
-          <>
-          <div className="space-y-3 md:hidden">
-            {campaigns.map((c) => (
-              <article
-                key={c.email_id}
-                className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <h4 className="break-words text-sm font-semibold text-slate-900">
-                      {c.subject || "Untitled campaign"}
-                    </h4>
-                    <p className="mt-1 truncate text-xs text-slate-500">
-                      {c.list_name ?? "No list recorded"}
-                    </p>
-                  </div>
-                  <StatusBadge status={c.status} />
-                </div>
-
-                <div className="mt-4 grid grid-cols-3 gap-2">
-                  <MiniMetric label="sent" value={analyticsFailure ? null : c.sent} tone="green" />
-                  <MiniMetric label="opened" value={analyticsFailure ? null : c.opened} tone="blue" />
-                  <MiniMetric label="clicked" value={analyticsFailure ? null : c.clicked} tone="blue" />
-                  <MiniMetric label="pending" value={analyticsFailure ? null : c.pending} tone="amber" />
-                  <MiniMetric label="failed" value={analyticsFailure ? null : c.failed} tone="red" />
-                  <MiniMetric label="bounced" value={analyticsFailure ? null : c.bounced} tone="amber" />
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                  <RatePill label="open" value={c.engagementRate} />
-                  <RatePill label="click" value={c.clickRate} />
-                  <RatePill label="bounce" value={c.bounceRate} tone={c.bounceRate && c.bounceRate > 0 ? "amber" : "slate"} />
-                </div>
-
-                <div className="mt-4 flex items-center justify-between gap-3 border-t border-slate-100 pt-3 text-xs">
-                  <span className="min-w-0 truncate text-slate-500">
-                    {c.latest_event_at
-                      ? `Latest event ${formatDate(c.latest_event_at)}`
-                      : c.last_queued_at
-                        ? `Queued ${formatDate(c.last_queued_at)}`
-                        : "No activity timestamp"}
-                  </span>
-                  <Link
-                    href={`/email/sends/${c.email_id}`}
-                    className="shrink-0 rounded-md border border-slate-200 px-2.5 py-1.5 font-medium text-slate-700"
-                  >
-                    History
-                  </Link>
-                </div>
-              </article>
-            ))}
-          </div>
-
-          <div className="hidden overflow-x-auto rounded-xl border border-slate-200 md:block">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="px-4 py-3">Subject</th>
-                  <th className="px-4 py-3">List</th>
-                  <th className="px-4 py-3 text-right">SES accepted</th>
-                  <th className="px-4 py-3 text-right">Delivered</th>
-                  <th className="px-4 py-3 text-right">Pending</th>
-                  <th className="px-4 py-3 text-right">Failed</th>
-                  <th className="px-4 py-3 text-right">Opens</th>
-                  <th className="px-4 py-3 text-right">Clicks</th>
-                  <th className="px-4 py-3 text-right">Bounces</th>
-                  <th className="px-4 py-3 text-right">Complaints</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {campaigns.map((c) => (
-                  <tr key={c.email_id} className="bg-white hover:bg-slate-50">
-                    <td className="max-w-xs truncate px-4 py-3 font-medium text-slate-800">
-                      <Link href={`/email/sends/${c.email_id}`} className="hover:text-blue-700 hover:underline">
-                        {c.subject || <span className="italic text-slate-400">untitled</span>}
-                      </Link>
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {c.list_name ?? <span className="text-slate-400">—</span>}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      <span
-                        className="inline-flex items-center justify-end gap-1"
-                        title={
-                          analyticsFailure
-                            ? "Exact campaign totals are unavailable."
-                            : c.sent > 0
-                            ? "Accepted by SES according to mail_queue succeeded rows."
-                            : "No succeeded queue rows yet."
-                        }
-                      >
-                        {!analyticsFailure && c.sent > 0 && (
-                          <span className="font-semibold text-green-600" aria-label="SES accepted">
-                            ✓
-                          </span>
-                        )}
-                        {formatCampaignMetric(c.sent, !analyticsFailure)}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? formatCampaignMetric(c.delivered, !analyticsFailure) : "—"}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right tabular-nums ${
-                        c.pending > 0 ? "text-blue-700" : "text-slate-400"
-                      }`}
-                    >
-                      {formatCampaignMetric(c.pending, !analyticsFailure, true)}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right tabular-nums ${
-                        c.failed > 0 ? "text-red-600" : "text-slate-400"
-                      }`}
-                    >
-                      {formatCampaignMetric(c.failed, !analyticsFailure, true)}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? formatCampaignMetric(c.opened, !analyticsFailure) : "—"}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                      {hasSnsEvents ? formatCampaignMetric(c.clicked, !analyticsFailure) : "—"}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right tabular-nums ${
-                        c.bounced > 0 ? "text-amber-600" : "text-slate-400"
-                      }`}
-                    >
-                      {hasSnsEvents
-                        ? analyticsFailure
-                          ? "—"
-                          : c.bounced > 0
-                          ? c.bounced.toLocaleString()
-                          : "—"
-                        : "—"}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right tabular-nums ${
-                        c.complained > 0 ? "text-red-600" : "text-slate-400"
-                      }`}
-                    >
-                      {hasSnsEvents
-                        ? analyticsFailure
-                          ? "—"
-                          : c.complained > 0
-                          ? c.complained.toLocaleString()
-                          : "—"
-                        : "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          </>
-        )}
+        <CampaignAnalyticsList campaigns={campaigns} />
       </section>
     </div>
   );
@@ -672,81 +391,4 @@ function ConfidenceItem({
       <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
     </div>
   );
-}
-
-function MiniMetric({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number | null;
-  tone: "green" | "blue" | "amber" | "red";
-}) {
-  const toneClasses = {
-    green: "text-emerald-700",
-    blue: "text-blue-700",
-    amber: "text-amber-700",
-    red: "text-red-700",
-  };
-
-  return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50 px-2 py-2">
-      <p className={`text-base font-semibold tabular-nums ${toneClasses[tone]}`}>
-        {value === null ? "—" : value.toLocaleString()}
-      </p>
-      <p className="text-[11px] uppercase tracking-wide text-slate-400">{label}</p>
-    </div>
-  );
-}
-
-function RatePill({
-  label,
-  value,
-  tone = "slate",
-}: {
-  label: string;
-  value: number | null;
-  tone?: "slate" | "amber";
-}) {
-  const toneClasses = {
-    slate: "border-slate-200 bg-slate-50 text-slate-600",
-    amber: "border-amber-200 bg-amber-50 text-amber-700",
-  };
-
-  return (
-    <span className={`rounded-full border px-2 py-1 font-medium ${toneClasses[tone]}`}>
-      {label} {value === null ? "—" : `${value}%`}
-    </span>
-  );
-}
-
-function StatusBadge({ status }: { status: string }) {
-  const statusClass =
-    status === "sent"
-      ? "bg-emerald-50 text-emerald-700"
-      : status === "queued" || status === "sending"
-        ? "bg-blue-50 text-blue-700"
-        : status === "failed"
-          ? "bg-red-50 text-red-700"
-          : "bg-slate-100 text-slate-600";
-
-  return (
-    <span className={`shrink-0 rounded-full px-2 py-1 text-[11px] font-semibold uppercase tracking-wide ${statusClass}`}>
-      {status}
-    </span>
-  );
-}
-
-function formatDate(dateStr: string) {
-  try {
-    return new Date(dateStr).toLocaleString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  } catch {
-    return dateStr;
-  }
 }

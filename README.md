@@ -2,9 +2,9 @@
 
 An admin console for composing and operating HTML email campaigns through **Amazon SES**. Supabase and Vercel still host the legacy authoring UI and historical data, but campaigns above 10,000 recipients are moving to an AWS-native execution plane: immutable S3 campaign packages, DynamoDB recipient state, SES sending, and SNS/Lambda/S3 events. A browser tab, Vercel request, and Supabase queue must not keep a large send alive.
 
-> **150k status (2026-09-04): not ready to send.** The AWS-native code is checked in but the production stack and OIDC are not proven, current SES capacity was last verified below the required 150k headroom, one-click unsubscribe and the in-app native launch/status surface remain incomplete, and graduated canaries have not passed. Run `npm run check:150k` for the explicit remaining gates; add `-- --live` for read-only AWS checks. Neither command sends mail.
+> **150k status (2026-09-04): not ready to send.** The accepted target is one immutable campaign split deterministically into three approval-gated batches (normally `50,000 + 50,000 + 50,000`). Only batch 1 begins ready for approval; later batches remain `QUEUED_FOR_APPROVAL` until you return to the app and explicitly approve each one. The deployed stack, OIDC, batch state machine, completion email, one-click unsubscribe, native app controls, and graduated canaries are still gates. Run `npm run check:150k` for the explicit remaining work; add `-- --live` for read-only AWS checks. Neither command sends mail.
 
-> **Analytics status (2026-09-04):** the production summary function exists, but its 50-campaign aggregate returned PostgreSQL `57014 statement timeout`. The UI now shows unavailable values as `—` instead of zero. Migration `supabase/migrations/20260904_set_based_recent_analytics.sql` replaces repeated per-campaign scans with grouped passes; it is not yet applied to production. Run `npm run check:analytics` before and after applying it. This legacy screen is not yet the status source for AWS-native campaigns.
+> **Analytics status (2026-09-04):** the old 50-campaign aggregate timed out. The page now renders campaign identities immediately, refreshes only one campaign and one bounded metric at a time, caches completed rows in the browser for 15 minutes, labels active work, and offers **Update now**. Apply `supabase/migrations/20260904_lazy_campaign_analytics.sql`, then run `npm run check:analytics`; until that migration is live, lazy rows will report the missing function rather than invent zeros. This legacy screen is not yet the status source for AWS-native campaigns.
 
 > ⚠️ **Before you put real subscriber data in this app or deploy it publicly, read [Security — do this before you go live](#security--do-this-before-you-go-live).** A few things in this repo need fixing first (hardcoded auth bypass secret, PII committed to git history). It's a 15-minute fix, not a rewrite — just don't skip it.
 
@@ -142,7 +142,7 @@ Run `curl <your-url>/api/health` any time — it tells you exactly which of thes
 ## How sending actually works (so you don't get surprised)
 
 - There's **no Vercel cron or browser-owned drain**. Legacy Supabase campaigns use a campaign-scoped GitHub Actions repair worker. New large campaigns target the AWS-native worker, which survives closing the app because S3 and DynamoDB—not the browser—own its inputs and checkpoints.
-- The native worker reads the live SES rolling quota and send rate, refuses to split a campaign when headroom is insufficient, and stops on ambiguous `CLAIMED` recipients. This code is not production-authorized until `npm run check:150k -- --live` is green and the graduated canaries pass.
+- The target native flow partitions one immutable manifest into three digest-bound release batches. It checks rolling SES headroom for the entire batch, stops on ambiguous `CLAIMED` recipients, and never releases a later batch automatically. The checked-in worker still needs this batch state machine and the idempotent “return and approve the next batch” email, so it is not production-authorized until `npm run check:150k -- --live` is green and graduated canaries pass.
 - This app assumes **one admin user** (`ALLOWED_EMAIL`). There's no multi-user invite flow yet.
 
 ---
@@ -155,6 +155,7 @@ These are product requests that should be prioritized deliberately before implem
 - **Embeddable newsletter sign-up widget.** Build a Mailchimp-like sign-up box that can be pasted into another website as a content item. Consider backing submissions with Google Apps Script or another highly available lightweight endpoint so sign-ups still work if the Props Mailer host is asleep, redeploying, or unavailable. Clarify the unfinished requirement after: "but I do want to ...".
 - **Performance and usability sprint.** The web app UI is redundant and can feel slow. Review repeated controls, duplicate queue/status language, over-fetching, and slow remote calls; simplify the interface around the operator's main tasks.
 - **Informative progress feedback.** When the app is waiting on remote calls, show clear progress text such as "Saving draft to Supabase", "Preparing recipients", "Queueing batch 3", or "Sending through SES" so the page does not feel stuck during slow operations.
+- **Three-batch native release control.** Freeze one deduplicated 150k manifest, create three non-overlapping release records, permit exactly one manually approved batch at a time, and send one idempotent operator email only after the prior batch is terminal and reconciled. The email links back to the app; it does not release mail.
 
 ---
 
@@ -165,8 +166,8 @@ npm run dev      # local dev server
 npm run build    # production build
 npm run lint     # eslint
 npm test         # vitest
-npm run check:analytics       # read-only legacy stats/RPC test
-npm run check:150k            # static AWS-native acceptance gates; expected red until cutover is complete
+npm run check:analytics       # read-only sequential test of one campaign's six bounded analytics metrics
+npm run check:150k            # static 150k/three-batch AWS-native gates; expected red until cutover is complete
 npm run check:150k -- --live  # read-only live SES/S3/DynamoDB/event checks; never sends
 ```
 

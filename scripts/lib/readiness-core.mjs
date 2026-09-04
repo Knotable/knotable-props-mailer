@@ -17,6 +17,20 @@ export function requiredSesCapacity({
   };
 }
 
+export function planCampaignBatches({ audience, batches = 3 }) {
+  if (!Number.isSafeInteger(audience) || audience < 1) throw new Error("Audience must be a positive integer.");
+  if (!Number.isSafeInteger(batches) || batches < 1) throw new Error("Batch count must be a positive integer.");
+  if (batches > audience) throw new Error("Batch count cannot exceed audience size.");
+
+  const baseSize = Math.floor(audience / batches);
+  const remainder = audience % batches;
+  return Array.from({ length: batches }, (_, index) => ({
+    batchNumber: index + 1,
+    size: baseSize + (index < remainder ? 1 : 0),
+    releaseState: index === 0 ? "READY_FOR_APPROVAL" : "QUEUED_FOR_APPROVAL",
+  }));
+}
+
 export function evaluateSesCapacity({ audience, max24Hour, sentLast24Hours, maxRate, ...policy }) {
   const required = requiredSesCapacity({ audience, ...policy });
   const headroom = Math.max(0, Math.floor(max24Hour - sentLast24Hours));

@@ -4,11 +4,7 @@ import { createClient } from "@supabase/supabase-js";
 
 nextEnv.loadEnvConfig(process.cwd());
 
-const requestedLimit = Number(process.argv.find((value) => value.startsWith("--limit="))?.split("=")[1] ?? 50);
-if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
-  throw new Error("--limit must be an integer from 1 to 100.");
-}
-
+const requestedEmailId = process.argv.find((value) => value.startsWith("--email-id="))?.split("=")[1] ?? null;
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 if (!url || !key) {
@@ -17,53 +13,64 @@ if (!url || !key) {
 }
 
 const db = createClient(url, key, { auth: { persistSession: false } });
-const startedAt = Date.now();
-const [{ data, error }, latestEvent] = await Promise.all([
-  db.rpc("get_recent_email_analytics_stats", { p_limit: requestedLimit, p_offset: 0 }),
-  db
-    .from("provider_events")
-    .select("received_at,event_type,provider")
-    .order("received_at", { ascending: false })
-    .limit(1),
-]);
-const elapsedMs = Date.now() - startedAt;
+let campaignQuery = db
+  .from("emails")
+  .select("id,subject,status,created_at")
+  .limit(1);
+campaignQuery = requestedEmailId
+  ? campaignQuery.eq("id", requestedEmailId)
+  : campaignQuery.neq("status", "draft").order("created_at", { ascending: false });
 
-console.log(`Analytics readiness (read-only, ${requestedLimit} campaign rows)`);
-if (error) {
-  const code = error.code ?? null;
-  const message = String(error.message ?? "");
-  const kind = code === "57014" || /statement timeout|canceling statement/i.test(message)
-    ? "timeout"
-    : ["42883", "PGRST202"].includes(code) || /could not find.*function|does not exist/i.test(message)
-      ? "missing"
-      : "unavailable";
-  const failure = {
-    kind,
-    code,
-    title: kind === "timeout"
-      ? "Campaign analytics timed out."
-      : kind === "missing"
-        ? "Campaign analytics function is not installed."
-        : "Campaign analytics are temporarily unavailable.",
-    detail: kind === "timeout"
-      ? "The database canceled the exact aggregate before it finished."
-      : "The exact aggregate did not return, so campaign totals cannot be trusted.",
-  };
-  console.error(`FAIL exact campaign totals: ${failure.title} [${failure.code ?? "no code"}] (${elapsedMs} ms)`);
-  console.error(`     ${failure.detail}`);
-  if (failure.kind === "timeout") {
-    console.error("     Next: optimize/roll up get_recent_email_analytics_stats, then rerun this command.");
-  } else if (failure.kind === "missing") {
-    console.error("     Next: apply the current analytics migrations in filename order, then rerun this command.");
-  }
-} else {
-  console.log(`PASS exact campaign totals: ${data?.length ?? 0} rows returned in ${elapsedMs} ms.`);
-  const sample = data?.[0];
-  if (sample) {
-    console.log(`     Latest campaign: ${sample.subject || "Untitled"}; SES accepted ${Number(sample.sent ?? 0).toLocaleString()}.`);
-  }
+const { data: campaigns, error: campaignError } = await campaignQuery;
+if (campaignError || !campaigns?.[0]) {
+  console.error(`FAIL campaign selection: ${campaignError?.message ?? "No non-draft campaign found."}`);
+  console.log("No rows were changed and no email was sent.");
+  process.exit(1);
 }
 
+const campaign = campaigns[0];
+console.log(`Lazy analytics readiness (read-only, campaign ${campaign.id})`);
+console.log(`Subject: ${campaign.subject || "Untitled"}`);
+
+const metrics = ["queue", "delivered", "opened", "clicked", "bounced", "complained"];
+let failed = false;
+for (const metric of metrics) {
+  const startedAt = Date.now();
+  const result = metric === "queue"
+    ? await db.rpc("get_email_queue_analytics_metric", { p_email_id: campaign.id })
+    : await db.rpc("get_email_provider_analytics_metric", {
+        p_email_id: campaign.id,
+        p_event_type: metric,
+      });
+  const elapsedMs = Date.now() - startedAt;
+
+  if (result.error) {
+    failed = true;
+    const code = result.error.code ?? "no code";
+    const message = String(result.error.message ?? "Analytics query failed.");
+    const missing = ["42883", "PGRST202"].includes(result.error.code ?? "")
+      || /could not find.*function|does not exist/i.test(message);
+    console.error(`FAIL ${metric.padEnd(10)} ${message} [${code}] (${elapsedMs} ms)`);
+    if (missing) {
+      console.error("     Next: apply supabase/migrations/20260904_lazy_campaign_analytics.sql.");
+    } else if (result.error.code === "57014" || /statement timeout|canceling statement/i.test(message)) {
+      console.error(`     Next: inspect the ${metric} query plan/indexes; this bounded metric still exceeded statement_timeout.`);
+    }
+    continue;
+  }
+
+  const row = Array.isArray(result.data) ? result.data[0] : null;
+  const value = metric === "queue"
+    ? `accepted=${Number(row?.sent ?? 0).toLocaleString()}, pending=${Number(row?.pending ?? 0).toLocaleString()}, failed=${Number(row?.failed ?? 0).toLocaleString()}`
+    : `unique recipients=${Number(row?.unique_recipients ?? 0).toLocaleString()}, raw events=${Number(row?.event_count ?? 0).toLocaleString()}`;
+  console.log(`PASS ${metric.padEnd(10)} ${value} (${elapsedMs} ms)`);
+}
+
+const latestEvent = await db
+  .from("provider_events")
+  .select("received_at,event_type,provider")
+  .order("received_at", { ascending: false })
+  .limit(1);
 if (latestEvent.error) {
   console.error(`WARN provider-event freshness: ${latestEvent.error.message}`);
 } else if (!latestEvent.data?.[0]) {
@@ -76,4 +83,4 @@ if (latestEvent.error) {
 }
 
 console.log("No rows were changed and no email was sent.");
-if (error) process.exit(1);
+if (failed) process.exit(1);
