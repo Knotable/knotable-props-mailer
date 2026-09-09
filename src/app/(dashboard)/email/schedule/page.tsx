@@ -3,6 +3,7 @@ import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
+import { EmailPreview } from "./email-preview";
 
 const DIRECT_RECIPIENTS_ID = "__direct_recipients__";
 
@@ -213,47 +214,50 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                 key={item.id}
                 className="grid gap-3 p-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center"
               >
-                <div className="min-w-0 space-y-2">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span
-                      className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
-                        isDraft
-                          ? "bg-slate-100 text-slate-600"
-                          : hasActiveQueue
-                            ? "bg-amber-100 text-amber-800"
-                          : "bg-blue-100 text-blue-700"
-                      }`}
-                    >
-                      {displayStatus}
-                    </span>
-                    <p className="min-w-0 truncate text-sm font-medium text-slate-800 sm:text-base">
-                      {item.subject || "(no subject)"}
-                    </p>
+                <div className="flex min-w-0 items-start gap-3">
+                  <EmailPreview id={item.id} subject={item.subject ?? ""} />
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
+                          isDraft
+                            ? "bg-slate-100 text-slate-600"
+                            : hasActiveQueue
+                              ? "bg-amber-100 text-amber-800"
+                            : "bg-blue-100 text-blue-700"
+                        }`}
+                      >
+                        {displayStatus}
+                      </span>
+                      <p className="min-w-0 truncate text-sm font-medium text-slate-800 sm:text-base">
+                        {item.subject || "(no subject)"}
+                      </p>
+                    </div>
+
+                    <div className="text-sm text-slate-500">
+                      <span>
+                        From: {item.from_address || "unknown sender"} ·{" "}
+                        {isDraft
+                          ? updatedIso
+                            ? `Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
+                            : "Draft only"
+                          : updatedIso
+                            ? `Queued for manual send · Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
+                            : "Queued for manual send"}
+                      </span>
+                    </div>
+
+                    {statusCounts && (
+                      <QueueStatusSummary
+                        statusCounts={statusCounts}
+                        activeCounts={activeCounts}
+                      />
+                    )}
+
+                    {itemLists.length > 0 && (
+                      <RecipientBadges lists={itemLists} />
+                    )}
                   </div>
-
-                  <div className="text-sm text-slate-500">
-                    <span>
-                      From: {item.from_address || "unknown sender"} ·{" "}
-                      {isDraft
-                        ? updatedIso
-                          ? `Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
-                          : "Draft only"
-                        : updatedIso
-                          ? `Queued for manual send · Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
-                          : "Queued for manual send"}
-                    </span>
-                  </div>
-
-                  {statusCounts && (
-                    <QueueStatusSummary
-                      statusCounts={statusCounts}
-                      activeCounts={activeCounts}
-                    />
-                  )}
-
-                  {itemLists.length > 0 && (
-                    <RecipientBadges lists={itemLists} />
-                  )}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 lg:justify-self-end">
