@@ -129,7 +129,7 @@ export async function sendPasswordReset(formData: FormData) {
       retryAfterMs,
     });
     redirect(
-      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=${encodeURIComponent(
+      `/login/reset?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=${encodeURIComponent(
         `rate:${Math.ceil(retryAfterMs / 1000)}`,
       )}`,
     );
@@ -137,7 +137,7 @@ export async function sendPasswordReset(formData: FormData) {
 
   if (!email) {
     await logAuthTrace(correlationId, "Password reset request missing email", { ip, userAgent });
-    redirect(`/login?trace=${encodeURIComponent(correlationId)}&error=missing-email`);
+    redirect(`/login/reset?trace=${encodeURIComponent(correlationId)}&error=missing-email`);
   }
 
   await logAuthTrace(correlationId, "Password reset request started", { email, ip, userAgent });
@@ -155,7 +155,7 @@ export async function sendPasswordReset(formData: FormData) {
       errorMessage: error.message,
     });
     redirect(
-      `/login?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=reset-password`,
+      `/login/reset?email=${encodeURIComponent(email)}&trace=${encodeURIComponent(correlationId)}&error=reset-password`,
     );
   }
 

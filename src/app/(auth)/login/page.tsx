@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { KeyRound, RotateCcw } from "lucide-react";
 import { FormStatusButton } from "@/components/form-status-button";
-import { sendPasswordReset, signInWithPassword } from "./actions";
+import { signInWithPassword } from "./actions";
 import {
   AuthCard,
   AuthMessage,
@@ -85,18 +85,13 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             <label htmlFor="password" className="block text-sm font-medium text-slate-700">
               Password
             </label>
-            <FormStatusButton
-              name="intent"
-              value="reset-password"
-              pendingIntent="reset-password"
-              formAction={sendPasswordReset}
-              formNoValidate
-              pendingLabel="Sending reset"
+            <Link
+              href={`/login/reset${email ? `?email=${encodeURIComponent(email)}` : ""}`}
               className="inline-flex items-center gap-1 text-sm font-medium text-slate-700 underline underline-offset-4 hover:text-slate-900 disabled:opacity-60"
             >
               <RotateCcw aria-hidden="true" className="size-3.5" />
               <span>Forgot password?</span>
-            </FormStatusButton>
+            </Link>
           </div>
           <input
             id="password"
