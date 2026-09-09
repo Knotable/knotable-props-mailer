@@ -116,3 +116,15 @@ export function classifySesResult(result, item) {
   const exhausted = item.attempts + 1 >= item.max_attempts;
   return { id: item.id, outcome: permanent || exhausted ? "dead" : "retry", ses_message_id: null, last_error: message };
 }
+
+export function adaptiveSendRate({ currentRate, targetRate, step = 1, throttled = false }) {
+  const current = Math.max(1, Number(currentRate) || 1);
+  const target = Math.max(1, Number(targetRate) || 1);
+  if (throttled) return Math.max(1, Math.min(target, current / 2));
+  return Math.min(target, current + Math.max(0.1, Number(step) || 1));
+}
+
+export function sendIntervalMs(rate, recipients, overheadMs = 100) {
+  const safeRate = Math.max(0.1, Number(rate) || 0.1);
+  return Math.ceil((Math.max(1, Number(recipients) || 1) / safeRate) * 1000) + Math.max(0, overheadMs);
+}

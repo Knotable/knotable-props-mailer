@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSendReadySubject,
+  adaptiveSendRate,
   classifySesResult,
   compileTemplate,
   recipientData,
+  sendIntervalMs,
 } from "./ses-bulk-worker-core.mjs";
 
 describe("SES bulk worker core", () => {
@@ -37,5 +39,12 @@ describe("SES bulk worker core", () => {
   it("maps accepted and exhausted SES results to durable outcomes", () => {
     expect(classifySesResult({ Status: "SUCCESS", MessageId: "ses-1" }, { id: "q1", attempts: 0, max_attempts: 5 })).toMatchObject({ outcome: "succeeded" });
     expect(classifySesResult({ Status: "ACCOUNT_THROTTLED", Error: "slow" }, { id: "q2", attempts: 4, max_attempts: 5 })).toMatchObject({ outcome: "dead" });
+  });
+
+  it("ramps successful requests toward the cap and backs off on throttling", () => {
+    expect(adaptiveSendRate({ currentRate: 2, targetRate: 13, step: 1 })).toBe(3);
+    expect(adaptiveSendRate({ currentRate: 12.5, targetRate: 13, step: 1 })).toBe(13);
+    expect(adaptiveSendRate({ currentRate: 12, targetRate: 13, throttled: true })).toBe(6);
+    expect(sendIntervalMs(2, 2)).toBe(1100);
   });
 });

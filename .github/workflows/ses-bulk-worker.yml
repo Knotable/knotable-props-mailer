@@ -20,9 +20,9 @@ on:
         required: false
         type: string
       max_recipients_per_second:
-        description: Safety cap for SES acceptances (keep low enough for Supabase webhook writes)
+        description: Bounded SES cap; the worker ramps up to this ceiling
         required: true
-        default: 2
+        default: 13
         type: number
 
 permissions:
@@ -47,8 +47,10 @@ jobs:
       APP_BASE_URL: https://knotable-props-mailer.vercel.app
       SES_BULK_CLAIM_SIZE: 20
       SES_BULK_MAX_RECIPIENTS_PER_SECOND: ${{ inputs.max_recipients_per_second }}
-      SES_BULK_RECOVERY_PAUSE_EVERY: 100
-      SES_BULK_RECOVERY_PAUSE_MS: 120000
+      SES_BULK_START_RECIPIENTS_PER_SECOND: 2
+      SES_BULK_RATE_STEP: 1
+      SES_BULK_RECOVERY_PAUSE_EVERY: 0
+      SES_BULK_RECOVERY_PAUSE_MS: 0
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6

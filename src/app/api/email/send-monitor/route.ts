@@ -2,24 +2,18 @@
  * GET /api/email/send-monitor
  *
  * Returns a live snapshot of the queue for the send-monitor page.
- * Called every ~31 seconds by the browser while a send is in progress.
+ * Called every ~60 seconds by the browser while a send is in progress.
  *
- * POST /api/email/send-monitor
- *
- * Fires the queue worker. When emailId is omitted it drains due rows only for
- * campaigns whose parent email is queued, sending, or sent.
- *
- * Auth: browser requests use the signed-in user session. GET requires any
- * account; POST requires can_send. CRON_SECRET bearer auth is still accepted
- * for manual/debug calls.
+ * The monitor is intentionally status-only. Durable sends run from GitHub
+ * Actions/AWS so a browser refresh cannot create a long-lived Vercel worker.
  */
 
 import { NextResponse } from "next/server";
-import { requireCanSendAuthContext, requireServerAuthContext } from "@/lib/authAccess";
+import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { QUOTA_WINDOW_HOURS, getMailerRuntimeLimits, todayUTC } from "@/lib/dailyQuota";
 import { parseUuid } from "@/lib/ids";
-import { effectiveSesSendRate, runQueueWorker } from "@/lib/queueWorker";
+import { effectiveSesSendRate } from "@/lib/queueWorker";
 
 export const dynamic = "force-dynamic";
 
@@ -33,16 +27,6 @@ async function hasReadAccess(request: Request) {
   if (authCheck(request)) return true;
   try {
     await requireServerAuthContext();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function hasWorkerAccess(request: Request) {
-  if (authCheck(request)) return true;
-  try {
-    await requireCanSendAuthContext();
     return true;
   } catch {
     return false;
@@ -135,7 +119,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     };
   }
 
-  const [runtime, { data: summaryRows, error: summaryError }, { data: emailData, error: emailError }] =
+  const [runtime, { data: summaryRows, error: summaryError }, { data: emailData, error: emailError }, { data: heartbeat, error: heartbeatError }] =
     await Promise.all([
       getMailerRuntimeLimits(emailId, now),
       supabase.rpc("get_queue_campaign_summaries", {
@@ -143,9 +127,11 @@ async function buildMonitorSnapshot(emailId?: string) {
         p_now: nowIso,
       }),
       supabase.from("emails").select("subject, status").eq("id", emailId).maybeSingle(),
+      supabase.from("mail_worker_heartbeats").select("worker_id, status, current_rate, target_rate, accepted_count, failed_count, request_count, last_progress_at, updated_at").eq("email_id", emailId).maybeSingle(),
     ]);
   if (summaryError) throw summaryError;
   if (emailError) throw emailError;
+  if (heartbeatError) throw heartbeatError;
   const counts = (summaryRows ?? []).reduce(
     (total, row) => ({
       pendingDue: total.pendingDue + Number(row.pending_due ?? 0),
@@ -238,6 +224,20 @@ async function buildMonitorSnapshot(emailId?: string) {
     dead,
     canceled,
     recipientLog: [],
+    worker: heartbeat
+      ? {
+          workerId: heartbeat.worker_id,
+          status: heartbeat.status,
+          currentRate: Number(heartbeat.current_rate ?? 0),
+          targetRate: Number(heartbeat.target_rate ?? 0),
+          accepted: Number(heartbeat.accepted_count ?? 0),
+          failed: Number(heartbeat.failed_count ?? 0),
+          requests: Number(heartbeat.request_count ?? 0),
+          lastProgressAt: heartbeat.last_progress_at,
+          updatedAt: heartbeat.updated_at,
+          alive: heartbeat.status === "running" && Date.now() - new Date(heartbeat.updated_at).getTime() < 120_000,
+        }
+      : null,
   };
 }
 
@@ -263,36 +263,9 @@ export async function GET(request: Request) {
   }
 }
 
-export async function POST(request: Request) {
-  if (!(await hasWorkerAccess(request))) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  let emailId: string | null | undefined;
-  try {
-    const body = (await request.json()) as { emailId?: unknown };
-    if (body.emailId == null) {
-      emailId = null;
-    } else {
-      emailId = parseUuid(body.emailId) ?? undefined;
-    }
-  } catch {
-    emailId = null;
-  }
-
-  if (emailId === undefined) {
-    return NextResponse.json(
-      { error: "emailId must be a valid UUID when provided." },
-      { status: 400 },
-    );
-  }
-
-  try {
-    const result = await runQueueWorker({ emailId });
-    return NextResponse.json(result);
-  } catch (error) {
-    const message = errorMessage(error, "Worker failed");
-    console.error("[send-monitor] worker error", error);
-    return NextResponse.json({ error: message }, { status: 500 });
-  }
+export async function POST() {
+  return NextResponse.json(
+    { error: "The monitor is read-only. Start the durable SES worker from GitHub Actions." },
+    { status: 410 },
+  );
 }

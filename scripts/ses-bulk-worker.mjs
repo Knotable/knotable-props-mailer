@@ -5,10 +5,12 @@ import { SESv2Client, GetAccountCommand, SendBulkEmailCommand } from "@aws-sdk/c
 import pg from "pg";
 import {
   assertSendReadySubject,
+  adaptiveSendRate,
   classifySesResult,
   compileTemplate,
   isBlockedRecipient,
   recipientData,
+  sendIntervalMs,
 } from "./lib/ses-bulk-worker-core.mjs";
 
 const args = new Map();
@@ -133,15 +135,20 @@ if (!Number.isFinite(configuredRateCap) || configuredRateCap < 1) {
   throw new Error("SES_BULK_MAX_RECIPIENTS_PER_SECOND must be a number greater than or equal to 1.");
 }
 const effectiveSendRate = Math.min(maxRate * 0.9, configuredRateCap);
-const sendRequestSize = Math.max(1, Math.min(50, Math.floor(effectiveSendRate)));
-const sendRequestIntervalMs = Math.ceil((sendRequestSize / effectiveSendRate) * 1000) + 100;
+const configuredStartRate = Number(process.env.SES_BULK_START_RECIPIENTS_PER_SECOND ?? 2);
+const rateStep = Number(process.env.SES_BULK_RATE_STEP ?? 1);
+if (!Number.isFinite(configuredStartRate) || configuredStartRate < 1) {
+  throw new Error("SES_BULK_START_RECIPIENTS_PER_SECOND must be a number greater than or equal to 1.");
+}
+const currentRateAtStart = Math.min(effectiveSendRate, configuredStartRate);
+let currentSendRate = currentRateAtStart;
 const recoveryPauseEvery = Math.max(0, Number(process.env.SES_BULK_RECOVERY_PAUSE_EVERY ?? 0));
 const recoveryPauseMs = Math.max(0, Number(process.env.SES_BULK_RECOVERY_PAUSE_MS ?? 0));
 const workerId = `ses-bulk:${process.env.GITHUB_RUN_ID ?? "local"}:${crypto.randomUUID()}`;
 const configurationSet = process.env.AWS_SES_CONFIGURATION_SET?.trim();
 const headers = email.reply_to ? [{ Name: "List-Unsubscribe", Value: `<mailto:${email.reply_to}?subject=Unsubscribe>` }] : [];
 
-console.log(JSON.stringify({ sesMaxRate: maxRate, configuredRateCap, effectiveSendRate, sendRequestSize, sendRequestIntervalMs, claimSize, recoveryPauseEvery, recoveryPauseMs }));
+console.log(JSON.stringify({ sesMaxRate: maxRate, configuredRateCap, effectiveSendRate, currentRateAtStart, rateStep, claimSize, recoveryPauseEvery, recoveryPauseMs }));
 
 const { error: activateError } = await supabase.from("emails").update({ status: "sending", updated_at: new Date().toISOString() }).eq("id", emailId).in("status", ["queued", "sending"]);
 if (activateError) throw new Error(`Unable to activate campaign: ${activateError.message}`);
@@ -151,6 +158,25 @@ let failed = 0;
 let remainingQuota = quotaRemaining;
 let requestCount = 0;
 let nextRecoveryPauseAt = recoveryPauseEvery;
+let lastProgressAt = new Date().toISOString();
+const writeHeartbeat = async (status) => {
+  const { error } = await supabase.from("mail_worker_heartbeats").upsert({
+    email_id: emailId,
+    worker_id: workerId,
+    status,
+    current_rate: currentSendRate,
+    target_rate: effectiveSendRate,
+    accepted_count: accepted,
+    failed_count: failed,
+    request_count: requestCount,
+    last_progress_at: lastProgressAt,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "email_id" });
+  if (error) console.warn(`heartbeat write failed: ${conciseError(error)}`);
+};
+await writeHeartbeat("running");
+const heartbeatTimer = setInterval(() => { void writeHeartbeat("running"); }, 60_000);
+heartbeatTimer.unref?.();
 while (remainingQuota > 0) {
   const limit = Math.min(claimSize, remainingQuota);
   const now = new Date().toISOString();
@@ -308,8 +334,11 @@ while (remainingQuota > 0) {
       groups.set(key, [...(groups.get(key) ?? []), entry]);
     }
     for (const group of groups.values()) {
-      for (let offset = 0; offset < group.length; offset += sendRequestSize) {
-        const requestEntries = group.slice(offset, offset + sendRequestSize);
+      for (let offset = 0; offset < group.length;) {
+        const rateForRequest = currentSendRate;
+        const requestSize = Math.max(1, Math.min(50, Math.floor(rateForRequest)));
+        const requestEntries = group.slice(offset, offset + requestSize);
+        offset += requestEntries.length;
         const first = requestEntries[0].compiled;
         const response = await ses.send(new SendBulkEmailCommand({
           FromEmailAddress: email.from_address,
@@ -328,8 +357,10 @@ while (remainingQuota > 0) {
         const results = requestEntries.map(({ item }, index) => classifySesResult(response.BulkEmailEntryResults?.[index], item));
         claimResults.push(...results);
         requestCount += 1;
+        const throttled = response.BulkEmailEntryResults?.some((result) => /THROTTL|RATE/i.test(`${result?.Status ?? ""} ${result?.Error ?? ""}`));
+        currentSendRate = adaptiveSendRate({ currentRate: currentSendRate, targetRate: effectiveSendRate, step: rateStep, throttled });
         console.log(`request=${requestCount} recipients=${requestEntries.length}`);
-        await sleep(sendRequestIntervalMs);
+        await sleep(sendIntervalMs(rateForRequest, requestEntries.length));
       }
     }
   }
@@ -414,6 +445,8 @@ while (remainingQuota > 0) {
   accepted += claimAccepted;
   failed += claimFailed;
   remainingQuota -= claimAccepted;
+  lastProgressAt = new Date().toISOString();
+  await writeHeartbeat("running");
   console.log(`claim=${items.length} accepted=${claimAccepted} failed=${claimFailed} total_accepted=${accepted}`);
   if (
     recoveryPauseEvery > 0
@@ -436,4 +469,6 @@ if (active === 0) {
   if (error) throw new Error(`Campaign drained but final status update failed: ${error.message}`);
 }
 console.log(JSON.stringify({ complete: active === 0, accepted, failed, activeRemaining: active, workerId }, null, 2));
+clearInterval(heartbeatTimer);
+await writeHeartbeat(active === 0 ? "completed" : "stopped");
 await dbPool?.end();

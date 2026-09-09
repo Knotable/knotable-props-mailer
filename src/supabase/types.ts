@@ -185,6 +185,34 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["queue_metrics"]["Insert"]>;
         Relationships: [];
       };
+      mail_worker_heartbeats: {
+        Row: {
+          email_id: string;
+          worker_id: string;
+          status: "running" | "completed" | "stopped";
+          current_rate: number;
+          target_rate: number;
+          accepted_count: number;
+          failed_count: number;
+          request_count: number;
+          last_progress_at: string | null;
+          updated_at: string;
+        };
+        Insert: {
+          email_id: string;
+          worker_id: string;
+          status: "running" | "completed" | "stopped";
+          current_rate?: number;
+          target_rate?: number;
+          accepted_count?: number;
+          failed_count?: number;
+          request_count?: number;
+          last_progress_at?: string | null;
+          updated_at?: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["mail_worker_heartbeats"]["Insert"]>;
+        Relationships: [];
+      };
       feature_flags: {
         Row: {
           key: string;

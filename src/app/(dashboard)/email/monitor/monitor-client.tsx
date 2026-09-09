@@ -47,22 +47,26 @@ type QueueSnapshot = {
   dead: number;
   canceled: number;
   recipientLog?: RecipientLogRow[];
-};
-
-type WorkerResult = {
-  processed?: number;
-  succeeded?: number;
-  failed?: number;
-  message?: string;
+  worker?: {
+    workerId: string;
+    status: string;
+    currentRate: number;
+    targetRate: number;
+    accepted: number;
+    failed: number;
+    requests: number;
+    lastProgressAt: string | null;
+    updatedAt: string;
+    alive: boolean;
+  } | null;
 };
 
 type Props = {
   emailId?: string;
   autoStart?: boolean;
-  canRunWorker: boolean;
 };
 
-const POLL_MS = 31_000;
+const POLL_MS = 60_000;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 async function readJson<T>(response: Response): Promise<T> {
@@ -89,14 +93,11 @@ function formatError(error: unknown, fallback: string) {
   }
 }
 
-export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Props) {
+export function MonitorClient({ emailId, autoStart = false }: Props) {
   const scopedEmailId = emailId && UUID_RE.test(emailId) ? emailId : undefined;
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
-  const [autoRun, setAutoRun] = useState(autoStart && Boolean(scopedEmailId && canRunWorker));
-  const [message, setMessage] = useState<string | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(autoStart);
   const [error, setError] = useState<string | null>(null);
-  const [runState, setRunState] = useState<"idle" | "running">("idle");
-  const [lastRequestAt, setLastRequestAt] = useState<string | null>(null);
   const [lastResponseAt, setLastResponseAt] = useState<string | null>(null);
   const [progressMessage, setProgressMessage] = useState("Loading queue status from Supabase...");
   const [pending, startTransition] = useTransition();
@@ -125,40 +126,6 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
     return next;
   }, [scopedEmailId]);
 
-  const runOnce = useCallback(async () => {
-    setError(null);
-    setRunState("running");
-    setLastRequestAt(new Date().toISOString());
-    setProgressMessage(
-      scopedEmailId
-        ? "Calling the scoped queue worker. This can take up to one Vercel function window."
-        : "Calling the global queue worker for eligible queued/sending/sent campaigns.",
-    );
-
-    try {
-      const response = await fetch("/api/email/send-monitor", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(scopedEmailId ? { emailId: scopedEmailId } : {}),
-      });
-      const result = await readJson<WorkerResult>(response);
-      setLastResponseAt(new Date().toISOString());
-      setProgressMessage("Worker returned. Refreshing queue counts and recipient log...");
-      setMessage(
-        (result.processed ?? 0) === 0
-          ? result.message ?? "Queue checked; no rows were processed."
-          : `Processed ${result.processed ?? 0}: ${result.succeeded ?? 0} sent${
-              (result.failed ?? 0) > 0 ? `, ${result.failed} failed` : ""
-            }.`,
-      );
-      return refresh();
-    } finally {
-      setRunState("idle");
-    }
-  }, [scopedEmailId, refresh]);
-
   useEffect(() => {
     startTransition(async () => {
       try {
@@ -170,37 +137,31 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
   }, [refresh]);
 
   useEffect(() => {
-    if (!autoRun) return;
+    if (!autoRefresh) return;
 
     const tick = () => {
       startTransition(async () => {
         try {
-          const next = await runOnce();
-          if (next.pending === 0 && next.processing === 0) {
-            setAutoRun(false);
-            return;
-          }
+          await refresh();
         } catch (err) {
-          setAutoRun(false);
-          setError(err instanceof Error ? err.message : "Queue worker failed.");
-          return;
+          setError(err instanceof Error ? err.message : "Unable to refresh queue status.");
         }
         timerRef.current = setTimeout(tick, POLL_MS);
       });
     };
 
-    timerRef.current = setTimeout(tick, 500);
+    timerRef.current = setTimeout(tick, POLL_MS);
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [autoRun, runOnce]);
+  }, [autoRefresh, refresh]);
 
   const total = snapshot?.total ?? 0;
   const done = snapshot?.resolved ?? 0;
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const terminalFailures = snapshot?.terminalFailures ?? 0;
   const isCampaignScoped = Boolean(snapshot?.emailId);
-  const isWorking = pending || runState === "running";
+  const isWorking = pending;
   const terminalFailuresText = terminalFailures.toLocaleString();
   const statusTone =
     snapshot?.isDrained && terminalFailures === 0
@@ -222,57 +183,32 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              startTransition(async () => {
-                try {
-                  await runOnce();
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : "Queue worker failed.");
-                }
-              })
-            }
-            disabled={isWorking || !canRunWorker}
-            className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-          >
-            {isWorking ? (scopedEmailId ? "Running scoped worker..." : "Running global worker...") : "Run once"}
-          </button>
+          <button type="button" onClick={() => startTransition(() => { void refresh(); })} disabled={isWorking} className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50">Refresh now</button>
           <button
             type="button"
             onClick={() => {
               setError(null);
-              setMessage(null);
-              setAutoRun((value) => !value);
+              setAutoRefresh((value) => !value);
             }}
-            disabled={!canRunWorker}
-            className={`rounded-md px-4 py-2 text-sm font-semibold text-white ${
-              autoRun ? "bg-red-700 hover:bg-red-800" : "bg-slate-900 hover:bg-slate-700"
-            } disabled:opacity-50`}
+            className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
           >
-            {autoRun ? "Stop auto-run" : "Start auto-run"}
+            {autoRefresh ? "Stop auto-refresh" : "Start auto-refresh"}
           </button>
         </div>
       </header>
 
-      {!canRunWorker && <p className="text-xs text-amber-700">Read-only access · sending disabled</p>}
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}
-        </div>
-      )}
-      {message && (
-        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">
-          {message}
         </div>
       )}
       {(isWorking || !snapshot) && (
         <ProgressStatus
           title={progressMessage}
           detail={
-            autoRun
-              ? "Auto-run waits about 31 seconds between worker calls to avoid overlapping sends."
-              : "Waiting for the remote request to complete."
+            autoRefresh
+              ? "Read-only refresh runs once per minute; the durable worker runs outside Vercel."
+              : "The monitor is read-only; start the durable worker from GitHub Actions."
           }
         />
       )}
@@ -361,17 +297,24 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
           <p>
             Auto-run:{" "}
             <span className="font-medium text-slate-900">
-              {autoRun ? (isWorking ? "active, request in flight" : "active") : "off"}
+              {autoRefresh ? "active" : "off"}
             </span>
-          </p>
-          <p>
-            Last request:{" "}
-            <span className="font-medium text-slate-900">{formatTimestamp(lastRequestAt)}</span>
           </p>
           <p>
             Last response:{" "}
             <span className="font-medium text-slate-900">{formatTimestamp(lastResponseAt)}</span>
           </p>
+          {isCampaignScoped && snapshot?.worker && (
+            <div className="sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+              <p className="font-semibold text-slate-900">Live worker · {snapshot.worker.alive ? "sending" : snapshot.worker.status}</p>
+              <p className="mt-1 text-xs text-slate-600">
+                Rate {formatRate(snapshot.worker.currentRate)} / {formatRate(snapshot.worker.targetRate)} per sec · {snapshot.worker.accepted.toLocaleString()} accepted · {snapshot.worker.failed.toLocaleString()} failed · {snapshot.worker.requests.toLocaleString()} requests
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Last progress {formatTimestamp(snapshot.worker.lastProgressAt)} · heartbeat {formatTimestamp(snapshot.worker.updatedAt)}
+              </p>
+            </div>
+          )}
           {terminalFailures > 0 && (
             <p className="sm:col-span-2">
               Permanent failures:{" "}
