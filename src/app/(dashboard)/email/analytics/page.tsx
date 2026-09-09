@@ -168,10 +168,6 @@ export default async function AnalyticsPage() {
           <h2 className="text-2xl font-semibold text-slate-900">Analytics</h2>
           <DataFreshness timestamp={generatedAt} />
         </div>
-        <p className="mt-1 max-w-3xl text-sm text-slate-500">
-          Queue acceptance, provider confirmations, and engagement for recent campaigns. Counts are
-          generated server-side so the mobile view and desktop table use the same source.
-        </p>
         {!hasSnsEvents && (
           <p className="mt-1 text-sm text-amber-600">
             Bounce/complaint/delivery tracking requires SES → SNS →{" "}
@@ -255,32 +251,6 @@ export default async function AnalyticsPage() {
         />
       </div>
 
-      <section className="grid gap-3 rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm sm:grid-cols-2 lg:grid-cols-4">
-        <ConfidenceItem
-          label="Queue truth"
-          value="SES accepted rows"
-          detail="Sent counts come from mail_queue succeeded rows, not from open pixels."
-        />
-        <ConfidenceItem
-          label="Provider truth"
-          value={hasSnsEvents ? "Events present" : "Awaiting events"}
-          detail="Delivered, bounced, complaints, opens, and clicks depend on SES/SNS."
-          tone={hasSnsEvents ? "green" : "amber"}
-        />
-        <ConfidenceItem
-          label="Engagement truth"
-          value="Unique people in campaign rows"
-          detail="Open-event cards are raw activity; campaign rows deduplicate recipients. Clicks are more trustworthy than opens."
-          tone="blue"
-        />
-        <ConfidenceItem
-          label="Campaign rows"
-          value="Lazy, one at a time"
-          detail="Rows reuse a timestamped 15-minute browser cache and refresh sequentially while this page remains open."
-          tone="green"
-        />
-      </section>
-
       {/* ── SES capacity ── */}
       <div className="rounded-xl border border-slate-200 bg-slate-50 px-5 py-4 text-sm text-slate-600">
         <form action={updateDailySendLimitAction} className="flex flex-wrap items-end gap-3">
@@ -360,35 +330,6 @@ function StatCard({
       <p className="text-xs uppercase tracking-wide text-slate-500">{label}</p>
       <p className={`mt-1 text-2xl font-semibold ${valueColors[color]}`}>{value}</p>
       <p className="mt-1 text-xs text-slate-500">{sub}</p>
-    </div>
-  );
-}
-
-function ConfidenceItem({
-  label,
-  value,
-  detail,
-  tone = "slate",
-}: {
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "slate" | "green" | "amber" | "blue";
-}) {
-  const toneClasses = {
-    slate: "bg-slate-100 text-slate-700",
-    green: "bg-emerald-50 text-emerald-700",
-    amber: "bg-amber-50 text-amber-700",
-    blue: "bg-blue-50 text-blue-700",
-  };
-
-  return (
-    <div className="min-w-0">
-      <p className="text-xs uppercase tracking-wide text-slate-400">{label}</p>
-      <p className={`mt-1 inline-flex rounded-full px-2 py-0.5 text-xs font-semibold ${toneClasses[tone]}`}>
-        {value}
-      </p>
-      <p className="mt-2 text-xs leading-5 text-slate-500">{detail}</p>
     </div>
   );
 }

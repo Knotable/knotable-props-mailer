@@ -217,8 +217,8 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
           <h2 className="text-2xl font-semibold text-slate-900">
             {snapshot?.subject ?? "Outbound Queue"}
           </h2>
-          <p className="text-sm text-slate-500">
-            The background worker continues safely even if you close this page.
+          <p className="text-xs font-medium text-slate-500">
+            {scopedEmailId ? "Campaign scope" : "Global eligible queue"}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -255,16 +255,7 @@ export function MonitorClient({ emailId, autoStart = false, canRunWorker }: Prop
         </div>
       </header>
 
-      {!canRunWorker && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          This account can view queue status, but an admin has not enabled sending.
-        </div>
-      )}
-      {!scopedEmailId && (
-        <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          Global drain is enabled for due rows whose parent email is queued, sending, or sent. Draft emails are skipped.
-        </div>
-      )}
+      {!canRunWorker && <p className="text-xs text-amber-700">Read-only access · sending disabled</p>}
       {error && (
         <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {error}

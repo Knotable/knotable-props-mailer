@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
+import { ScheduleActions } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
 import { EmailPreview } from "./email-preview";
 
@@ -169,17 +169,8 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
             Drafts, manually held mailings, and campaigns with unsent queue rows.
           </p>
         </div>
-        <QueueSafetyNotice />
+        <QueuePulse activeCount={totalActiveQueueRows} />
       </header>
-
-      {totalActiveQueueRows > 0 && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          <span className="font-medium">
-            {totalActiveQueueRows.toLocaleString()} active unsent queue row{totalActiveQueueRows === 1 ? "" : "s"} found.
-          </span>{" "}
-          Campaigns with due, held, or processing rows are listed first below.
-        </div>
-      )}
 
       {sendError && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -362,6 +353,20 @@ function queueStatusClassName(status: string) {
   if (status === "pending" || status === "processing") return "font-medium text-amber-600";
   if (status === "canceled") return "font-medium text-slate-500";
   return "font-medium text-slate-400";
+}
+
+function QueuePulse({ activeCount }: { activeCount: number }) {
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+        activeCount > 0 ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-700"
+      }`}
+      title={activeCount > 0 ? "Due, held, or processing recipients" : "No active unsent recipients"}
+    >
+      <span className={`size-1.5 rounded-full ${activeCount > 0 ? "bg-amber-500" : "bg-emerald-500"}`} />
+      {activeCount > 0 ? `${activeCount.toLocaleString()} active` : "Queue clear"}
+    </span>
+  );
 }
 
 function isScheduleActionStatus(status: ScheduleEmailRow["status"]): status is "draft" | "queued" | "sending" {

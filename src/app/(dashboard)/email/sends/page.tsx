@@ -624,9 +624,6 @@ function Header({
       <div>
         <p className="text-xs uppercase tracking-wide text-slate-400">History</p>
         <h2 className="text-2xl font-semibold text-slate-900">Past Sends</h2>
-        <p className="text-sm text-slate-500">
-          Per-email campaign history, recipients, opens, delivery stats, and preview.
-        </p>
       </div>
       <div className="text-right text-sm text-slate-500">
         {total !== undefined && <p>{total.toLocaleString()} email records</p>}

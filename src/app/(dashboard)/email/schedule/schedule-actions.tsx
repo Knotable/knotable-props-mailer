@@ -12,15 +12,6 @@ import {
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 import { ProgressStatus } from "@/components/progress-status";
 
-// ── Header safety notice: this page still releases specific rows only. ──
-export function QueueSafetyNotice() {
-  return (
-    <div className="max-w-sm rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      Process sends from a specific row here. The monitor page has a guarded global drain for queued, sending, or sent campaigns.
-    </div>
-  );
-}
-
 type RowProps = {
   id: string;
   subject: string;

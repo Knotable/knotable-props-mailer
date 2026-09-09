@@ -20,19 +20,10 @@ export default async function ListsPage() {
         <h2 className="text-2xl font-semibold text-slate-900">Manage Lists</h2>
         <p className="text-sm text-slate-500">Create lists, import recipients, and manage suppressions before they reach a campaign queue.</p>
       </header>
-      <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-xs font-bold text-white" aria-hidden="true">
-            ✓
-          </span>
-          <div>
-            <p className="text-sm font-semibold text-emerald-900">Automatic suppression is active</p>
-            <p className="text-sm text-emerald-800">
-              Addresses at {BLOCKED_EMAIL_DOMAINS.map((domain) => `@${domain}`).join(" and ")} are automatically blocked during import, queueing, and sending.
-            </p>
-          </div>
-        </div>
-      </div>
+      <p className="text-xs text-emerald-700">
+        <span aria-hidden="true">✓ </span>
+        Suppression active for {BLOCKED_EMAIL_DOMAINS.map((domain) => `@${domain}`).join(" and ")}
+      </p>
       <form action={upsertListAction} className="rounded-lg border border-slate-200 bg-slate-50 p-6">
         <p className="text-sm font-medium text-slate-700">Create or update list</p>
         <div className="mt-3 grid gap-4 sm:grid-cols-2">
