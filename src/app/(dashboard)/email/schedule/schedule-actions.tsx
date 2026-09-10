@@ -64,8 +64,8 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
     setResult(null);
     setProgress(
       status === "queued"
-        ? "Resuming the background sender and opening the scoped monitor..."
-        : "Releasing due recipients and opening the scoped monitor...",
+        ? "Marking this campaign ready for its durable worker and opening the scoped monitor..."
+        : "Marking due recipients ready and opening the scoped monitor...",
     );
   };
 
@@ -192,7 +192,7 @@ function SendNowButton({
           : "bg-slate-900 hover:bg-slate-700"
       }`}
     >
-      {isDisabled ? "Working..." : confirmationArmed ? "Sure?" : resume ? "Resume" : "Send Now"}
+      {isDisabled ? "Working..." : confirmationArmed ? "Confirm" : resume ? "Queue worker" : "Queue worker"}
     </button>
   );
 }

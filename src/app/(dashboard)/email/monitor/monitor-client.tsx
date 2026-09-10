@@ -227,14 +227,14 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
         </div>
         <div className="grid gap-3 sm:grid-cols-3">
           <Metric
-            label={isCampaignScoped ? "Campaign accepted" : "Sent last 7 days"}
+            label={isCampaignScoped ? "SES accepted" : "Historical accepted (7d)"}
             value={isCampaignScoped ? snapshot?.succeeded ?? 0 : snapshot?.sentLast7Days ?? 0}
             tone="green"
           />
           <Metric label="Pending now" value={snapshot?.pendingDue ?? 0} tone="amber" />
           <Metric label="Held" value={snapshot?.pendingHeld ?? 0} tone="slate" />
           {isCampaignScoped && (
-            <Metric label="Accepted last 7 days" value={snapshot?.sentLast7Days ?? 0} tone="green" />
+            <Metric label="Historical accepted (7d)" value={snapshot?.sentLast7Days ?? 0} tone="green" />
           )}
           <Metric label="Processing" value={snapshot?.processing ?? 0} tone="blue" />
           <Metric label="Failed rows" value={snapshot?.failed ?? 0} tone="red" />
@@ -243,6 +243,9 @@ export function MonitorClient({ emailId, autoStart = false }: Props) {
       </div>
 
       <div className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600">
+        {!isCampaignScoped && (
+          <p className="mb-3 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-600">Historical metrics are account-wide and deliberately separated from the live queue figures above. This monitor cannot release or drain mail.</p>
+        )}
         <div className="grid gap-2 sm:grid-cols-2">
           <p>
             Queue status:{" "}

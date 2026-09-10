@@ -5,6 +5,7 @@ import { getMailerRuntimeLimits } from "@/lib/dailyQuota";
 import { parseUuid } from "@/lib/ids";
 import { subjectPlaceholderTerms } from "@/lib/subjectReadiness";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { campaignContentDigest, privacyWarning } from "@/lib/campaignGovernance";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -149,6 +150,8 @@ export default async function SendReadinessPage({ params }: Props) {
   const eventAgeHours = latestEventAt ? (now.getTime() - new Date(latestEventAt).getTime()) / 3_600_000 : null;
   const hasConfigurationSet = Boolean(process.env.AWS_SES_CONFIGURATION_SET?.trim());
   const hasSnsTopic = Boolean(process.env.AWS_SES_SNS_TOPIC_ARN?.trim());
+  const contentDigest = campaignContentDigest({ from: email.from_address, replyTo: email.reply_to, subject: email.subject, html: email.html, text: email.text, tags: email.tags ?? [], campaigns: email.campaigns ?? [] });
+  const privacyIssue = privacyWarning(`${email.subject}\n${email.html}\n${email.text ?? ""}`);
 
   const checks: Check[] = [
     {
@@ -180,6 +183,12 @@ export default async function SendReadinessPage({ params }: Props) {
             : "Subject, sender, and HTML body are present.",
       tone: email.subject.trim() && email.from_address.trim() && email.html.trim() ? "green" : "red",
       blocking: !(email.subject.trim() && email.from_address.trim() && email.html.trim()),
+    },
+    {
+      label: "Venue privacy",
+      detail: privacyIssue ?? "No likely precise street address found in the subject or body.",
+      tone: privacyIssue ? "red" : "green",
+      blocking: Boolean(privacyIssue),
     },
     {
       label: "Reply and unsubscribe",
@@ -279,6 +288,7 @@ export default async function SendReadinessPage({ params }: Props) {
           <Fact label="Images" value={images.length.toLocaleString()} />
           <Fact label="Merge tags" value={mergeTags.length.toLocaleString()} />
           <Fact label="Plain-text part" value={email.text?.trim() ? "Present" : "Missing"} tone={email.text?.trim() ? "green" : "amber"} />
+          <Fact label="Approval digest" value={contentDigest.slice(0, 12)} tone="slate" />
         </div>
         {(insecureUrls.length > 0 || missingAltImages > 0 || mergeTags.length > 0) && (
           <div className="mt-4 grid gap-3 lg:grid-cols-3">

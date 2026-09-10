@@ -96,6 +96,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
   const [audiencePreview, setAudiencePreview] = useState<AudienceParseResult | null>(null);
   const [audienceImporting, setAudienceImporting] = useState(false);
   const [audiencePreviewIndex, setAudiencePreviewIndex] = useState(0);
+  const [sendOwnerCopy, setSendOwnerCopy] = useState(false);
 
   const formRef = useRef<HTMLFormElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -373,6 +374,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         // collapses recipients appearing in more than one selected list.
         fd.set("listId", selectedList.id);
         fd.set("offset", String(offset));
+        fd.set("sendOwnerCopy", String(sendOwnerCopy));
         if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
         if (excludeRecipients && excludeRecipients.length > 0) {
           fd.set("excludeRecipients", JSON.stringify(excludeRecipients));
@@ -395,7 +397,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         );
         setBanner({
           ok: true,
-          message: `Queueing recipients: ${res.queuedRecipients.toLocaleString()} of ${res.totalRecipients.toLocaleString()} prepared...`,
+          message: `Queueing ${res.queuedRecipients.toLocaleString()} audience recipient${res.queuedRecipients === 1 ? "" : "s"}${res.ownerCopyQueued ? " plus one owner copy" : ""} of ${res.totalRecipients.toLocaleString()} planned...`,
         });
 
         if (!res.hasMore || !res.nextOffset) break;
@@ -607,6 +609,12 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
                 <p className="mt-1 text-xs text-slate-500">
                   Queues active members across {selectedLists.length} selected lists; recipients appearing on multiple lists are sent only once.
                 </p>
+              )}
+              {selectedLists.length > 0 && (
+                <label className="mt-2 flex items-start gap-2 text-xs text-slate-600">
+                  <input type="checkbox" checked={sendOwnerCopy} onChange={(event) => setSendOwnerCopy(event.target.checked)} className="mt-0.5" />
+                  <span><span className="font-medium text-slate-800">Send owner copy</span> — explicitly add one deduplicated copy to the sender address. It is included in the final queue count.</span>
+                </label>
               )}
               {selectedLists.length > 0 && (
                 <input type="hidden" name="recipients" value={selectedLists.map((list) => list.address).join(",")} />

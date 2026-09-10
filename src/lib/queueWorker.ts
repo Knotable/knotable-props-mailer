@@ -7,6 +7,7 @@ import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { env } from "@/lib/env";
 import { assertSendReadySubject } from "@/lib/subjectReadiness";
+import { campaignContentDigest } from "@/lib/campaignGovernance";
 import type { Json } from "@/supabase/types";
 
 /**
@@ -67,6 +68,9 @@ const MailQueuePayloadSchema = z.object({
   text: z.string().optional(),
   tags: z.array(z.string()).optional(),
   campaigns: z.array(z.string()).optional(),
+  contentDigest: z.string().length(64).optional(),
+  snapshotId: z.string().uuid().optional(),
+  ownerCopy: z.boolean().optional(),
 });
 
 // 200 rows per invocation at the current SES rate. Lower SES rate settings
@@ -109,6 +113,8 @@ type EmailTemplate = {
   tags: string[] | null;
   campaigns: string[] | null;
 };
+
+type FrozenTemplate = EmailTemplate & { contentDigest: string };
 
 type ClaimedQueueItem = {
   id: string;
@@ -310,6 +316,20 @@ async function loadTemplates(emailIds: string[]) {
   );
 }
 
+async function loadFrozenTemplates(snapshotIds: string[]) {
+  if (!snapshotIds.length) return new Map<string, FrozenTemplate>();
+  const { data, error } = await getSupabaseAdmin().from("draft_snapshots").select("id, payload").in("id", [...new Set(snapshotIds)]);
+  if (error) throw new Error(error.message);
+  const output = new Map<string, FrozenTemplate>();
+  for (const row of data ?? []) {
+    const value = row.payload as Record<string, unknown>;
+    if (typeof value.from !== "string" || typeof value.subject !== "string" || typeof value.html !== "string") continue;
+    const template: FrozenTemplate = { from_address: value.from, reply_to: typeof value.replyTo === "string" ? value.replyTo : null, subject: value.subject, html: value.html, text: typeof value.text === "string" ? value.text : null, tags: Array.isArray(value.tags) ? value.tags.filter((tag): tag is string => typeof tag === "string") : [], campaigns: Array.isArray(value.campaigns) ? value.campaigns.filter((tag): tag is string => typeof tag === "string") : [], contentDigest: typeof value.contentDigest === "string" ? value.contentDigest : "" };
+    if (template.contentDigest === campaignContentDigest({ from: template.from_address, replyTo: template.reply_to, subject: template.subject, html: template.html, text: template.text, tags: template.tags ?? [], campaigns: template.campaigns ?? [] })) output.set(row.id, template);
+  }
+  return output;
+}
+
 export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<QueueWorkerResult> {
   const emailId = options.emailId == null ? null : parseUuid(options.emailId);
   if (options.emailId != null && !emailId) throw new Error("runQueueWorker requires a valid emailId.");
@@ -401,6 +421,10 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
     .map((item) => item.email_id)
     .filter((emailId): emailId is string => Boolean(emailId));
   const templates = await loadTemplates(touchedEmailIds);
+  const frozenTemplates = await loadFrozenTemplates(items.flatMap((item) => {
+    const snapshotId = (item.payload as { snapshotId?: unknown } | null)?.snapshotId;
+    return typeof snapshotId === "string" ? [snapshotId] : [];
+  }));
 
   let succeeded = 0;
   let failed = 0;
@@ -468,7 +492,7 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
       return { outcome: "failed" };
     }
 
-    const template = item.email_id ? templates.get(item.email_id) : undefined;
+    const template = payload.snapshotId ? frozenTemplates.get(payload.snapshotId) : (item.email_id ? templates.get(item.email_id) : undefined);
     if (!template) {
       await skipIneligible(
         item.id,
@@ -479,14 +503,18 @@ export async function runQueueWorker(options: RunQueueWorkerOptions): Promise<Qu
 
     const from = payload.from ?? template?.from_address;
     const replyTo = payload.replyTo ?? template?.reply_to ?? undefined;
-    const subject = payload.subject?.startsWith("[SENDER COPY]")
-      ? `[SENDER COPY] ${template.subject}`
-      : payload.subject ?? template?.subject;
+    // Queued payloads freeze the exact approved subject, including the
+    // explicit owner-copy prefix.  Never reconstruct it from a mutable draft.
+    const subject = payload.ownerCopy ? `[SENDER COPY] ${template?.subject ?? ""}` : payload.subject ?? template?.subject;
     const html = payload.html ?? template?.html;
     const text = payload.text ?? template?.text ?? undefined;
 
     if (!from || !subject || !html) {
       await markDead(item.id, "Missing email template fields for queued item");
+      return { outcome: "failed" };
+    }
+    if (payload.contentDigest && "contentDigest" in template && payload.contentDigest !== template.contentDigest) {
+      await markDead(item.id, "Frozen campaign digest does not match queue payload.");
       return { outcome: "failed" };
     }
     try {

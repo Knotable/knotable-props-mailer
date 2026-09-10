@@ -15,6 +15,7 @@ import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
 import { assertSendReadySubject } from "@/lib/subjectReadiness";
+import { campaignContentDigest, privacyWarning } from "@/lib/campaignGovernance";
 import type { Json } from "@/supabase/types";
 
 /**
@@ -50,6 +51,7 @@ const SaveDraftSchema = z.object({
 const QueueCampaignSchema = z.object({
   emailId: z.string().uuid(),
   listId: z.string().uuid(),
+  sendOwnerCopy: z.string().optional(),
   skipDuplicateCheck: z.string().optional(),
   excludeRecipients: z.string().optional(),
   offset: z.string().optional(),
@@ -282,6 +284,8 @@ export type QueueCampaignOk = {
   schedule: { date: string; count: number }[];
   nextOffset?: number;
   hasMore?: boolean;
+  ownerCopyQueued?: boolean;
+  contentDigest: string;
 };
 export type QueueCampaignConfirm = {
   ok: false;
@@ -681,6 +685,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     const parsed = QueueCampaignSchema.safeParse({
       emailId: formData.get("emailId"),
       listId: formData.get("listId"),
+      sendOwnerCopy: formData.get("sendOwnerCopy") ?? undefined,
       skipDuplicateCheck: formData.get("skipDuplicateCheck") ?? undefined,
       excludeRecipients: formData.get("excludeRecipients") ?? undefined,
       offset: formData.get("offset") ?? undefined,
@@ -710,12 +715,24 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   // another user's draft (defense-in-depth; RLS covers the DB layer).
   const { data: email, error: emailError } = await supabase
     .from("emails")
-    .select("from_address, reply_to, subject, html, text, tags, campaigns, scheduled_at")
+    .select("from_address, reply_to, subject, html, text, tags, campaigns, scheduled_at, revision, last_snapshot_id")
     .eq("id", emailId)
     .eq("author_id", userId)
     .single();
   if (emailError || !email) throw new Error("Email draft not found");
   assertSendReadySubject(email.subject);
+  const privacyIssue = privacyWarning(`${email.subject}\n${email.html}\n${email.text ?? ""}`);
+  if (privacyIssue) throw new Error(privacyIssue);
+  const contentDigest = campaignContentDigest({
+    from: email.from_address,
+    replyTo: email.reply_to,
+    subject: email.subject,
+    html: email.html,
+    text: email.text,
+    tags: email.tags ?? [],
+    campaigns: email.campaigns ?? [],
+  });
+  let snapshotId = email.last_snapshot_id as string | null;
 
   // Resume-safe queueing: retries may start again at offset 0 after a tab or
   // network failure. The dedupe_hash upsert below makes repeated pages
@@ -783,6 +800,23 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     }
   }
 
+  // Freeze only after duplicate/recent-contact review has passed. This keeps
+  // a warning-only preflight read-only while binding every queued row to one
+  // exact content revision.
+  if (offset === 0) {
+    const snapshotPayload = { contentDigest, from: email.from_address, replyTo: email.reply_to, subject: email.subject, html: email.html, text: email.text, tags: email.tags ?? [], campaigns: email.campaigns ?? [] };
+    const { data: snapshot, error: snapshotError } = await supabase
+      .from("draft_snapshots")
+      .insert({ email_id: emailId, author_id: userId, revision: Number(email.revision ?? 0) + 1, payload: snapshotPayload })
+      .select("id")
+      .single();
+    if (snapshotError || !snapshot) throw new Error(snapshotError?.message ?? "Unable to freeze campaign content.");
+    snapshotId = snapshot.id;
+    const { error: snapshotLinkError } = await supabase.from("emails").update({ last_snapshot_id: snapshotId }).eq("id", emailId);
+    if (snapshotLinkError) throw snapshotLinkError;
+  }
+  if (!snapshotId) throw new Error("Campaign content snapshot is unavailable.");
+
   const memberPage = await loadActiveListMemberPage(supabase, listId, offset);
   const membersToQueue = memberPage.filter(
     (member) =>
@@ -823,6 +857,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
         merge: listMemberToMergeData(member.metadata),
         tags: email.tags ?? [],
         campaigns: email.campaigns ?? [],
+        contentDigest,
+        snapshotId,
       },
       status: "pending",
       available_at: QUEUE_HOLD_AT,
@@ -832,7 +868,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     });
   }
 
-  if (offset === 0) {
+  const sendOwnerCopy = parsed.data.sendOwnerCopy === "true";
+  if (offset === 0 && sendOwnerCopy) {
     const senderEmail = extractEmailAddress(email.from_address);
     if (senderEmail && !isBlockedRecipientEmail(senderEmail)) {
       queueRows.push({
@@ -840,9 +877,11 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
         list_id: null,
         payload: {
           to: senderEmail,
-          subject: `[SENDER COPY] ${email.subject}`,
+          ownerCopy: true,
           tags: email.tags ?? [],
           campaigns: [...(email.campaigns ?? []), "sender-copy"],
+          contentDigest,
+          snapshotId,
         },
         status: "pending",
         available_at: QUEUE_HOLD_AT,
@@ -889,6 +928,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
       daysNeeded: schedule.length,
       startDate: today,
       mode: "queued_for_manual_send",
+      contentDigest,
+      sendOwnerCopy,
     },
   }).catch(console.error);
 
@@ -902,6 +943,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     schedule: schedule.map((s) => ({ date: s.date, count: s.count })),
     nextOffset: hasMore ? nextOffset : undefined,
     hasMore,
+    ownerCopyQueued: offset === 0 && sendOwnerCopy,
+    contentDigest,
   };
   } catch (err) {
     return {

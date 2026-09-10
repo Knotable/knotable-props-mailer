@@ -84,7 +84,7 @@ async function buildMonitorSnapshot(emailId?: string) {
       emailId: null,
       subject: null,
       emailStatus: null,
-      displayStatus: total > 0 ? "Sending" : "No active queue rows",
+      displayStatus: total > 0 ? "Active queue (read-only)" : "No active queue rows",
       statusDetail:
         total > 0
           ? `${(pending + processing).toLocaleString()} recipient${
@@ -166,11 +166,20 @@ async function buildMonitorSnapshot(emailId?: string) {
   const total = pending + processing + succeeded + failed + dead + canceled;
   const resolved = succeeded + failed + dead + canceled;
   const isDrained = total > 0 && pending === 0 && processing === 0;
+  const workerAlive = Boolean(
+    heartbeat && heartbeat.status === "running" && Date.now() - new Date(heartbeat.updated_at).getTime() < 120_000,
+  );
   const displayStatus =
     total === 0
       ? emailStatus ?? "No queue rows"
-      : pending > 0 || processing > 0
+      : pendingHeld > 0 && pendingDue === 0 && processing === 0
+        ? "Held"
+      : processing > 0 || workerAlive
         ? "Sending"
+      : pendingDue > 0 && emailStatus === "sending"
+        ? "Worker queued"
+      : pendingDue > 0
+        ? "Preparing audience"
         : succeeded > 0 && terminalFailures > 0
           ? "Complete with permanent failures"
           : succeeded > 0
@@ -183,8 +192,12 @@ async function buildMonitorSnapshot(emailId?: string) {
   const statusDetail =
     total === 0
       ? "No queue rows exist for this email."
-      : pending > 0 || processing > 0
+      : pendingHeld > 0 && pendingDue === 0 && processing === 0
+        ? `${pendingHeld.toLocaleString()} recipient${pendingHeld === 1 ? " is" : "s are"} held. Nothing will send until a durable worker is explicitly dispatched.`
+      : processing > 0 || workerAlive
         ? `${pending + processing} recipient${pending + processing === 1 ? "" : "s"} still waiting or sending.`
+      : pendingDue > 0 && emailStatus === "sending"
+        ? `${pendingDue.toLocaleString()} recipient${pendingDue === 1 ? " is" : "s are"} due; the campaign awaits its durable worker.`
         : terminalFailures > 0
           ? `${succeeded.toLocaleString()} accepted by SES; ${terminalFailures.toLocaleString()} recipient${
               terminalFailures === 1 ? "" : "s"
