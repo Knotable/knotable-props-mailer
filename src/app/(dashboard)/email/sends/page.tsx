@@ -105,6 +105,16 @@ type ProviderEventRecipientRow = {
   recipient: string | null;
 };
 
+type HistoryRollupRow = {
+  succeeded: number | null;
+  failed: number | null;
+  dead: number | null;
+  canceled: number | null;
+  list_ids: string[] | null;
+  first_send_date: string | null;
+  last_updated_at: string | null;
+};
+
 type OpenStats = {
   uniqueOpens: number | null;
   opensStale: boolean;
@@ -184,6 +194,7 @@ async function loadQueueStatsForEmail(
   email: FallbackEmailRow,
 ): Promise<StatRow> {
   const [
+    rollupResult,
     sentResult,
     failedResult,
     pendingResult,
@@ -193,6 +204,15 @@ async function loadQueueStatsForEmail(
     lastQueuedResult,
     queueListResult,
   ] = await Promise.all([
+    timedQuery<HistoryRollupRow>(
+      supabase
+        .from("email_history_rollups")
+        .select(
+          "succeeded, failed, dead, canceled, list_ids, first_send_date, last_updated_at",
+        )
+        .eq("email_id", email.id)
+        .limit(1),
+    ),
     timedQuery(
       supabase
         .from("mail_queue")
@@ -260,31 +280,51 @@ async function loadQueueStatsForEmail(
     ),
   ]);
 
+  const rollup = rollupResult.data?.[0] ?? null;
+  const rollupFirstSent = rollup?.first_send_date ?? null;
+  const rollupLastUpdated = rollup?.last_updated_at ?? null;
+
   const firstSent = firstSentResult.data?.[0]?.send_date ?? null;
   const lastSent = lastSentResult.data?.[0]?.send_date ?? null;
   const lastQueued = lastSent ?? lastQueuedResult.data?.[0]?.created_at ?? email.created_at;
-  const listIds = [
+  const liveListIds = [
     ...new Set(
       (queueListResult.data ?? [])
         .map((row) => row.list_id)
         .filter((id): id is string => Boolean(id)),
     ),
   ];
+  const listIds = liveListIds.length > 0 ? liveListIds : rollup?.list_ids ?? [];
+
   return {
     email_id: email.id,
     list_ids: listIds,
-    sent: sentResult.count,
-    failed: failedResult.count,
+    sent: sentResult.error ? null : (sentResult.count ?? 0) + (rollup?.succeeded ?? 0),
+    failed: failedResult.error
+      ? null
+      : (failedResult.count ?? 0) + (rollup?.failed ?? 0) + (rollup?.dead ?? 0),
     pending: pendingResult.count,
-    canceled: canceledResult.count,
+    canceled: canceledResult.error
+      ? null
+      : (canceledResult.count ?? 0) + (rollup?.canceled ?? 0),
     countStale: {
-      sent: Boolean(sentResult.error),
-      failed: Boolean(failedResult.error),
+      sent: Boolean(sentResult.error) || Boolean(rollupResult.error),
+      failed: Boolean(failedResult.error) || Boolean(rollupResult.error),
       pending: Boolean(pendingResult.error),
-      canceled: Boolean(canceledResult.error),
+      canceled: Boolean(canceledResult.error) || Boolean(rollupResult.error),
     },
-    first_sent: firstSent,
-    last_queued_at: lastQueued,
+    first_sent:
+      firstSent && rollupFirstSent
+        ? firstSent < rollupFirstSent
+          ? firstSent
+          : rollupFirstSent
+        : firstSent ?? rollupFirstSent,
+    last_queued_at:
+      lastQueued && rollupLastUpdated
+        ? lastQueued > rollupLastUpdated
+          ? lastQueued
+          : rollupLastUpdated
+        : lastQueued ?? rollupLastUpdated,
   };
 }
 
@@ -319,19 +359,30 @@ async function loadOpenStatsForEmail(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
 ): Promise<OpenStats> {
-  const result = await timedQuery<ProviderEventRecipientRow>(
-    supabase
-      .from("provider_events")
-      .select("recipient", { count: "exact" })
-      .eq("email_id", emailId)
-      .eq("event_type", "opened")
-      .not("recipient", "is", null)
-      .order("received_at", { ascending: false })
-      .limit(OPEN_RECIPIENT_SCAN_LIMIT),
-  );
+  const [result, rollupResult] = await Promise.all([
+    timedQuery<ProviderEventRecipientRow>(
+      supabase
+        .from("provider_events")
+        .select("recipient", { count: "exact" })
+        .eq("email_id", emailId)
+        .eq("event_type", "opened")
+        .not("recipient", "is", null)
+        .order("received_at", { ascending: false })
+        .limit(OPEN_RECIPIENT_SCAN_LIMIT),
+    ),
+    timedQuery<{ opened_unique: number | null }>(
+      supabase
+        .from("email_history_rollups")
+        .select("opened_unique")
+        .eq("email_id", emailId)
+        .limit(1),
+    ),
+  ]);
+
+  const archivedOpens = rollupResult.data?.[0]?.opened_unique ?? 0;
 
   if (result.error) {
-    return { uniqueOpens: null, opensStale: true };
+    return { uniqueOpens: archivedOpens > 0 ? archivedOpens : null, opensStale: true };
   }
 
   const uniqueRecipients = new Set(
@@ -340,10 +391,12 @@ async function loadOpenStatsForEmail(
       .filter((recipient): recipient is string => Boolean(recipient)),
   );
   const scannedCount = result.data?.length ?? 0;
-  const opensStale = typeof result.count === "number" && scannedCount < result.count;
+  const opensStale =
+    (typeof result.count === "number" && scannedCount < result.count) ||
+    Boolean(rollupResult.error);
 
   return {
-    uniqueOpens: uniqueRecipients.size,
+    uniqueOpens: uniqueRecipients.size + archivedOpens,
     opensStale,
   };
 }
