@@ -6,6 +6,10 @@ For Next.js behavior, read the version-matched bundled documentation under `node
 
 > **Canonical AI guide**: This file consolidates the former `AGENTS.md`, `CLAUDE.md`, and `docs/ai-operator-runbook.md` instructions. Read this file completely at the start of every task; the other files are compatibility pointers only.
 
+> **Backend-first interaction preference (2026-09-21):** Connect to the Props Mailer web app when needed, but perform discovery, draft retrieval, content edits, and other supported operations through Supabase and the app's backend/server actions whenever possible. Use the web UI sparingly for live-state verification, visual/editor-only behavior, or controls not exposed safely through backend calls. Preserve the draft/queue/release/send distinctions and all existing approval and audit safeguards.
+
+> **Credential lookup:** The real local environment is kept in the private vault at `/Users/MrAnonymous/Documents/root/utils and keys/vault/knotable-props-mailer/.env.local`; the project `.env.local` should be treated as its symlink. If that symlink is broken or absent, inspect the vault path and the `utils and keys/README.md` / `vault/VAULT-README.md` guidance before attempting UI login. Source credentials only for the minimum backend operation required, and never print, copy, commit, or transmit secret values.
+
 > **Startup behavior**: If the user's opening request is broad, vague, or asks what you can do in this project, offer the AI Startup Menu below. If the user asks for a specific task, do that task instead of showing the menu.
 
 > **Commit and push edits**: When an AI agent makes repo edits, commit the intentional changes and push the branch to GitHub so the live Vercel deployment can pick them up, unless the user explicitly says not to. Stage only the files changed for the task; never sweep unrelated local work into the commit.
@@ -1528,3 +1532,11 @@ inspected, whether anything mutated, and the exact identifiers and counts.
 - **List member management**: Each list detail page supports server-side email search with paginated results. Active rows have a **Suppress** action that marks that membership blocked and cancels only its pending/processing queue rows for the same list; successful send history remains intact. `20260808_list_member_suppression_lookup.sql` adds the partial expression index that keeps this queue cancellation bounded on large histories.
 - **Preview button**: Opens a new `800×700` browser window and writes the current synchronized HTML content into it via `document.write`. Purely client-side — no save required. Added to `composer-form.tsx` alongside the other action buttons.
 - **Send Test button**: Calls `sendTestAction` (in `email/actions.ts`) but overrides `recipients` in the FormData to `a@sarva.co` (owner address). Does not affect the To field or selected list. Test sends appear in Past Sends (`mail_queue` row with `status = 'succeeded'`). The action accepts any valid `recipients` value — the caller controls the destination.
+
+## Learnings
+
+- 2026-09-23: Created draft `5d06cc58-7e77-4a21-900b-573fd2a56053`, subject `LifeX update: portfolio progress, exits and Fund II`, directly through the authenticated Supabase backend using the service role. It is `draft`, has no recipient bindings and no queue rows. It combines the latest Props test's performance snapshot/video-card layout with the LifeX local draft's factual portfolio and Fund II update; Flowie was intentionally omitted.
+- 2026-09-23: Updated draft `5d06cc58-7e77-4a21-900b-573fd2a56053` in place. The metrics now show 73 Fund I deals, the copy includes an anonymous $15M seed / $100M exit-price note, and the Fund II section has a three-column block for 6 deals, $170K+ September revenue reported so far, and 2 confirmed markups. Verified status `draft`, 0 recipients, and 0 queue rows; no send action was performed.
+- 2026-09-23: Created revenue-refresh draft `d0122dc0-47df-4fed-88db-89e6821050f7` from sent-test source `5d06cc58-7e77-4a21-900b-573fd2a56053`. Fund II tile now reads `$125M+` / `Reported revenue / ARR across six companies`; body says the figure is a directional portfolio snapshot because source periods and definitions differ. New draft is `draft` with 0 recipients and 0 queue rows; the sent source remains unchanged.
+
+- 2026-09-24: Verified the deployed Props Mailer health endpoint is green and opened the deployed app for the backend draft `d0122dc0-47df-4fed-88db-89e6821050f7`; the draft remains backend-only until an authenticated session is present, with no recipients or queue rows.
