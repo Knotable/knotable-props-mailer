@@ -37,6 +37,17 @@ type ListRow = {
   address: string;
 };
 
+type HistoryRollupRow = {
+  succeeded: number | null;
+  failed: number | null;
+  dead: number | null;
+  canceled: number | null;
+  total_queued: number | null;
+  list_ids: string[] | null;
+  first_queued_at: string | null;
+  first_send_date: string | null;
+};
+
 type ListSummary = {
   id: string;
   name: string;
@@ -45,6 +56,7 @@ type ListSummary = {
   currentActiveMembers: number | null;
   samples: RecipientSample[];
   statusCounts: Record<string, number | null>;
+  historical?: boolean;
 };
 
 type RecipientSample = {
@@ -138,6 +150,18 @@ function csvSafe(value: string | null | undefined) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+async function loadHistoryRollup(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+): Promise<HistoryRollupRow | null> {
+  const { data } = await supabase
+    .from("email_history_rollups")
+    .select("succeeded, failed, dead, canceled, total_queued, list_ids, first_queued_at, first_send_date")
+    .eq("email_id", emailId)
+    .maybeSingle();
+  return (data as HistoryRollupRow | null) ?? null;
+}
+
 async function countQueueRows(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
@@ -161,6 +185,7 @@ async function countQueueRows(
 async function loadListSummaries(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
+  rollup: HistoryRollupRow | null,
 ) {
   const { data: queueListRows } = await supabase
     .from("mail_queue")
@@ -169,13 +194,18 @@ async function loadListSummaries(
     .not("list_id", "is", null)
     .limit(5000);
 
-  const listIds = [
+  const liveListIds = [
     ...new Set(
       ((queueListRows ?? []) as QueueListRow[])
         .map((row) => row.list_id)
         .filter((id): id is string => Boolean(id)),
     ),
   ];
+  const liveListIdSet = new Set(liveListIds);
+  const historicalOnlyListIds = (rollup?.list_ids ?? []).filter(
+    (id) => Boolean(id) && !liveListIdSet.has(id),
+  );
+  const listIds = [...liveListIds, ...historicalOnlyListIds];
 
   const { data: lists } = listIds.length
     ? await supabase
@@ -188,6 +218,29 @@ async function loadListSummaries(
 
   return Promise.all(
     listIds.map(async (listId) => {
+      if (historicalOnlyListIds.includes(listId)) {
+        const list = listsById.get(listId) ?? {
+          id: listId,
+          name: "Unknown list",
+          address: "No list address recorded",
+        };
+        const { count: currentActiveMembers } = await supabase
+          .from("list_members")
+          .select("id", { count: "exact", head: true })
+          .eq("list_id", listId)
+          .eq("status", "active");
+
+        return {
+          id: list.id,
+          name: list.name,
+          address: list.address,
+          queueRows: null,
+          currentActiveMembers: currentActiveMembers ?? 0,
+          samples: [],
+          statusCounts: {},
+          historical: true,
+        } satisfies ListSummary;
+      }
       const list = listsById.get(listId) ?? {
         id: listId,
         name: "Unknown list",
@@ -451,14 +504,16 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
   if (emailError) throw emailError;
   if (!email) notFound();
 
+  const rollup = await loadHistoryRollup(supabase, emailId);
+
   const [
-    totalRows,
-    succeededRows,
-    failedRows,
-    deadRows,
+    liveTotalRows,
+    liveSucceededRows,
+    liveFailedRows,
+    liveDeadRows,
     pendingRows,
     processingRows,
-    canceledRows,
+    liveCanceledRows,
     firstSentResult,
     listSummaries,
     recipientPage,
@@ -478,7 +533,7 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
       .eq("email_id", emailId)
       .order("created_at", { ascending: true })
       .limit(1),
-    loadListSummaries(supabase, emailId),
+    loadListSummaries(supabase, emailId, rollup),
     loadRecipientActivityPage(supabase, emailId, page, {
       status: statusFilter,
       event: eventFilter,
@@ -487,6 +542,24 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
     loadAnalyticsDetail(supabase, emailId),
     loadTopLinks(supabase, emailId),
   ]);
+
+  // Archived campaigns have their terminal mail_queue rows purged into
+  // email_history_rollups, so live counts alone under-report older sends.
+  const succeededRows =
+    liveSucceededRows === null && !rollup ? null : (liveSucceededRows ?? 0) + (rollup?.succeeded ?? 0);
+  const failedRows =
+    liveFailedRows === null && !rollup ? null : (liveFailedRows ?? 0) + (rollup?.failed ?? 0);
+  const deadRows = liveDeadRows === null && !rollup ? null : (liveDeadRows ?? 0) + (rollup?.dead ?? 0);
+  const canceledRows =
+    liveCanceledRows === null && !rollup ? null : (liveCanceledRows ?? 0) + (rollup?.canceled ?? 0);
+  const totalRows =
+    liveTotalRows === null && !rollup ? null : (liveTotalRows ?? 0) + (rollup?.total_queued ?? 0);
+  const rollupFirstSendDate = rollup?.first_send_date ?? null;
+  const rollupFirstQueuedAt = rollup?.first_queued_at ?? null;
+  const liveFirstSendDate = firstSentResult.data?.[0]?.send_date ?? null;
+  const liveFirstQueuedAt = firstSentResult.data?.[0]?.created_at ?? null;
+  const firstQueueRowAt = earliest(liveFirstQueuedAt, rollupFirstQueuedAt);
+  const firstSendDate = earliest(liveFirstSendDate, rollupFirstSendDate);
 
   const totalPages = Math.max(1, Math.ceil(recipientPage.total / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -613,8 +686,8 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
         <Metric label="SES accepted" value={succeededRows} tone="green" />
         <Metric label="Failed/dead" value={(failedRows ?? 0) + (deadRows ?? 0)} tone="red" />
         <Metric label="Unsent/canceled" value={(pendingRows ?? 0) + (processingRows ?? 0) + (canceledRows ?? 0)} tone="amber" />
-        <Fact label="First queue row" value={firstSentResult.data?.[0]?.created_at ?? null} />
-        <Fact label="First send date" value={firstSentResult.data?.[0]?.send_date ?? null} />
+        <Fact label="First queue row" value={firstQueueRowAt} />
+        <Fact label="First send date" value={firstSendDate} />
         <Fact label="Created" value={email.created_at} />
         <Fact label="Updated" value={email.updated_at} />
       </section>
@@ -653,7 +726,9 @@ export default async function PastSendDetailPage({ params, searchParams }: Props
                     </Link>
                     <p className="truncate text-xs text-slate-500">{list.address}</p>
                     <p className="mt-2 text-xs text-slate-600">
-                      {formatNullableCount(list.queueRows)} queued row{list.queueRows === 1 ? "" : "s"}
+                      {list.historical
+                        ? "Per-list breakdown archived — see totals above"
+                        : `${formatNullableCount(list.queueRows)} queued row${list.queueRows === 1 ? "" : "s"}`}
                       {list.currentActiveMembers !== null && (
                         <> · {list.currentActiveMembers.toLocaleString()} active now</>
                       )}
@@ -873,6 +948,12 @@ function singleParam(value: string | string[] | undefined) {
   const raw = Array.isArray(value) ? value[0] : value;
   const trimmed = raw?.trim();
   return trimmed ? trimmed.slice(0, 200) : null;
+}
+
+function earliest(a: string | null, b: string | null) {
+  if (!a) return b;
+  if (!b) return a;
+  return a < b ? a : b;
 }
 
 function rate(numerator: number, denominator: number) {
