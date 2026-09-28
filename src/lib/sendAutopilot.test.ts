@@ -66,3 +66,12 @@ describe("send window input", () => {
     expect(workerCore.parseSendWindow("07:00-21:00 America/New_York")).not.toBeNull();
   });
 });
+
+describe("public surfaces", () => {
+  it("keeps campaign subjects and block reasons out of the unauthenticated health endpoint", async () => {
+    const { readFileSync } = await import("node:fs");
+    const health = readFileSync("src/app/api/health/route.ts", "utf8");
+    const autopilotSection = health.slice(health.indexOf("Cloud autopilot sender"), health.indexOf("Verified SES sending identity"));
+    expect(autopilotSection).not.toMatch(/record\.(subject|message|emailId)/);
+  });
+});

@@ -522,12 +522,14 @@ export async function GET() {
       label: "Cloud send autopilot",
       severity: "warning",
       ok: blocked.length === 0 && orphaned.length === 0,
+      // This endpoint is unauthenticated: counts and states only, never
+      // subjects, reasons, or ids.
       message: orphaned.length
-        ? `${orphaned.length} approved campaign(s) have had no worker for 20+ minutes: ${orphaned.map((record) => record.subject ?? record.emailId).join(", ")}`
+        ? `${orphaned.length} approved campaign(s) have had no worker for 20+ minutes.`
         : blocked.length
-          ? `${blocked.length} campaign(s) blocked: ${blocked.map((record) => `${record.subject ?? record.emailId} — ${record.message ?? "see monitor"}`).join("; ")}`
+          ? `${blocked.length} campaign(s) blocked in the last 7 days; open the Queue page for reasons.`
           : active.length
-            ? `${active.length} campaign(s) in autopilot: ${active.map((record) => `${record.subject ?? record.emailId} (${record.state})`).join(", ")}`
+            ? `${active.length} campaign(s) in autopilot (${[...new Set(active.map((record) => record.state))].join(", ")}).`
             : "Idle — no approved campaigns waiting.",
       fix: orphaned.length
         ? "GitHub → Actions → SES Autopilot: confirm the workflow is enabled on the default branch and its latest run succeeded (secrets SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY; variable AWS_REGION)."
