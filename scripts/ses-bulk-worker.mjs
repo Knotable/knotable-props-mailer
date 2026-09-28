@@ -840,6 +840,14 @@ async function runCampaign(record) {
     const elapsed = Math.max(1, (Date.now() - runStartedAt) / 1000);
     const measuredRate = accepted / elapsed;
     const remaining = Math.max(0, remainingAtStart - accepted - failed);
+    const effective = measuredRate > 0.5 ? measuredRate : rate;
+    // Only what fits in the current SES quota window goes out now; the rest
+    // waits for the rolling window to free up.
+    const thisWindow = Math.min(remaining, Math.max(0, available));
+    const laterWindows = remaining - thisWindow;
+    const etaMessage = laterWindows > 0
+      ? `About ${formatDuration(estimateEtaSeconds(thisWindow, effective))} left in this SES quota window; ${laterWindows.toLocaleString()} more send automatically as quota frees (~${Math.ceil(laterWindows / Math.max(1, quota.max24HourSend - config.quotaReserve))} more day(s)).`
+      : `About ${formatDuration(estimateEtaSeconds(remaining, effective))} left.`;
     const wrote = await patchRecord(record, {
       state: "running",
       heartbeatAt: nowIso(),
@@ -852,11 +860,12 @@ async function runCampaign(record) {
         remainingEstimate: remaining,
         ratePerSecond: Number(measuredRate.toFixed(2)),
         targetRatePerSecond: Number(rate.toFixed(2)),
-        etaSeconds: estimateEtaSeconds(remaining, measuredRate > 0.5 ? measuredRate : rate),
+        etaSeconds: estimateEtaSeconds(thisWindow, effective),
+        laterWindowRecipients: laterWindows,
         backoffMs: backoff.currentPauseMs,
       },
       quota: { ...quota, available, reserve: config.quotaReserve, checkedAt: new Date(lastQuotaRefresh).toISOString() },
-      message: `Sending at ${measuredRate.toFixed(1)}/s. About ${formatDuration(estimateEtaSeconds(remaining, measuredRate > 0.5 ? measuredRate : rate))} left.`,
+      message: `Sending at ${measuredRate.toFixed(1)}/s. ${etaMessage}`,
       ...extra,
     });
     return wrote !== false;
@@ -962,12 +971,25 @@ async function runCampaign(record) {
   if (stopReason === "blocked") return block(email, record, stopDetail);
   if (stopReason === "quota") {
     const nextCheckAt = new Date(Date.now() + config.quotaRecheckMs).toISOString();
+    const summary = await loadSummary(emailId).catch(() => null);
+    const unsent = summary ? summary.pending_due + summary.pending_held : null;
+    // One progress email per quota window, not one per 15-minute re-check.
+    const lastNoticeMs = Date.parse(record.lastQuotaNoticeAt ?? "");
+    const notice = accepted > 0 && (!Number.isFinite(lastNoticeMs) || Date.now() - lastNoticeMs > 12 * 3_600_000);
     await patchRecord(record, {
       state: "waiting_quota",
       heartbeatAt: nowIso(),
       nextCheckAt,
-      message: `Paused for SES rolling quota after ${accepted.toLocaleString()} accepted this run. Resumes automatically (next check ${nextCheckAt.slice(11, 16)} UTC).`,
+      ...(notice ? { lastQuotaNoticeAt: nowIso() } : {}),
+      message: `Paused for SES rolling quota after ${accepted.toLocaleString()} accepted this run${unsent !== null ? `; ${unsent.toLocaleString()} still to send` : ""}. Resumes automatically (next check ${nextCheckAt.slice(11, 16)} UTC).`,
     });
+    if (notice && summary) {
+      await notifyOperator(email, `Progress: ${email.subject}`, [
+        `This SES quota window is used up. Accepted so far: ${summary.succeeded.toLocaleString()}. Still to send: ${unsent.toLocaleString()}.`,
+        "Autopilot resumes by itself as the rolling 24-hour quota frees up; nothing to do.",
+        `Campaign: ${emailId}`,
+      ]);
+    }
     return "quota";
   }
   if (stopReason === "deadline") {

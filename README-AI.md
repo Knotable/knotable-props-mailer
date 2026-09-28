@@ -52,7 +52,8 @@ Everything below is code-complete in this repo; each item needs someone with the
 7. **Decide on SES capacity.** Throughput is capped by SES (15/s, 65,400/24 h). Autopilot uses all of it automatically; going faster needs an AWS quota increase, which was previously declined.
 8. **(Done in code, no migration needed.)** Queue preparation for lists over 5,000 now runs in the cloud worker (`preparing` → `prepared`, or straight to sending for Send Now). A set-based SQL `insert … select` would make it faster still, but that needs a production migration and is optional.
 9. **Webhook headroom at full speed.** At 13/s the SES → SNS → Vercel → Supabase event path writes ~30 rows/s. The September sends used recovery pauses because of this. Autopilot backs off when the worker sees the database slow down; if Supabase still struggles, set `SES_BULK_RECOVERY_PAUSE_EVERY`/`_MS` repository variables, or (longer term) buffer SES events through SQS before Supabase.
-10. **Previously parked, still open:** `supabase/migrations/20260810_free_tier_load_reduction.sql` application status is unverified; the AWS-native plane (OIDC role, HMAC unsubscribe Lambda, S3/DynamoDB) remains unapproved and is now optional hardening rather than a prerequisite.
+10. **Removed:** `.github/workflows/mailer-cron.yml` ("Legacy Vercel Mailer (Manual Only)") only POSTed to `/api/workers/send-queued`, which has returned 410 since 2026-09-03; it was deleted to keep the Actions tab to the one real sender.
+11. **Previously parked, still open:** `supabase/migrations/20260810_free_tier_load_reduction.sql` application status is unverified; the AWS-native plane (OIDC role, HMAC unsubscribe Lambda, S3/DynamoDB) remains unapproved and is now optional hardening rather than a prerequisite.
 
 ---
 

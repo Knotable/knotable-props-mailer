@@ -174,6 +174,8 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(count(rowsFor(email.id), "pending")).toBe(40);
     const waiting = recordFor(email.id);
     expect(waiting.state).toBe("waiting_quota");
+    expect(waiting.message).toMatch(/40 still to send/);
+    expect(backend.ses.notices.map((notice) => notice.Content.Simple.Subject.Data)).toEqual(["[Props Mailer] Progress: Autumn update"]);
     expect(backend.tables.emails[0].status).toBe("sending");
 
     backend.ses.quota.SentLast24Hours = 0;
