@@ -107,12 +107,27 @@ export function compileTemplate({ subject, html, text, appBaseUrl }) {
   };
 }
 
+// Account-level SES conditions say nothing about the recipient, so they never
+// exhaust a recipient's attempts; the worker stops or backs off instead.
+const ACCOUNT_LEVEL_STATUSES = {
+  ACCOUNT_DAILY_QUOTA_EXCEEDED: "quota",
+  ACCOUNT_THROTTLED: "throttle",
+  ACCOUNT_SENDING_PAUSED: "paused",
+  CONFIGURATION_SET_SENDING_PAUSED: "paused",
+  ACCOUNT_SUSPENDED: "paused",
+};
+
+export function sesEntrySignal(result) {
+  return ACCOUNT_LEVEL_STATUSES[result?.Status] ?? null;
+}
+
 export function classifySesResult(result, item) {
   if (result?.Status === "SUCCESS" && result.MessageId) {
     return { id: item.id, outcome: "succeeded", ses_message_id: result.MessageId, last_error: null };
   }
   const message = [result?.Status, result?.Error].filter(Boolean).join(": ") || "SES returned no result";
-  const permanent = ["ACCOUNT_SUSPENDED", "MAIL_FROM_DOMAIN_NOT_VERIFIED", "MESSAGE_REJECTED"].includes(result?.Status);
+  if (sesEntrySignal(result)) return { id: item.id, outcome: "retry", ses_message_id: null, last_error: message };
+  const permanent = ["MAIL_FROM_DOMAIN_NOT_VERIFIED", "MESSAGE_REJECTED"].includes(result?.Status);
   const exhausted = item.attempts + 1 >= item.max_attempts;
   return { id: item.id, outcome: permanent || exhausted ? "dead" : "retry", ses_message_id: null, last_error: message };
 }

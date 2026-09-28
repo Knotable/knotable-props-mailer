@@ -1,7 +1,23 @@
 #!/usr/bin/env node
+// Durable SES bulk sender for campaigns materialized in Supabase mail_queue.
+//
+// Modes:
+//   autopilot (default) — drain every campaign the app has approved
+//                         (app_settings "send_autopilot:<emailId>"), oldest
+//                         approval first, one at a time, until done, the SES
+//                         rolling quota is exhausted, or the runner budget ends.
+//                         The scheduled workflow re-enters this mode, so quota
+//                         windows and the six-hour Actions ceiling are survived
+//                         without a human.
+//   send                — approve and drain one campaign (--email-id plus
+//                         --confirmation send:<emailId>).
+//   dry-run             — read-only readiness report for one campaign.
+//
+// Logs are public (the repository is public): never print recipient addresses.
 import crypto from "node:crypto";
+import { appendFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
-import { SESv2Client, GetAccountCommand, SendBulkEmailCommand } from "@aws-sdk/client-sesv2";
+import { SESv2Client, GetAccountCommand, SendBulkEmailCommand, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import pg from "pg";
 import {
   assertSendReadySubject,
@@ -9,60 +25,80 @@ import {
   compileTemplate,
   isBlockedRecipient,
   recipientData,
+  sesEntrySignal,
 } from "./lib/ses-bulk-worker-core.mjs";
+import {
+  ACTIVE_STATES,
+  AMBIGUOUS_CLAIM_PREFIX,
+  AUTOPILOT_KEY_PREFIX,
+  WORKER_LEASE_KEY,
+  autopilotKey,
+  availableQuota,
+  campaignContentDigest,
+  classifySendException,
+  createBackoff,
+  createPacer,
+  effectiveRate,
+  emailIdFromKey,
+  estimateEtaSeconds,
+  formatDuration,
+  orderDueRecords,
+  runUrlFromEnv,
+} from "./lib/autopilot-core.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const conciseError = (error) => String(error?.message ?? error ?? "unknown error").replace(/\s+/g, " ").slice(0, 240);
-const { Pool } = pg;
-async function retrySupabaseRead(label, operation, maxAttempts = 8) {
-  let lastResult;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    lastResult = await operation();
-    if (!lastResult.error) return lastResult;
-    if (attempt < maxAttempts) {
-      const retryDelayMs = Math.min(60_000, 2_000 * 2 ** (attempt - 1));
-      console.warn(`${label} attempt ${attempt}/${maxAttempts} failed (${conciseError(lastResult.error)}); retrying in ${retryDelayMs}ms`);
-      await sleep(retryDelayMs);
-    }
-  }
-  return lastResult;
-}
-async function retryPostgres(label, operation, maxAttempts = 8) {
-  let lastError;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (attempt < maxAttempts) {
-        const retryDelayMs = Math.min(60_000, 2_000 * 2 ** (attempt - 1));
-        console.warn(`${label} attempt ${attempt}/${maxAttempts} failed (${conciseError(error)}); retrying in ${retryDelayMs}ms`);
-        await sleep(retryDelayMs);
-      }
-    }
-  }
-  throw lastError;
-}
-
-const emailId = args.get("--email-id");
-const mode = args.get("--mode") ?? "dry-run";
-const confirmation = args.get("--confirmation") ?? "";
+const nowIso = () => new Date().toISOString();
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-if (!emailId || !uuidPattern.test(emailId)) throw new Error("--email-id must be a UUID");
-if (!["dry-run", "send"].includes(mode)) throw new Error("--mode must be dry-run or send");
+const HOLD_FLOOR = "2999-12-31T00:00:00.000Z";
 
+const mode = args.get("--mode") || "autopilot";
+const emailIdArg = args.get("--email-id") || "";
+const confirmation = args.get("--confirmation") ?? "";
+if (!["dry-run", "send", "autopilot"].includes(mode)) throw new Error("--mode must be autopilot, send, or dry-run");
+if (emailIdArg && !uuidPattern.test(emailIdArg)) throw new Error("--email-id must be a UUID");
+if (mode !== "autopilot" && !emailIdArg) throw new Error(`--email-id is required for ${mode}`);
+
+const numberEnv = (name, fallback) => {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && process.env[name] !== "" && process.env[name] !== undefined ? value : fallback;
+};
 const required = (name, fallback) => {
   const value = process.env[name] || (fallback ? process.env[fallback] : undefined);
   if (!value) throw new Error(`Missing ${name}${fallback ? ` (or ${fallback})` : ""}`);
   return value;
 };
-const supabaseUrl = required("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL");
-const serviceRoleKey = required("SUPABASE_SERVICE_ROLE_KEY");
+
+const config = {
+  maxRuntimeMs: numberEnv("SES_WORKER_MAX_RUNTIME_MINUTES", 330) * 60_000,
+  quotaReserve: Math.max(0, numberEnv("SES_QUOTA_RESERVE", 500)),
+  staleClaimMs: Math.max(1, numberEnv("SES_STALE_CLAIM_MINUTES", 10)) * 60_000,
+  quotaRecheckMs: Math.max(1, numberEnv("SES_QUOTA_RECHECK_MINUTES", 15)) * 60_000,
+  requestedRate: numberEnv("SES_BULK_MAX_RECIPIENTS_PER_SECOND", 13),
+  claimSize: Math.max(1, Math.min(50, numberEnv("SES_BULK_CLAIM_SIZE", 50))),
+  recoveryPauseEvery: Math.max(0, numberEnv("SES_BULK_RECOVERY_PAUSE_EVERY", 0)),
+  recoveryPauseMs: Math.max(0, numberEnv("SES_BULK_RECOVERY_PAUSE_MS", 0)),
+  heartbeatMs: 15_000,
+  quotaRefreshMs: 120_000,
+  leaseTtlMs: 3 * 60_000,
+  heartbeatStaleMs: 3 * 60_000,
+  maxConsecutiveErrors: 5,
+  operatorEmail: process.env.SES_OPERATOR_EMAIL || "a@sarva.co",
+  notifyFrom: process.env.SES_NOTIFY_FROM || "",
+};
+
+const startedAtMs = Date.now();
+const deadlineMs = startedAtMs + config.maxRuntimeMs;
+const runUrl = runUrlFromEnv();
+const workerId = `ses-bulk:${process.env.GITHUB_RUN_ID ?? "local"}:${crypto.randomUUID()}`;
 const appBaseUrl = required("APP_BASE_URL");
-const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
+const supabase = createClient(required("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"), required("SUPABASE_SERVICE_ROLE_KEY"), {
+  auth: { persistSession: false, autoRefreshToken: false },
+});
+const { Pool } = pg;
 const dbPool = process.env.SUPABASE_DB_CONNECTION
   ? new Pool({
       connectionString: process.env.SUPABASE_DB_CONNECTION,
@@ -74,213 +110,392 @@ const dbPool = process.env.SUPABASE_DB_CONNECTION
       statement_timeout: 60_000,
     })
   : null;
+let sesClient;
+const ses = () => (sesClient ??= new SESv2Client({ region: required("AWS_REGION"), maxAttempts: 1 }));
+const configurationSet = process.env.AWS_SES_CONFIGURATION_SET?.trim() || undefined;
 
-const { data: email, error: emailError } = await supabase
-  .from("emails")
-  .select("id, from_address, reply_to, subject, html, text, status, tags, campaigns")
-  .eq("id", emailId)
-  .single();
-if (emailError) throw new Error(`Unable to load campaign: ${emailError.message}`);
-assertSendReadySubject(email.subject);
-
-const { data: summaries, error: summaryError } = await supabase.rpc("get_queue_campaign_summaries", {
-  p_email_ids: [emailId],
-  p_now: new Date().toISOString(),
-});
-if (summaryError) throw new Error(`Unable to load queue summary: ${summaryError.message}`);
-const summary = (summaries ?? []).reduce((total, row) => {
-  for (const key of ["pending_due", "pending_held", "processing", "succeeded", "failed", "dead", "canceled", "total"])
-    total[key] += Number(row[key] ?? 0);
-  return total;
-}, { pending_due: 0, pending_held: 0, processing: 0, succeeded: 0, failed: 0, dead: 0, canceled: 0, total: 0 });
-
-const { data: sample, error: sampleError } = await supabase
-  .from("mail_queue")
-  .select("id, payload")
-  .eq("email_id", emailId)
-  .eq("status", "pending")
-  .limit(1)
-  .maybeSingle();
-if (sampleError) throw new Error(`Unable to load queue sample: ${sampleError.message}`);
-const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl });
-if (sample) compiled.replacementData(recipientData(sample.payload, sample.id));
-
-console.log(JSON.stringify({ mode, campaign: { id: email.id, subject: email.subject, status: email.status }, queue: summary }, null, 2));
-if (mode === "dry-run") {
-  console.log("Dry run complete. No database rows were changed and no email was sent.");
-  process.exit(0);
-}
-
-if (confirmation !== `send:${emailId}`) throw new Error(`Send mode requires --confirmation send:${emailId}`);
-if (!["queued", "sending"].includes(email.status)) throw new Error(`Campaign status ${email.status} is not eligible for a bulk send.`);
-if (summary.processing > 0) throw new Error(`${summary.processing} processing row(s) already exist. Refusing to risk duplicate delivery; reconcile them first.`);
-if (summary.pending_due + summary.pending_held === 0) throw new Error("No pending recipients remain.");
-
-const region = required("AWS_REGION");
-const ses = new SESv2Client({ region });
-const account = await ses.send(new GetAccountCommand({}));
-const maxRate = Number(account.SendQuota?.MaxSendRate ?? 1);
-const max24Hour = Number(account.SendQuota?.Max24HourSend ?? 0);
-const sentLast24Hours = Number(account.SendQuota?.SentLast24Hours ?? 0);
-const quotaRemaining = Math.max(0, Math.floor(max24Hour - sentLast24Hours));
-if (quotaRemaining === 0) throw new Error(`SES rolling quota is full (${sentLast24Hours}/${max24Hour}).`);
-await new Promise((resolve) => setTimeout(resolve, 1100));
-
-const requestedClaimSize = Number(process.env.SES_BULK_CLAIM_SIZE ?? 50);
-const claimSize = Math.max(1, Math.min(50, requestedClaimSize, quotaRemaining));
-const configuredRateCap = Number(process.env.SES_BULK_MAX_RECIPIENTS_PER_SECOND ?? maxRate);
-if (!Number.isFinite(configuredRateCap) || configuredRateCap < 1) {
-  throw new Error("SES_BULK_MAX_RECIPIENTS_PER_SECOND must be a number greater than or equal to 1.");
-}
-const effectiveSendRate = Math.min(maxRate * 0.9, configuredRateCap);
-const sendRequestSize = Math.max(1, Math.min(50, Math.floor(effectiveSendRate)));
-const sendRequestIntervalMs = Math.ceil((sendRequestSize / effectiveSendRate) * 1000) + 100;
-const recoveryPauseEvery = Math.max(0, Number(process.env.SES_BULK_RECOVERY_PAUSE_EVERY ?? 0));
-const recoveryPauseMs = Math.max(0, Number(process.env.SES_BULK_RECOVERY_PAUSE_MS ?? 0));
-const workerId = `ses-bulk:${process.env.GITHUB_RUN_ID ?? "local"}:${crypto.randomUUID()}`;
-const configurationSet = process.env.AWS_SES_CONFIGURATION_SET?.trim();
-const headers = email.reply_to ? [{ Name: "List-Unsubscribe", Value: `<mailto:${email.reply_to}?subject=Unsubscribe>` }] : [];
-
-console.log(JSON.stringify({ sesMaxRate: maxRate, configuredRateCap, effectiveSendRate, sendRequestSize, sendRequestIntervalMs, claimSize, recoveryPauseEvery, recoveryPauseMs }));
-
-const { error: activateError } = await supabase.from("emails").update({ status: "sending", updated_at: new Date().toISOString() }).eq("id", emailId).in("status", ["queued", "sending"]);
-if (activateError) throw new Error(`Unable to activate campaign: ${activateError.message}`);
-
-let accepted = 0;
-let failed = 0;
-let remainingQuota = quotaRemaining;
-let requestCount = 0;
-let nextRecoveryPauseAt = recoveryPauseEvery;
-while (remainingQuota > 0) {
-  const limit = Math.min(claimSize, remainingQuota);
-  const now = new Date().toISOString();
-  // The SQL claim RPC has to consider both due and year-2999 held rows, which
-  // produced an expensive OR + sort plan on the free Supabase compute tier.
-  // A GitHub concurrency lock guarantees only one bulk worker per campaign, so
-  // use the existing email/status/created_at index to select a bounded set and
-  // then conditionally transition exactly those ids. The conditional update
-  // still fails closed if another worker somehow races this one.
-  let candidates;
-  let candidateError;
-  if (dbPool) {
-    try {
-      const selected = await retryPostgres(
-        "select queue batch",
-        () => dbPool.query(
-          "select id from public.mail_queue where email_id = $1 and status = 'pending' order by created_at asc, id asc limit $2",
-          [emailId, limit],
-        ),
-      );
-      candidates = selected.rows;
-    } catch (error) {
-      candidateError = error;
-    }
-  } else {
-    const selected = await retrySupabaseRead(
-      "select queue batch",
-      () => supabase
-        .from("mail_queue")
-        .select("id")
-        .eq("email_id", emailId)
-        .eq("status", "pending")
-        .order("created_at", { ascending: true })
-        .order("id", { ascending: true })
-        .limit(limit),
-    );
-    candidates = selected.data;
-    candidateError = selected.error;
+function summaryLine(markdown) {
+  if (!process.env.GITHUB_STEP_SUMMARY) return;
+  try {
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${markdown}\n`);
+  } catch {
+    // The step summary is cosmetic.
   }
-  if (candidateError) throw new Error(`Unable to select queue batch: ${candidateError.message}`);
-  if (!candidates?.length) break;
+}
 
-  const candidateIds = candidates.map((candidate) => candidate.id);
-  let items;
-  let claimError;
-  for (let attempt = 1; attempt <= 8; attempt += 1) {
-    let claim;
-    if (dbPool) {
-      try {
-        const claimed = await dbPool.query(
-          `update public.mail_queue
-           set status = 'processing', locked_at = $3, last_heartbeat = $3, correlation_id = $4, updated_at = $3
-           where email_id = $1 and status = 'pending' and id = any($2::uuid[])
-           returning id, payload, list_id, attempts, max_attempts`,
-          [emailId, candidateIds, now, workerId],
-        );
-        claim = { data: claimed.rows, error: null };
-      } catch (error) {
-        claim = { data: null, error };
+async function retry(label, operation, maxAttempts = 8, maxDelayMs = 60_000) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt < maxAttempts) {
+        const delay = Math.min(maxDelayMs, 2_000 * 2 ** (attempt - 1));
+        console.warn(`${label} attempt ${attempt}/${maxAttempts} failed (${conciseError(error)}); retrying in ${delay}ms`);
+        await sleep(delay);
       }
-    } else {
-      claim = await supabase
-        .from("mail_queue")
-        .update({
-          status: "processing",
-          locked_at: now,
-          last_heartbeat: now,
-          correlation_id: workerId,
-          updated_at: now,
-        })
-        .eq("email_id", emailId)
-        .eq("status", "pending")
-        .in("id", candidateIds)
-        .select("id, payload, list_id, attempts, max_attempts");
     }
-    if (!claim.error && claim.data?.length === candidateIds.length) {
-      items = claim.data;
-      break;
-    }
+  }
+  throw lastError;
+}
 
-    claimError = claim.error ?? new Error(`Claim returned ${claim.data?.length ?? 0}/${candidateIds.length} rows`);
-    let recovered;
+const unwrap = (label) => async (promise) => {
+  const { data, error } = await promise;
+  if (error) throw new Error(`${label}: ${error.message}`);
+  return data;
+};
+
+// ── Queue data access (pg when SUPABASE_DB_CONNECTION is set, else PostgREST) ──
+
+const queue = {
+  // Two index range scans on (email_id, status, available_at): due rows first,
+  // then held rows. Retry-delayed rows (future available_at below the hold
+  // floor) are skipped until due. Never scans already-sent rows.
+  async selectCandidates(emailId, limit) {
+    const now = nowIso();
     if (dbPool) {
-      try {
-        const result = await retryPostgres(
-          "recover ambiguous queue claim",
-          () => dbPool.query(
-            `select id, payload, list_id, attempts, max_attempts
-             from public.mail_queue
-             where email_id = $1 and status = 'processing' and correlation_id = $2 and id = any($3::uuid[])`,
-            [emailId, workerId, candidateIds],
-          ),
-          5,
-        );
-        recovered = { data: result.rows, error: null };
-      } catch (error) {
-        recovered = { data: null, error };
-      }
-    } else {
-      recovered = await retrySupabaseRead(
-        "recover ambiguous queue claim",
-        () => supabase
-          .from("mail_queue")
-          .select("id, payload, list_id, attempts, max_attempts")
-          .eq("email_id", emailId)
-          .eq("status", "processing")
-          .eq("correlation_id", workerId)
-          .in("id", candidateIds),
-        5,
+      const due = await retry("select due batch", () => dbPool.query(
+        "select id from public.mail_queue where email_id = $1 and status = 'pending' and available_at <= $2 order by available_at asc limit $3",
+        [emailId, now, limit],
+      ));
+      if (due.rows.length >= limit) return due.rows.map((row) => row.id);
+      const held = await retry("select held batch", () => dbPool.query(
+        "select id from public.mail_queue where email_id = $1 and status = 'pending' and available_at >= $2 order by available_at asc limit $3",
+        [emailId, HOLD_FLOOR, limit - due.rows.length],
+      ));
+      return [...due.rows, ...held.rows].map((row) => row.id);
+    }
+    const due = await retry("select due batch", () => unwrap("select due batch")(
+      supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "pending")
+        .lte("available_at", now).order("available_at", { ascending: true }).limit(limit),
+    ));
+    if (due.length >= limit) return due.map((row) => row.id);
+    const held = await retry("select held batch", () => unwrap("select held batch")(
+      supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "pending")
+        .gte("available_at", HOLD_FLOOR).order("available_at", { ascending: true }).limit(limit - due.length),
+    ));
+    return [...due, ...held].map((row) => row.id);
+  },
+
+  async claim(emailId, ids) {
+    const now = nowIso();
+    if (dbPool) {
+      const result = await dbPool.query(
+        `update public.mail_queue
+         set status = 'processing', locked_at = $3, last_heartbeat = $3, correlation_id = $4, updated_at = $3
+         where email_id = $1 and status = 'pending' and id = any($2::uuid[])
+         returning id, payload, list_id, attempts, max_attempts`,
+        [emailId, ids, now, workerId],
       );
+      return result.rows;
     }
-    if (!recovered.error && recovered.data?.length === candidateIds.length) {
-      items = recovered.data;
-      console.warn(`claim response was ambiguous but all ${candidateIds.length} rows were recovered before SES send`);
-      break;
+    return unwrap("claim batch")(
+      supabase.from("mail_queue")
+        .update({ status: "processing", locked_at: now, last_heartbeat: now, correlation_id: workerId, updated_at: now })
+        .eq("email_id", emailId).eq("status", "pending").in("id", ids)
+        .select("id, payload, list_id, attempts, max_attempts"),
+    );
+  },
+
+  async claimedByUs(emailId, ids) {
+    if (dbPool) {
+      const result = await dbPool.query(
+        `select id, payload, list_id, attempts, max_attempts from public.mail_queue
+         where email_id = $1 and status = 'processing' and correlation_id = $2 and id = any($3::uuid[])`,
+        [emailId, workerId, ids],
+      );
+      return result.rows;
     }
-    if (!recovered.error && recovered.data?.length) {
-      throw new Error(`Partial queue claim detected: ${recovered.data.length}/${candidateIds.length}. Stop and reconcile before sending.`);
+    return unwrap("recover claim")(
+      supabase.from("mail_queue").select("id, payload, list_id, attempts, max_attempts")
+        .eq("email_id", emailId).eq("status", "processing").eq("correlation_id", workerId).in("id", ids),
+    );
+  },
+
+  async finalize(emailId, results) {
+    const now = nowIso();
+    if (dbPool) {
+      const result = await dbPool.query(
+        "select public.finalize_ses_bulk_queue_batch($1::uuid, $2::text, $3::jsonb, $4::timestamptz) as applied",
+        [emailId, workerId, JSON.stringify(results), now],
+      );
+      return Number(result.rows[0]?.applied ?? 0);
+    }
+    const data = await unwrap("finalize batch")(supabase.rpc("finalize_ses_bulk_queue_batch", {
+      p_email_id: emailId, p_worker_id: workerId, p_results: results, p_now: now,
+    }));
+    return Number(data ?? 0);
+  },
+
+  async outcomes(emailId, ids) {
+    if (dbPool) {
+      const result = await dbPool.query(
+        "select id, status, ses_message_id from public.mail_queue where email_id = $1 and id = any($2::uuid[])",
+        [emailId, ids],
+      );
+      return result.rows;
+    }
+    return unwrap("read outcomes")(
+      supabase.from("mail_queue").select("id, status, ses_message_id").eq("email_id", emailId).in("id", ids),
+    );
+  },
+};
+
+async function claimBatch(emailId, limit) {
+  const started = Date.now();
+  const ids = await queue.selectCandidates(emailId, limit);
+  if (!ids.length) return { items: [], latencyMs: Date.now() - started, retried: false };
+  let lastError;
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    try {
+      // UPDATE ... RETURNING is authoritative: the returned rows are exactly the
+      // rows this worker now owns. Fewer than selected means the rest were
+      // canceled or changed in between, which is fine.
+      const items = await queue.claim(emailId, ids);
+      return { items, latencyMs: Date.now() - started, retried: attempt > 1, raced: items.length === 0 };
+    } catch (error) {
+      lastError = error;
+    }
+    // No trustworthy response: read back what this worker owns before any send.
+    const recovered = await retry("recover ambiguous claim", () => queue.claimedByUs(emailId, ids), 5).catch(() => null);
+    if (recovered?.length) {
+      console.warn(`claim response was ambiguous; recovered ${recovered.length}/${ids.length} owned rows before SES send`);
+      return { items: recovered, latencyMs: Date.now() - started, retried: true };
     }
     if (attempt < 8) {
-      const retryDelayMs = Math.min(60_000, 2_000 * 2 ** (attempt - 1));
-      console.warn(`claim attempt ${attempt}/8 failed (${conciseError(claimError)}); retrying in ${retryDelayMs}ms`);
-      await sleep(retryDelayMs);
+      const delay = Math.min(60_000, 2_000 * 2 ** (attempt - 1));
+      console.warn(`claim attempt ${attempt}/8 failed (${conciseError(lastError)}); retrying in ${delay}ms`);
+      await sleep(delay);
     }
   }
-  if (!items) throw new Error(`Unable to claim queue batch after retries: ${conciseError(claimError)}`);
-  if (items?.length !== candidateIds.length) {
-    throw new Error(`Queue claim race detected: ${items?.length ?? 0}/${candidateIds.length} rows transitioned. Stop and reconcile before retrying.`);
-  }
+  throw new Error(`Unable to claim queue batch after retries: ${conciseError(lastError)}`);
+}
 
+async function checkpoint(emailId, results) {
+  const started = Date.now();
+  let lastError = "unknown checkpoint error";
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    try {
+      const applied = await queue.finalize(emailId, results);
+      if (applied === results.length) return { latencyMs: Date.now() - started, retried: attempt > 1 };
+      lastError = `${applied}/${results.length} applied`;
+    } catch (error) {
+      lastError = conciseError(error);
+    }
+    const expected = new Map(results.map((result) => [result.id, result]));
+    const persisted = await queue.outcomes(emailId, [...expected.keys()]).catch(() => null);
+    const durable = persisted?.length === results.length && persisted.every((row) => {
+      const want = expected.get(row.id);
+      const wantStatus = want?.outcome === "retry" ? "pending" : want?.outcome;
+      return row.status === wantStatus && (wantStatus !== "succeeded" || row.ses_message_id === want.ses_message_id);
+    });
+    if (durable) {
+      console.warn(`checkpoint response was ambiguous but all ${results.length} outcomes are durable`);
+      return { latencyMs: Date.now() - started, retried: true };
+    }
+    if (attempt < 8) {
+      const delay = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
+      console.warn(`checkpoint attempt ${attempt}/8 failed (${lastError}); retrying in ${delay}ms`);
+      await sleep(delay);
+    }
+  }
+  throw new Error(`SES claim checkpoint was incomplete after retries: ${lastError}. Stale claims will be reconciled on the next run.`);
+}
+
+// ── Autopilot control records (app_settings key/value) ──
+
+async function readRecord(emailId) {
+  const { data, error } = await supabase.from("app_settings").select("value").eq("key", autopilotKey(emailId)).maybeSingle();
+  if (error) throw new Error(`read autopilot record: ${error.message}`);
+  return data?.value ?? null;
+}
+
+async function listRecords() {
+  const data = await retry("list autopilot records", () => unwrap("list autopilot records")(
+    supabase.from("app_settings").select("key, value").like("key", `${AUTOPILOT_KEY_PREFIX}%`),
+  ), 4);
+  return (data ?? [])
+    .map((row) => ({ ...(row.value ?? {}), emailId: row.value?.emailId ?? emailIdFromKey(row.key) }))
+    .filter((record) => record.emailId && uuidPattern.test(record.emailId));
+}
+
+// Conditional write: only while this exact approval is still active. Returns
+// false when the operator paused, canceled, or re-approved in the meantime.
+async function patchRecord(record, patch) {
+  const current = await readRecord(record.emailId).catch(() => undefined);
+  if (current === undefined) return null;
+  if (!current || current.approvalId !== record.approvalId || !ACTIVE_STATES.includes(current.state)) return false;
+  const next = { ...current, ...patch, updatedAt: nowIso() };
+  const { data, error } = await supabase
+    .from("app_settings")
+    .update({ value: next, updated_at: next.updatedAt })
+    .eq("key", autopilotKey(record.emailId))
+    .eq("value->>approvalId", record.approvalId)
+    .in("value->>state", ACTIVE_STATES)
+    .select("key");
+  if (error) {
+    console.warn(`autopilot record write failed (${conciseError(error)})`);
+    return null;
+  }
+  if (!data?.length) return false;
+  Object.assign(record, next);
+  return true;
+}
+
+async function writeNewApproval(record) {
+  const value = { ...record, updatedAt: nowIso() };
+  const { error } = await supabase
+    .from("app_settings")
+    .upsert({ key: autopilotKey(record.emailId), value, updated_at: value.updatedAt }, { onConflict: "key" });
+  if (error) throw new Error(`write autopilot approval: ${error.message}`);
+  return value;
+}
+
+// ── Worker lease: belt and braces on top of the workflow concurrency group ──
+
+let leaseToken = null;
+async function acquireLease() {
+  const token = workerId;
+  const value = { token, expiresAt: new Date(Date.now() + config.leaseTtlMs).toISOString(), runUrl, acquiredAt: nowIso() };
+  const { data: row, error } = await supabase.from("app_settings").select("value").eq("key", WORKER_LEASE_KEY).maybeSingle();
+  if (error) throw new Error(`read worker lease: ${error.message}`);
+  if (!row) {
+    const { error: insertError } = await supabase.from("app_settings").insert({ key: WORKER_LEASE_KEY, value, updated_at: value.acquiredAt });
+    if (insertError) return { ok: false, holder: "a worker that just started" };
+    leaseToken = token;
+    return { ok: true };
+  }
+  const current = row.value ?? {};
+  if (current.token && current.token !== token && Date.parse(current.expiresAt ?? "") > Date.now()) {
+    return { ok: false, holder: current.runUrl ?? current.token };
+  }
+  let update = supabase.from("app_settings").update({ value, updated_at: value.acquiredAt }).eq("key", WORKER_LEASE_KEY);
+  update = current.token ? update.eq("value->>token", current.token) : update;
+  const { data, error: updateError } = await update.select("key");
+  if (updateError || !data?.length) return { ok: false, holder: "a concurrent worker" };
+  leaseToken = token;
+  return { ok: true };
+}
+
+async function renewLease() {
+  if (!leaseToken) return;
+  const value = { token: leaseToken, expiresAt: new Date(Date.now() + config.leaseTtlMs).toISOString(), runUrl, renewedAt: nowIso() };
+  const { error } = await supabase.from("app_settings").update({ value, updated_at: value.renewedAt })
+    .eq("key", WORKER_LEASE_KEY).eq("value->>token", leaseToken);
+  if (error) console.warn(`lease renewal failed (${conciseError(error)})`);
+}
+
+async function releaseLease() {
+  if (!leaseToken) return;
+  const { error } = await supabase.from("app_settings")
+    .update({ value: { token: null, releasedAt: nowIso(), runUrl }, updated_at: nowIso() })
+    .eq("key", WORKER_LEASE_KEY).eq("value->>token", leaseToken);
+  if (error) console.warn(`lease release failed (${conciseError(error)})`);
+  leaseToken = null;
+}
+
+// ── SES helpers ──
+
+async function sesQuota() {
+  const account = await retry("SES GetAccount", () => ses().send(new GetAccountCommand({})), 4, 10_000);
+  await sleep(1_100);
+  return {
+    maxSendRate: Number(account.SendQuota?.MaxSendRate ?? 1),
+    max24HourSend: Number(account.SendQuota?.Max24HourSend ?? 0),
+    sentLast24Hours: Number(account.SendQuota?.SentLast24Hours ?? 0),
+    productionAccess: account.ProductionAccessEnabled !== false,
+    sendingEnabled: account.SendingEnabled !== false,
+  };
+}
+
+async function notifyOperator(email, subject, lines) {
+  const from = config.notifyFrom || email?.from_address;
+  if (!from || !config.operatorEmail) return;
+  const monitorUrl = email?.id ? `${appBaseUrl.replace(/\/+$/, "")}/email/monitor?emailId=${email.id}` : appBaseUrl;
+  const body = [...lines, "", `Monitor: ${monitorUrl}`, runUrl ? `Worker run: ${runUrl}` : null, "", "Sent by Props Mailer autopilot."]
+    .filter((line) => line !== null)
+    .join("\n");
+  try {
+    await ses().send(new SendEmailCommand({
+      FromEmailAddress: from,
+      Destination: { ToAddresses: [config.operatorEmail] },
+      Content: { Simple: { Subject: { Data: `[Props Mailer] ${subject}`.slice(0, 200) }, Body: { Text: { Data: body } } } },
+    }));
+  } catch (error) {
+    console.warn(`operator notice failed (${conciseError(error)})`);
+  }
+}
+
+// ── Campaign helpers ──
+
+async function loadEmail(emailId) {
+  const { data, error } = await supabase
+    .from("emails")
+    .select("id, from_address, reply_to, subject, html, text, status, tags, campaigns")
+    .eq("id", emailId)
+    .maybeSingle();
+  if (error) throw new Error(`load campaign: ${error.message}`);
+  return data;
+}
+
+async function loadSummary(emailId) {
+  const rows = await retry("queue summary", () => unwrap("queue summary")(
+    supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [emailId], p_now: nowIso() }),
+  ), 5);
+  return (rows ?? []).reduce((total, row) => {
+    for (const key of ["pending_due", "pending_held", "processing", "succeeded", "failed", "dead", "canceled", "total"]) {
+      total[key] += Number(row[key] ?? 0);
+    }
+    return total;
+  }, { pending_due: 0, pending_held: 0, processing: 0, succeeded: 0, failed: 0, dead: 0, canceled: 0, total: 0 });
+}
+
+// Rows left in `processing` by an interrupted worker. The SES webhook flips a
+// row to succeeded when SES's Send event (tagged with queue_id) arrives, so a
+// row still processing after the stale window has no acceptance evidence. It
+// is parked as dead with an explicit marker — never retried, because a
+// duplicate email is worse than a missed one. A late Send event still upgrades
+// it to succeeded.
+async function reconcileStaleClaims(emailId) {
+  const rows = await unwrap("stale claims")(
+    supabase.from("mail_queue").select("id, locked_at").eq("email_id", emailId).eq("status", "processing")
+      .order("locked_at", { ascending: true }).limit(1000),
+  );
+  if (!rows?.length) return { resolved: 0, waitUntil: null };
+  const cutoffMs = Date.now() - config.staleClaimMs;
+  const stale = rows.filter((row) => !row.locked_at || Date.parse(row.locked_at) < cutoffMs).map((row) => row.id);
+  const fresh = rows.filter((row) => row.locked_at && Date.parse(row.locked_at) >= cutoffMs);
+  let resolved = 0;
+  for (let offset = 0; offset < stale.length; offset += 200) {
+    const ids = stale.slice(offset, offset + 200);
+    const updated = await unwrap("park stale claims")(
+      supabase.from("mail_queue")
+        .update({
+          status: "dead",
+          locked_at: null,
+          last_error: `${AMBIGUOUS_CLAIM_PREFIX} worker interrupted before SES acceptance was recorded; not retried to prevent duplicate delivery`,
+          updated_at: nowIso(),
+        })
+        .eq("email_id", emailId).eq("status", "processing").in("id", ids)
+        .lt("locked_at", new Date(cutoffMs).toISOString())
+        .select("id"),
+    );
+    resolved += updated?.length ?? 0;
+  }
+  const waitUntil = fresh.length
+    ? new Date(Math.min(...fresh.map((row) => Date.parse(row.locked_at))) + config.staleClaimMs + 5_000).toISOString()
+    : null;
+  return { resolved, waitUntil };
+}
+
+async function earliestRetryAt(emailId) {
+  const { data } = await supabase.from("mail_queue").select("available_at").eq("email_id", emailId).eq("status", "pending")
+    .gt("available_at", nowIso()).lt("available_at", HOLD_FLOOR).order("available_at", { ascending: true }).limit(1).maybeSingle();
+  return data?.available_at ?? null;
+}
+
+function buildDeliverable(email, compiled, items) {
   const invalid = [];
   const deliverable = [];
   for (const item of items) {
@@ -293,147 +508,475 @@ while (remainingQuota > 0) {
       }
       const subject = payload.subject?.startsWith("[SENDER COPY]") ? `[SENDER COPY] ${email.subject}` : payload.subject ?? email.subject;
       assertSendReadySubject(subject);
-      const itemCompiled = subject === email.subject ? compiled : compileTemplate({ subject, html: payload.html ?? email.html, text: payload.text ?? email.text, appBaseUrl });
+      const itemCompiled = subject === email.subject
+        ? compiled
+        : compileTemplate({ subject, html: payload.html ?? email.html, text: payload.text ?? email.text, appBaseUrl });
       deliverable.push({ item, payload, compiled: itemCompiled, data: recipientData(payload, item.id) });
     } catch (error) {
       invalid.push({ id: item.id, outcome: "dead", ses_message_id: null, last_error: error instanceof Error ? error.message : String(error) });
     }
   }
+  return { invalid, deliverable };
+}
 
-  const claimResults = [...invalid];
-  if (deliverable.length) {
+async function sendGroup(email, entries, pacer, headers) {
+  const first = entries[0].compiled;
+  const command = new SendBulkEmailCommand({
+    FromEmailAddress: email.from_address,
+    ReplyToAddresses: email.reply_to ? [email.reply_to] : undefined,
+    ConfigurationSetName: configurationSet,
+    DefaultContent: { Template: { TemplateContent: first.content, TemplateData: "{}", Headers: headers } },
+    BulkEmailEntries: entries.map(({ item, payload, compiled, data }) => ({
+      Destination: { ToAddresses: [payload.to] },
+      ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(compiled.replacementData(data)) } },
+      ReplacementTags: [
+        { Name: "queue_id", Value: item.id },
+        { Name: "campaign_id", Value: email.id },
+      ],
+    })),
+  });
+  for (let attempt = 0; ; attempt += 1) {
+    await pacer.take(entries.length);
+    try {
+      const response = await ses().send(command);
+      const results = entries.map(({ item }, index) => classifySesResult(response.BulkEmailEntryResults?.[index], item));
+      const signals = new Set((response.BulkEmailEntryResults ?? []).map(sesEntrySignal).filter(Boolean));
+      return { results, signal: signals.has("paused") ? "paused" : signals.has("quota") ? "quota" : signals.has("throttle") ? "throttle" : null };
+    } catch (error) {
+      const verdict = classifySendException(error);
+      if (verdict.kind === "retryable" && attempt < 5) {
+        const delay = Math.min(30_000, 1_000 * 2 ** attempt);
+        console.warn(`SES request rejected (${verdict.message.slice(0, 160)}); retrying in ${delay}ms`);
+        await sleep(delay);
+        continue;
+      }
+      const outcome = verdict.kind === "ambiguous" ? "dead" : "retry";
+      const prefix = verdict.kind === "ambiguous" ? `${AMBIGUOUS_CLAIM_PREFIX} ` : "";
+      console.warn(`SES request failed (${verdict.kind}): ${verdict.message.slice(0, 200)}`);
+      return {
+        results: entries.map(({ item }) => ({ id: item.id, outcome, ses_message_id: null, last_error: `${prefix}${verdict.message}`.slice(0, 500) })),
+        signal: verdict.kind === "quota" ? "quota" : verdict.kind === "rejected" ? "rejected" : verdict.kind === "retryable" ? "throttle" : null,
+        ambiguous: verdict.kind === "ambiguous",
+      };
+    }
+  }
+}
+
+async function finalizeComplete(email, record, reason) {
+  const summary = await loadSummary(email.id);
+  const active = summary.pending_due + summary.pending_held + summary.processing;
+  if (active > 0) return false;
+  await supabase.from("emails").update({ status: "sent", sent_at: nowIso(), updated_at: nowIso() }).eq("id", email.id).eq("status", "sending");
+  const failures = summary.failed + summary.dead;
+  const message = `${summary.succeeded.toLocaleString()} accepted by SES${failures ? `, ${failures.toLocaleString()} permanently failed` : ""}${summary.canceled ? `, ${summary.canceled.toLocaleString()} canceled` : ""}.`;
+  // The active -> complete transition happens once, so the notice does too.
+  const wrote = record ? await patchRecord(record, {
+    state: "complete",
+    completedAt: nowIso(),
+    heartbeatAt: nowIso(),
+    nextCheckAt: null,
+    message,
+    totals: summary,
+  }) : null;
+  console.log(`campaign ${email.id} complete: ${message}`);
+  summaryLine(`- DONE **${email.subject}** — ${message}`);
+  if (wrote === true) {
+    await notifyOperator(email, `Sent: ${email.subject}`, [
+      `Campaign complete (${reason}).`,
+      `Accepted by SES: ${summary.succeeded.toLocaleString()}`,
+      `Permanent failures: ${failures.toLocaleString()}`,
+      `Canceled: ${summary.canceled.toLocaleString()}`,
+      `Campaign: ${email.id}`,
+      "SES acceptance is not inbox delivery; check Analytics for delivered/bounced/opened.",
+    ]);
+  }
+  return true;
+}
+
+async function block(email, record, reason) {
+  console.warn(`campaign ${record.emailId} blocked: ${reason}`);
+  summaryLine(`- BLOCKED **${email?.subject ?? record.emailId}** blocked — ${reason}`);
+  const wrote = await patchRecord(record, { state: "blocked", blockedAt: nowIso(), message: reason, nextCheckAt: null });
+  if (wrote !== false) {
+    await notifyOperator(email, `Blocked: ${email?.subject ?? record.emailId}`, [
+      "Autopilot stopped this campaign and will not resume it until it is re-approved on the Queue page.",
+      `Reason: ${reason}`,
+      `Campaign: ${record.emailId}`,
+    ]);
+  }
+  return "blocked";
+}
+
+// Drains one approved campaign. Returns the stop reason.
+async function runCampaign(record) {
+  const emailId = record.emailId;
+  const email = await loadEmail(emailId);
+  if (!email) {
+    await patchRecord(record, { state: "canceled", message: "Campaign no longer exists." });
+    return "skipped";
+  }
+  if (email.status !== "sending") {
+    if (email.status === "sent") {
+      await patchRecord(record, { state: "complete", message: "Campaign was already marked sent.", completedAt: nowIso() });
+    } else {
+      await patchRecord(record, { state: "paused", message: `Campaign status is ${email.status}; autopilot stopped. Re-approve from the Queue page to continue.` });
+    }
+    return "skipped";
+  }
+  if (record.contentSha256 && campaignContentDigest(email) !== record.contentSha256) {
+    return block(email, record, "Subject, sender, or body changed after approval. Review and re-approve on the Queue page.");
+  }
+  try {
+    assertSendReadySubject(email.subject);
+  } catch (error) {
+    return block(email, record, conciseError(error));
+  }
+
+  const reconcile = await reconcileStaleClaims(emailId);
+  if (reconcile.resolved) {
+    summaryLine(`- WARN ${reconcile.resolved} interrupted claim(s) parked as ambiguous for **${email.subject}**`);
+    await notifyOperator(email, `Reconciled interrupted batch: ${email.subject}`, [
+      `${reconcile.resolved} recipient(s) were mid-send when a previous worker stopped and SES never confirmed them.`,
+      "They were parked (status dead, last_error ambiguous_claim) and will NOT be retried automatically, to avoid duplicate email.",
+      "If a late SES Send event arrives, the webhook upgrades them to succeeded. Everyone else continues sending.",
+      `Campaign: ${emailId}`,
+    ]);
+  }
+  if (reconcile.waitUntil) {
+    await patchRecord(record, {
+      state: "waiting_reconcile",
+      nextCheckAt: reconcile.waitUntil,
+      message: "Waiting for SES events to settle an interrupted batch before continuing.",
+    });
+    return "waiting";
+  }
+
+  const summary = await loadSummary(emailId);
+  const remainingAtStart = summary.pending_due + summary.pending_held;
+  if (remainingAtStart === 0) {
+    if (await finalizeComplete(email, record, "no recipients remained")) return "complete";
+  }
+  if (record.approvedRecipients && remainingAtStart > Number(record.approvedRecipients) + 5) {
+    return block(email, record, `Queue grew to ${remainingAtStart.toLocaleString()} unsent recipients after approval of ${Number(record.approvedRecipients).toLocaleString()}. Re-approve the new count.`);
+  }
+
+  const quota = await sesQuota();
+  if (!quota.sendingEnabled) return block(email, record, "SES account sending is disabled.");
+  let available = availableQuota({ ...quota, reserve: config.quotaReserve });
+  const minimumUseful = Math.min(remainingAtStart, config.claimSize);
+  if (available < minimumUseful) {
+    const nextCheckAt = new Date(Date.now() + config.quotaRecheckMs).toISOString();
+    await patchRecord(record, {
+      state: "waiting_quota",
+      nextCheckAt,
+      heartbeatAt: nowIso(),
+      quota: { ...quota, available, reserve: config.quotaReserve, checkedAt: nowIso() },
+      message: `SES rolling 24h quota is ${quota.sentLast24Hours.toLocaleString()}/${quota.max24HourSend.toLocaleString()} used. Resumes automatically as headroom frees (next check ${nextCheckAt.slice(11, 16)} UTC).`,
+    });
+    summaryLine(`- WAITING **${email.subject}** waiting for SES quota (${quota.sentLast24Hours}/${quota.max24HourSend})`);
+    return "quota";
+  }
+
+  const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl });
+  const { data: sample } = await supabase.from("mail_queue").select("id, payload").eq("email_id", emailId).eq("status", "pending").limit(1).maybeSingle();
+  if (sample && !sample.payload?.subject) {
+    try {
+      compiled.replacementData(recipientData(sample.payload, sample.id));
+    } catch (error) {
+      return block(email, record, `Template check failed on a sample recipient: ${conciseError(error)}`);
+    }
+  }
+
+  const rate = effectiveRate({ sesMaxSendRate: quota.maxSendRate, requestedRate: record.maxRatePerSecond ?? config.requestedRate });
+  const requestSize = Math.max(1, Math.min(50, Math.floor(rate)));
+  const pacer = createPacer(rate);
+  const backoff = createBackoff();
+  const headers = email.reply_to ? [{ Name: "List-Unsubscribe", Value: `<mailto:${email.reply_to}?subject=Unsubscribe>` }] : [];
+  const runStartedAt = Date.now();
+  let accepted = 0;
+  let failed = 0;
+  let ambiguous = 0;
+  let lastHeartbeat = 0;
+  let lastQuotaRefresh = Date.now();
+  let nextRecoveryPauseAt = config.recoveryPauseEvery;
+  let stopReason = null;
+  let stopDetail = "";
+
+  console.log(JSON.stringify({ campaign: emailId, subject: email.subject, remaining: remainingAtStart, rate, requestSize, claimSize: config.claimSize, quotaAvailable: available }));
+  summaryLine(`- START **${email.subject}** — ${remainingAtStart.toLocaleString()} unsent, target ${rate.toFixed(1)}/s`);
+
+  const heartbeat = async (extra = {}) => {
+    lastHeartbeat = Date.now();
+    await renewLease();
+    const { data: live } = await supabase.from("emails").select("status").eq("id", emailId).maybeSingle();
+    if (live && live.status !== "sending") return false;
+    const elapsed = Math.max(1, (Date.now() - runStartedAt) / 1000);
+    const measuredRate = accepted / elapsed;
+    const remaining = Math.max(0, remainingAtStart - accepted - failed);
+    const wrote = await patchRecord(record, {
+      state: "running",
+      heartbeatAt: nowIso(),
+      nextCheckAt: null,
+      errorCount: 0,
+      run: { url: runUrl, workerId, startedAt: new Date(runStartedAt).toISOString() },
+      progress: {
+        acceptedThisRun: accepted,
+        failedThisRun: failed,
+        remainingEstimate: remaining,
+        ratePerSecond: Number(measuredRate.toFixed(2)),
+        targetRatePerSecond: Number(rate.toFixed(2)),
+        etaSeconds: estimateEtaSeconds(remaining, measuredRate > 0.5 ? measuredRate : rate),
+        backoffMs: backoff.currentPauseMs,
+      },
+      quota: { ...quota, available, reserve: config.quotaReserve, checkedAt: new Date(lastQuotaRefresh).toISOString() },
+      message: `Sending at ${measuredRate.toFixed(1)}/s. About ${formatDuration(estimateEtaSeconds(remaining, measuredRate > 0.5 ? measuredRate : rate))} left.`,
+      ...extra,
+    });
+    return wrote !== false;
+  };
+
+  if (!(await heartbeat())) return "paused";
+
+  while (!stopReason) {
+    if (Date.now() >= deadlineMs) {
+      stopReason = "deadline";
+      break;
+    }
+    if (Date.now() - lastHeartbeat >= config.heartbeatMs && !(await heartbeat())) {
+      stopReason = "paused";
+      break;
+    }
+    if (Date.now() - lastQuotaRefresh >= config.quotaRefreshMs) {
+      const refreshed = await sesQuota().catch(() => null);
+      if (refreshed) {
+        Object.assign(quota, refreshed);
+        available = availableQuota({ ...refreshed, reserve: config.quotaReserve });
+      }
+      lastQuotaRefresh = Date.now();
+    }
+    if (available <= 0) {
+      stopReason = "quota";
+      break;
+    }
+
+    const claim = await claimBatch(emailId, Math.min(config.claimSize, available));
+    if (!claim.items.length) {
+      if (claim.raced) continue;
+      break;
+    }
+    const { invalid, deliverable } = buildDeliverable(email, compiled, claim.items);
+    const results = [...invalid];
     const groups = new Map();
     for (const entry of deliverable) {
       const key = JSON.stringify(entry.compiled.content);
       groups.set(key, [...(groups.get(key) ?? []), entry]);
     }
+    let signal = null;
     for (const group of groups.values()) {
-      for (let offset = 0; offset < group.length; offset += sendRequestSize) {
-        const requestEntries = group.slice(offset, offset + sendRequestSize);
-        const first = requestEntries[0].compiled;
-        const response = await ses.send(new SendBulkEmailCommand({
-          FromEmailAddress: email.from_address,
-          ReplyToAddresses: email.reply_to ? [email.reply_to] : undefined,
-          ConfigurationSetName: configurationSet || undefined,
-          DefaultContent: { Template: { TemplateContent: first.content, TemplateData: "{}", Headers: headers } },
-          BulkEmailEntries: requestEntries.map(({ item, payload, compiled: itemCompiled, data }) => ({
-            Destination: { ToAddresses: [payload.to] },
-            ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(itemCompiled.replacementData(data)) } },
-            ReplacementTags: [
-              { Name: "queue_id", Value: item.id },
-              { Name: "campaign_id", Value: emailId },
-            ],
-          })),
-        }));
-        const results = requestEntries.map(({ item }, index) => classifySesResult(response.BulkEmailEntryResults?.[index], item));
-        claimResults.push(...results);
-        requestCount += 1;
-        console.log(`request=${requestCount} recipients=${requestEntries.length}`);
-        await sleep(sendRequestIntervalMs);
+      for (let offset = 0; offset < group.length; offset += requestSize) {
+        const entries = group.slice(offset, offset + requestSize);
+        if (signal && signal !== "throttle") {
+          // Stop spending attempts once SES says the account cannot send.
+          results.push(...entries.map(({ item }) => ({ id: item.id, outcome: "retry", ses_message_id: null, last_error: `Deferred: SES ${signal}` })));
+          continue;
+        }
+        const sent = await sendGroup(email, entries, pacer, headers);
+        results.push(...sent.results);
+        if (sent.ambiguous) ambiguous += entries.length;
+        if (sent.signal) signal = sent.signal;
       }
     }
-  }
 
-  let checkpointed = false;
-  let checkpointError = "unknown checkpoint error";
-  for (let attempt = 1; attempt <= 8; attempt += 1) {
-    const checkpointNow = new Date().toISOString();
-    let applied;
-    let finalizeError;
-    if (dbPool) {
-      try {
-        const finalized = await dbPool.query(
-          "select public.finalize_ses_bulk_queue_batch($1::uuid, $2::text, $3::jsonb, $4::timestamptz) as applied",
-          [emailId, workerId, JSON.stringify(claimResults), checkpointNow],
-        );
-        applied = Number(finalized.rows[0]?.applied ?? 0);
-      } catch (error) {
-        finalizeError = error;
-      }
-    } else {
-      const finalized = await supabase.rpc("finalize_ses_bulk_queue_batch", {
-        p_email_id: emailId,
-        p_worker_id: workerId,
-        p_results: claimResults,
-        p_now: checkpointNow,
-      });
-      applied = finalized.data;
-      finalizeError = finalized.error;
+    const saved = await checkpoint(emailId, results);
+    const claimAccepted = results.filter((result) => result.outcome === "succeeded").length;
+    const claimFailed = results.filter((result) => result.outcome === "dead" || result.outcome === "canceled").length;
+    accepted += claimAccepted;
+    failed += claimFailed;
+    available -= claimAccepted;
+    console.log(`claim=${claim.items.length} accepted=${claimAccepted} failed=${claimFailed} total_accepted=${accepted}`);
+
+    if (signal === "quota") {
+      stopReason = "quota";
+      break;
     }
-    if (!finalizeError && applied === claimResults.length) {
-      checkpointed = true;
+    if (signal === "paused" || signal === "rejected") {
+      stopReason = "blocked";
+      stopDetail = signal === "paused"
+        ? "SES reported account or configuration-set sending is paused."
+        : `SES rejected the send request: ${results.find((result) => result.last_error)?.last_error ?? "unknown"}`;
       break;
     }
 
-    checkpointError = finalizeError?.message ?? `${applied}/${claimResults.length} applied`;
-    const expectedById = new Map(claimResults.map((result) => [result.id, result]));
-    let persistedRows;
-    let persistedError;
-    if (dbPool) {
-      try {
-        const persisted = await dbPool.query(
-          "select id, status, ses_message_id from public.mail_queue where email_id = $1 and id = any($2::uuid[])",
-          [emailId, [...expectedById.keys()]],
-        );
-        persistedRows = persisted.rows;
-      } catch (error) {
-        persistedError = error;
-      }
-    } else {
-      const persisted = await supabase
-        .from("mail_queue")
-        .select("id, status, ses_message_id")
-        .eq("email_id", emailId)
-        .in("id", [...expectedById.keys()]);
-      persistedRows = persisted.data;
-      persistedError = persisted.error;
+    let pauseMs = backoff.observe({ latencyMs: Math.max(claim.latencyMs, saved.latencyMs), retried: claim.retried || saved.retried });
+    if (signal === "throttle") pauseMs = Math.max(pauseMs, 5_000);
+    if (config.recoveryPauseEvery > 0 && config.recoveryPauseMs > 0 && accepted >= nextRecoveryPauseAt) {
+      pauseMs = Math.max(pauseMs, config.recoveryPauseMs);
+      while (nextRecoveryPauseAt <= accepted) nextRecoveryPauseAt += config.recoveryPauseEvery;
     }
-    const matchesCheckpoint = !persistedError && persistedRows?.length === claimResults.length && persistedRows.every((row) => {
-      const expected = expectedById.get(row.id);
-      const expectedStatus = expected?.outcome === "retry" ? "pending" : expected?.outcome;
-      return row.status === expectedStatus && (expectedStatus !== "succeeded" || row.ses_message_id === expected.ses_message_id);
+    if (pauseMs > 0) {
+      console.log(`backoff_pause=${pauseMs}ms accepted=${accepted}`);
+      await sleep(pauseMs);
+      pacer.reset();
+    }
+  }
+
+  summaryLine(`  - accepted ${accepted.toLocaleString()}, failed ${failed.toLocaleString()}${ambiguous ? `, ambiguous ${ambiguous}` : ""}, stop: ${stopReason ?? "drained"}`);
+  if (ambiguous) {
+    await notifyOperator(email, `Ambiguous SES response: ${email.subject}`, [
+      `${ambiguous} recipient(s) got no SES response (network failure). They were parked as ambiguous and will not be retried automatically.`,
+      `Campaign: ${emailId}`,
+    ]);
+  }
+
+  if (stopReason === "paused") return "paused";
+  if (stopReason === "blocked") return block(email, record, stopDetail);
+  if (stopReason === "quota") {
+    const nextCheckAt = new Date(Date.now() + config.quotaRecheckMs).toISOString();
+    await patchRecord(record, {
+      state: "waiting_quota",
+      heartbeatAt: nowIso(),
+      nextCheckAt,
+      message: `Paused for SES rolling quota after ${accepted.toLocaleString()} accepted this run. Resumes automatically (next check ${nextCheckAt.slice(11, 16)} UTC).`,
     });
-    if (matchesCheckpoint) {
-      checkpointed = true;
-      console.warn(`checkpoint response was ambiguous but all ${claimResults.length} outcomes are durable`);
-      break;
-    }
-
-    if (attempt < 8) {
-      const retryDelayMs = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
-      console.warn(`checkpoint attempt ${attempt}/8 failed (${checkpointError}); retrying in ${retryDelayMs}ms`);
-      await sleep(retryDelayMs);
-    }
+    return "quota";
   }
-  if (!checkpointed) {
-    throw new Error(`SES claim checkpoint was incomplete after retries: ${checkpointError}. Stop and reconcile before retrying.`);
+  if (stopReason === "deadline") {
+    await patchRecord(record, {
+      state: "approved",
+      heartbeatAt: nowIso(),
+      nextCheckAt: null,
+      message: `Runner time budget reached after ${accepted.toLocaleString()} accepted; the next scheduled run continues automatically.`,
+    });
+    return "deadline";
   }
 
-  const claimAccepted = claimResults.filter((result) => result.outcome === "succeeded").length;
-  const claimFailed = claimResults.length - claimAccepted;
-  accepted += claimAccepted;
-  failed += claimFailed;
-  remainingQuota -= claimAccepted;
-  console.log(`claim=${items.length} accepted=${claimAccepted} failed=${claimFailed} total_accepted=${accepted}`);
-  if (
-    recoveryPauseEvery > 0
-    && recoveryPauseMs > 0
-    && accepted >= nextRecoveryPauseAt
-    && candidates.length === limit
-    && remainingQuota > 0
-  ) {
-    console.log(`recovery_pause=${recoveryPauseMs}ms accepted=${accepted}`);
-    await sleep(recoveryPauseMs);
-    while (nextRecoveryPauseAt <= accepted) nextRecoveryPauseAt += recoveryPauseEvery;
+  if (await finalizeComplete(email, record, "all recipients processed")) return "complete";
+  const retryAt = await earliestRetryAt(emailId);
+  await patchRecord(record, {
+    state: "waiting_retry",
+    heartbeatAt: nowIso(),
+    nextCheckAt: retryAt ?? new Date(Date.now() + 5 * 60_000).toISOString(),
+    message: "Some recipients hit a transient SES error and are scheduled for an automatic retry.",
+  });
+  return "waiting";
+}
+
+async function runCampaignSafely(record) {
+  try {
+    return await runCampaign(record);
+  } catch (error) {
+    const errorCount = Number(record.errorCount ?? 0) + 1;
+    console.error(`campaign ${record.emailId} worker error #${errorCount}: ${conciseError(error)}`);
+    if (errorCount >= config.maxConsecutiveErrors) {
+      const email = await loadEmail(record.emailId).catch(() => null);
+      return block(email, record, `Worker failed ${errorCount} times in a row. Last error: ${conciseError(error)}`);
+    }
+    await patchRecord(record, {
+      state: "approved",
+      errorCount,
+      lastError: conciseError(error),
+      heartbeatAt: nowIso(),
+      nextCheckAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      message: `Worker error (${errorCount}/${config.maxConsecutiveErrors}); retrying automatically in about 5 minutes. ${conciseError(error)}`,
+    }).catch(() => null);
+    return "error";
   }
 }
 
-const { data: finalRows, error: finalError } = await supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [emailId], p_now: new Date().toISOString() });
-if (finalError) throw new Error(`Unable to load final summary: ${finalError.message}`);
-const active = (finalRows ?? []).reduce((count, row) => count + Number(row.pending_due) + Number(row.pending_held) + Number(row.processing), 0);
-if (active === 0) {
-  const { error } = await supabase.from("emails").update({ status: "sent", sent_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq("id", emailId).eq("status", "sending");
-  if (error) throw new Error(`Campaign drained but final status update failed: ${error.message}`);
+// ── Entry points ──
+
+async function dryRun(emailId) {
+  const email = await loadEmail(emailId);
+  if (!email) throw new Error("Campaign not found");
+  assertSendReadySubject(email.subject);
+  const summary = await loadSummary(emailId);
+  const { data: sample } = await supabase.from("mail_queue").select("id, payload").eq("email_id", emailId).eq("status", "pending").limit(1).maybeSingle();
+  const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl });
+  if (sample) compiled.replacementData(recipientData(sample.payload, sample.id));
+  const record = await readRecord(emailId).catch(() => null);
+  const quota = process.env.AWS_REGION ? await sesQuota().catch((error) => ({ error: conciseError(error) })) : null;
+  console.log(JSON.stringify({
+    mode,
+    campaign: { id: email.id, subject: email.subject, status: email.status, contentSha256: campaignContentDigest(email) },
+    queue: summary,
+    autopilot: record ? { state: record.state, message: record.message, approvedAt: record.approvedAt } : null,
+    quota,
+  }, null, 2));
+  console.log("Dry run complete. No database rows were changed and no email was sent.");
 }
-console.log(JSON.stringify({ complete: active === 0, accepted, failed, activeRemaining: active, workerId }, null, 2));
-await dbPool?.end();
+
+async function manualSend(emailId) {
+  if (confirmation !== `send:${emailId}`) throw new Error(`Send mode requires --confirmation send:${emailId}`);
+  const email = await loadEmail(emailId);
+  if (!email) throw new Error("Campaign not found");
+  if (!["queued", "sending"].includes(email.status)) throw new Error(`Campaign status ${email.status} is not eligible for a bulk send.`);
+  assertSendReadySubject(email.subject);
+  const summary = await loadSummary(emailId);
+  if (summary.pending_due + summary.pending_held === 0) throw new Error("No pending recipients remain.");
+  const { error } = await supabase.from("emails").update({ status: "sending", updated_at: nowIso() }).eq("id", emailId).in("status", ["queued", "sending"]);
+  if (error) throw new Error(`Unable to activate campaign: ${error.message}`);
+  const record = await writeNewApproval({
+    emailId,
+    approvalId: crypto.randomUUID(),
+    approvedAt: nowIso(),
+    approvedBy: `github-actions:${process.env.GITHUB_ACTOR ?? "local"}`,
+    approvedRecipients: summary.pending_due + summary.pending_held,
+    contentSha256: campaignContentDigest(email),
+    subject: email.subject,
+    source: "manual-dispatch",
+    maxRatePerSecond: config.requestedRate,
+    state: "approved",
+    message: "Approved by manual worker dispatch.",
+  });
+  return runCampaignSafely(record);
+}
+
+async function autopilot() {
+  const processed = new Set();
+  const outcomes = [];
+  while (Date.now() < deadlineMs) {
+    const records = await listRecords();
+    const due = orderDueRecords(
+      records.filter((record) => !emailIdArg || record.emailId === emailIdArg),
+      Date.now(),
+      config.heartbeatStaleMs,
+    ).filter((record) => !processed.has(record.emailId));
+    const next = due[0];
+    if (!next) break;
+    processed.add(next.emailId);
+    const outcome = await runCampaignSafely(next);
+    outcomes.push({ emailId: next.emailId, outcome });
+    // SES quota is account-wide: when one campaign waits, every campaign waits.
+    if (outcome === "quota" || outcome === "deadline") break;
+  }
+  return outcomes;
+}
+
+summaryLine(`### Props Mailer SES worker (${mode})`);
+let exitCode = 0;
+try {
+  if (mode === "dry-run") {
+    await dryRun(emailIdArg);
+  } else {
+    const lease = await acquireLease();
+    if (!lease.ok) {
+      const message = `Another SES worker holds the lease (${lease.holder}); exiting without sending.`;
+      console.log(message);
+      summaryLine(`- ${message}`);
+      if (mode === "send") exitCode = 1;
+    } else {
+      const result = mode === "send" ? await manualSend(emailIdArg) : await autopilot();
+      console.log(JSON.stringify({ mode, result, runtimeMinutes: Number(((Date.now() - startedAtMs) / 60_000).toFixed(1)) }));
+      if (mode === "autopilot" && Array.isArray(result) && !result.length) summaryLine("- Nothing due. No email was sent.");
+      if (mode === "send" && ["blocked", "error"].includes(result)) exitCode = 1;
+    }
+  }
+} catch (error) {
+  console.error(conciseError(error));
+  summaryLine(`- ERROR ${conciseError(error)}`);
+  exitCode = 1;
+} finally {
+  await releaseLease().catch(() => null);
+  await dbPool?.end().catch(() => null);
+}
+process.exit(exitCode);

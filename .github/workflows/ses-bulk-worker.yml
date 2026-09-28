@@ -1,41 +1,66 @@
-name: SES Bulk Worker
+name: SES Autopilot
 
+# Sends every campaign approved in the app (Queue -> Send), without a browser
+# and without a manual dispatch. The schedule re-enters the worker every five
+# minutes; an idle tick is a ~10-second probe. Scheduled runs only fire from
+# the default branch.
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
-      email_id:
-        description: Exact campaign UUID
-        required: true
-        type: string
       mode:
-        description: Dry run is read-only; send releases this campaign
+        description: autopilot drains every approved campaign; send approves and drains one; dry-run is read-only
         required: true
-        default: dry-run
+        default: autopilot
         type: choice
         options:
-          - dry-run
+          - autopilot
           - send
+          - dry-run
+      email_id:
+        description: Campaign UUID (required for send and dry-run; optional filter for autopilot)
+        required: false
+        type: string
       confirmation:
         description: For send mode, enter send:<campaign UUID>
         required: false
         type: string
       max_recipients_per_second:
-        description: Safety cap for SES acceptances (keep low enough for Supabase webhook writes)
-        required: true
-        default: 2
-        type: number
+        description: Target SES acceptance rate (capped at 90% of the live SES rate)
+        required: false
+        default: "13"
+        type: string
 
 permissions:
   contents: read
 
-concurrency:
-  group: ses-bulk-${{ inputs.email_id }}
-  cancel-in-progress: false
-
 jobs:
-  drain-campaign:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      due: ${{ steps.probe.outputs.due }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts
+      - id: probe
+        if: github.event_name == 'schedule'
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: node scripts/autopilot-probe.mjs
+
+  drain:
+    needs: probe
+    if: github.event_name != 'schedule' || needs.probe.outputs.due == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    # One sender at a time across all campaigns: SES quota is account-wide.
+    concurrency:
+      group: ses-sender
+      cancel-in-progress: false
     env:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -44,21 +69,27 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_SES_CONFIGURATION_SET: ${{ vars.AWS_SES_CONFIGURATION_SET }}
-      APP_BASE_URL: https://knotable-props-mailer.vercel.app
-      SES_BULK_CLAIM_SIZE: 20
-      SES_BULK_MAX_RECIPIENTS_PER_SECOND: ${{ inputs.max_recipients_per_second }}
-      SES_BULK_RECOVERY_PAUSE_EVERY: 100
-      SES_BULK_RECOVERY_PAUSE_MS: 120000
+      APP_BASE_URL: ${{ vars.APP_BASE_URL || 'https://knotable-props-mailer.vercel.app' }}
+      SES_OPERATOR_EMAIL: ${{ vars.SES_OPERATOR_EMAIL || 'a@sarva.co' }}
+      SES_NOTIFY_FROM: ${{ vars.SES_NOTIFY_FROM }}
+      SES_BULK_MAX_RECIPIENTS_PER_SECOND: ${{ inputs.max_recipients_per_second || vars.SES_AUTOPILOT_RATE || '13' }}
+      SES_QUOTA_RESERVE: ${{ vars.SES_QUOTA_RESERVE || '500' }}
+      SES_BULK_RECOVERY_PAUSE_EVERY: ${{ vars.SES_BULK_RECOVERY_PAUSE_EVERY || '0' }}
+      SES_BULK_RECOVERY_PAUSE_MS: ${{ vars.SES_BULK_RECOVERY_PAUSE_MS || '0' }}
+      SES_WORKER_MAX_RUNTIME_MINUTES: "330"
+      WORKER_MODE: ${{ inputs.mode || 'autopilot' }}
+      WORKER_EMAIL_ID: ${{ inputs.email_id }}
+      WORKER_CONFIRMATION: ${{ inputs.confirmation }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      - name: Validate or drain one campaign
+      - run: npm ci --no-audit --no-fund
+      - name: Run SES worker
         run: >-
           node scripts/ses-bulk-worker.mjs
-          --email-id "${{ inputs.email_id }}"
-          --mode "${{ inputs.mode }}"
-          --confirmation "${{ inputs.confirmation }}"
+          --mode "$WORKER_MODE"
+          --email-id "$WORKER_EMAIL_ID"
+          --confirmation "$WORKER_CONFIRMATION"
