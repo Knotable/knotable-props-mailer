@@ -1387,7 +1387,7 @@ export async function pauseQueuedEmailAction(
       .update({ status: "queued" })
       .eq("id", id);
     if (emailError) return { paused: 0, processing: 0, error: emailError.message };
-    await setAutopilotState(id, "paused", "Paused from the Queue page. Press Send to resume.");
+    await setAutopilotState(id, "paused", `Paused by ${auth.email}. Press Send on the Queue page to resume.`);
 
     const { data: summaryRows, error: summaryError } = await supabase.rpc(
       "get_queue_campaign_summaries",
@@ -1603,5 +1603,40 @@ export async function deleteEmailAction(formData: FormData): Promise<{ error?: s
     return {};
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to delete email" };
+  }
+}
+
+// Legacy campaigns can sit in queued/sending with nothing left to send (the
+// old workers never finalized them). Close them out explicitly.
+export async function markCampaignSentAction(formData: FormData): Promise<{ error?: string }> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
+    const { data: summaryRows, error: summaryError } = await supabase.rpc("get_queue_campaign_summaries", {
+      p_email_ids: [id],
+      p_now: new Date().toISOString(),
+    });
+    if (summaryError) return { error: summaryError.message };
+    const active = (summaryRows ?? []).reduce(
+      (total, row) => total + Number(row.pending_due ?? 0) + Number(row.pending_held ?? 0) + Number(row.processing ?? 0),
+      0,
+    );
+    if (active > 0) return { error: `${active.toLocaleString()} recipients are still unsent or in flight; pause or cancel them first.` };
+    const { error } = await supabase
+      .from("emails")
+      .update({ status: "sent", sent_at: new Date().toISOString() })
+      .eq("id", id)
+      .in("status", ["queued", "sending"]);
+    if (error) return { error: error.message };
+    await setAutopilotState(id, "canceled", "Marked sent from the Queue page.");
+    logAudit({ userId: auth.userId, action: "campaign.marked_sent", entity: "emails", entityId: id }).catch(console.error);
+    revalidatePath("/email/schedule");
+    revalidatePath("/email/sends");
+    return {};
+  } catch (err) {
+    return { error: toActionErrorMessage(err, "Unable to mark this campaign sent.") };
   }
 }

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, useTransition } from "react";
 import { ProgressStatus } from "@/components/progress-status";
 import { DataFreshness } from "@/components/data-freshness";
 import type { AutopilotRecord, AutopilotView } from "@/lib/sendAutopilot";
+import { pauseQueuedEmailAction } from "../actions";
 
 type RecipientLogRow = {
   recipientEmail: string | null;
@@ -182,7 +183,17 @@ export function MonitorClient({ emailId, notice }: Props) {
       )}
 
       {snapshot?.autopilot && snapshot.autopilotView && (
-        <AutopilotPanel record={snapshot.autopilot} view={snapshot.autopilotView} />
+        <AutopilotPanel
+          record={snapshot.autopilot}
+          view={snapshot.autopilotView}
+          onPause={async () => {
+            const fd = new FormData();
+            fd.set("id", snapshot.autopilot!.emailId);
+            const res = await pauseQueuedEmailAction(fd);
+            if (res.error) throw new Error(res.error);
+            await refresh();
+          }}
+        />
       )}
 
       {!scopedEmailId && (snapshot?.autopilotQueue?.length ?? 0) > 0 && (
@@ -383,7 +394,10 @@ function secondsAgo(value: string | null | undefined) {
   return seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)}m ago`;
 }
 
-function AutopilotPanel({ record, view }: { record: AutopilotRecord; view: AutopilotView }) {
+function AutopilotPanel({ record, view, onPause }: { record: AutopilotRecord; view: AutopilotView; onPause: () => Promise<void> }) {
+  const [pausing, setPausing] = useState(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
+  const pausable = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"].includes(record.state);
   const tones: Record<AutopilotView["tone"], string> = {
     green: "border-green-200 bg-green-50 text-green-900",
     blue: "border-blue-200 bg-blue-50 text-blue-900",
@@ -406,7 +420,34 @@ function AutopilotPanel({ record, view }: { record: AutopilotRecord; view: Autop
             worker run
           </a>
         )}
+        {pausable && (
+          <button
+            type="button"
+            disabled={pausing}
+            onClick={async () => {
+              if (!confirm("Pause this send? Unsent recipients are kept; press Send on the Queue page to resume.")) return;
+              setPausing(true);
+              setPauseError(null);
+              try {
+                await onPause();
+              } catch (error) {
+                setPauseError(error instanceof Error ? error.message : "Pause failed.");
+              } finally {
+                setPausing(false);
+              }
+            }}
+            className="ml-auto rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+          >
+            {pausing ? "Pausing..." : "Pause send"}
+          </button>
+        )}
+        {record.state === "paused" && (
+          <a href="/email/schedule" className="ml-auto text-xs font-semibold underline">
+            Resume from Queue
+          </a>
+        )}
       </div>
+      {pauseError && <p className="text-xs text-red-700">{pauseError}</p>}
       {view.detail && <p>{view.detail}</p>}
       <div className="grid gap-1 text-xs sm:grid-cols-2">
         <p>

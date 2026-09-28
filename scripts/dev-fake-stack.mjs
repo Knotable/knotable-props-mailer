@@ -61,6 +61,10 @@ function campaign(subject, status, recipients) {
 campaign("October investor update", "queued", 250);
 campaign("Legacy stuck send", "sending", 40);
 campaign("November founders dinner", "draft", 0);
+const finished = campaign("September recap (finished, never closed)", "sending", 30);
+for (const row of backend.tables.mail_queue.filter((candidate) => candidate.email_id === finished.id)) {
+  Object.assign(row, { status: "succeeded", ses_message_id: `ses-${row.id}` });
+}
 
 const url = await backend.start(port);
 const hmacKey = crypto.randomBytes(32).toString("hex");

@@ -41,6 +41,8 @@ States in the approval record: `approved` → `running` → (`waiting_quota` | `
 
 **Test sends no longer finish the draft.** Composer "Send Test" used to mark a saved draft `sent`, which removed it from the Queue page; it now leaves the draft alone (direct sends to typed recipients still complete the email).
 
+**Controls where you look.** The Monitor has **Pause send** next to the live status. Queue rows have **Duplicate** (new draft from this email) and, for legacy campaigns stuck in queued/sending with nothing left to send, **Mark as sent** (refused while anything is unsent or in flight).
+
 **Scheduled sends and estimates.** When Send is armed, the Queue row shows the estimated send time (minutes, or how many quota windows) and an optional "Send later" picker in the operator's local time. A scheduled approval stays `approved` with `startAt`/`nextCheckAt` in the future and shows **Scheduled**; the worker ignores it until then. Pause cancels it.
 
 **Big lists never need the tab open.** For a list over 5,000 recipients the Composer queues only the first page in the browser (which runs the duplicate/recent-send check) and writes a `preparing` approval capped at the list's current active count. The worker pages the list by keyset, upserts held rows with the same builder the app uses (`scripts/lib/queue-rows.mjs`), and either stops at `prepared` (Queue → review → **Send to N**) or, for **Send Now**, sends immediately. Send refuses a campaign whose cloud preparation was paused midway.

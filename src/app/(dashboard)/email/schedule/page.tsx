@@ -221,6 +221,8 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                 ? autopilotActive
                   ? autopilot?.label ?? "Sending"
                   : "Not sending — press Send"
+                : !hasActiveQueue && (item.status === "queued" || item.status === "sending") && (statusCounts?.get("succeeded") ?? 0) > 0
+                  ? "Finished — nothing left to send"
                 : hasActiveQueue
                   ? "Ready to send"
                   : item.status === "queued"
@@ -309,6 +311,13 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                       {isDraft ? "Edit" : "Open"}
                     </Link>
                   )}
+                  <Link
+                    href={`/email/composer?cloneId=${item.id}`}
+                    className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    title="Start a new draft from this email"
+                  >
+                    Duplicate
+                  </Link>
                   {isScheduleActionStatus(item.status) ? (
                     <ScheduleActions
                       id={item.id}

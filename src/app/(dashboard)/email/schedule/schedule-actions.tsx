@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import {
   deleteEmailAction,
   editQueuedEmailAction,
+  markCampaignSentAction,
   pauseQueuedEmailAction,
   sendQueuedEmailAndRedirectAction,
 } from "../actions";
@@ -110,6 +111,16 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
     });
   };
 
+  const handleMarkSent = () => {
+    runAction("Closing out this campaign...", async () => {
+      const fd = new FormData();
+      fd.set("id", id);
+      const res = await markCampaignSentAction(fd);
+      if (res.error) throw new Error(res.error);
+      router.refresh();
+    });
+  };
+
   const handleDelete = () => {
     if (!confirm(`Delete "${subject || "this draft"}"?`)) return;
     runAction("Deleting this draft and refreshing the queue list...", async () => {
@@ -123,6 +134,7 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
   const isQueued = status === "queued" || status === "sending";
   // "sending" without an active approval is a legacy/stalled state: nothing is
   // draining it, so offer Send to hand it to autopilot.
+  const finishedButOpen = isQueued && unsent === 0 && !autopilotActive && !preparing;
   const canStart = canSend && unsent > 0 && !preparing && (status === "queued" || (status === "sending" && !autopilotActive));
 
   return (
@@ -138,7 +150,18 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
             >
               {working ? "Working..." : "Edit"}
             </button>
-            {canSend && (status === "sending" || preparing) && (
+            {canSend && finishedButOpen && (
+              <button
+                type="button"
+                onClick={handleMarkSent}
+                disabled={working}
+                title="Nothing is left to send; move this campaign to Sends history."
+                className="rounded-md border border-green-300 bg-green-50 px-3 py-1 text-xs font-semibold text-green-800 hover:bg-green-100 disabled:opacity-50"
+              >
+                {working ? "Working..." : "Mark as sent"}
+              </button>
+            )}
+            {canSend && !finishedButOpen && (status === "sending" || preparing) && (
               <button
                 type="button"
                 onClick={handlePause}
