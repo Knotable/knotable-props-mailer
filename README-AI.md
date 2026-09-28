@@ -10,7 +10,45 @@ For Next.js behavior, read the version-matched bundled documentation under `node
 
 > **Commit and push edits**: When an AI agent makes repo edits, commit the intentional changes and push the branch to GitHub so the live Vercel deployment can pick them up, unless the user explicitly says not to. Stage only the files changed for the task; never sweep unrelated local work into the commit.
 
-> **AWS-native transition prompt (updated 2026-09-04):** Until the checklist in **AWS-Native 150k Send Architecture** is complete, proactively tell Amol at the start of the next substantive Props Mailer interaction: “The AWS-native batch worker, typed app approval, DynamoDB status, completion notice, and per-recipient unsubscribe headers are implemented, but the 150k path is not production-authorized. We still need explicit approval and deployment of the narrow GitHub OIDC role plus public HMAC-validated AWS unsubscribe endpoint, narrowly scoped app read credentials and Actions token, the required GitHub/Vercel variables, a reviewed Supabase-to-private-S3 audience snapshot, and 100/1,000/10,000 canaries. Keep `AWS_NATIVE_CONTROL_ENABLED=false` until those gates pass. The SES quota stays 65,400/24h, so each 50k batch waits for 50,001 rolling headroom.” Do not imply that the legacy Supabase-backed worker is ready for 150k. This prompt is deliberately durable so the remaining work is raised again on the next interaction.
+> **Parked-items prompt (updated 2026-09-28):** At the start of the next substantive Props Mailer interaction, check the **PARKED — needs a human or new permissions** list below and raise any still-open item in one or two sentences (merge to `master` first, then GitHub/Vercel/IAM settings). Remove items from that list as they are verified done. The older AWS-native (S3/DynamoDB/OIDC) plane is now optional hardening, not a prerequisite for sending.
+
+---
+
+## HOW SENDING WORKS NOW — CLOUD AUTOPILOT (2026-09-28)
+
+**One click, no browser, no manual GitHub dispatch.** The operator prepares a campaign in the Composer (Queue), then on the **Queue** page presses **Send to N** and confirms. That is the whole job; the tab can be closed.
+
+What happens behind the button:
+
+1. `sendQueuedEmailAction` (`src/app/(dashboard)/email/actions.ts`) writes an **approval record** in `app_settings` under key `send_autopilot:<emailId>` (`src/lib/sendAutopilot.ts`). It binds the exact unsent count the operator saw (the server re-checks it) and a SHA-256 of from/reply-to/subject/HTML/text, then sets `emails.status = 'sending'`. If `GITHUB_ACTIONS_DISPATCH_TOKEN` is set in Vercel it also starts a worker immediately; otherwise the schedule picks it up.
+2. `.github/workflows/ses-bulk-worker.yml` (**SES Autopilot**) runs every 5 minutes. A ~10-second, dependency-free probe (`scripts/autopilot-probe.mjs`) exits unless an approved campaign is due and no worker lease is live. Only then does the `drain` job `npm ci` and run `scripts/ses-bulk-worker.mjs --mode autopilot` in the account-wide `ses-sender` concurrency group (one sender at a time — SES quota is shared).
+3. The worker drains approved campaigns oldest-approval first. Per campaign it: refuses if content changed since approval (**blocked**); parks crash-orphaned `processing` rows older than 10 minutes as `dead` with `last_error` prefix `ambiguous_claim:` (never resent; the SES webhook upgrades them to `succeeded` if SES's Send event later proves delivery); checks live SES quota minus a 500-recipient reserve; then claims ≤50 rows via two index range scans (due, then held — never scans sent rows), sends with `SendBulkEmail` at up to 13/s (token-bucket pacing, capped at 90% of the live SES rate), and checkpoints every claim.
+4. It heartbeats every 15 s into the approval record (state, rate, ETA, run URL, quota), which the **Queue** and **Monitor** pages render live. **Pause** (or Edit/Unqueue/Delete) revokes the approval and the worker stops within ~15 s.
+5. It survives everything that used to need a human: SES rolling-quota exhaustion → `waiting_quota` and an automatic re-check every 15 min; the 6-hour Actions ceiling → clean stop at 5.5 h and the next tick continues; SES throttling → retried (HTTP-rejected requests are provably unsent); a dropped SES connection → those recipients parked as ambiguous, never double-sent; slow Supabase → adaptive back-off instead of fixed 2-minute pauses; 5 consecutive worker errors → **blocked** with an email.
+6. On completion (or a block) it emails the operator (`SES_OPERATOR_EMAIL`, default `a@sarva.co`) with totals and the Monitor link, and marks `emails.status = 'sent'`.
+
+States in the approval record: `approved` → `running` → (`waiting_quota` | `waiting_reconcile` | `waiting_retry`)* → `complete`; or `paused` / `canceled` / `blocked`. `/api/health` warns about blocked campaigns and approvals with no worker activity for 20+ minutes.
+
+**Speed.** SES caps the account at 15/s and 65,400 per rolling 24 h. Autopilot sustains ~13/s ≈ 46,800/hour, so a 12k list takes ~16 minutes (previously 4–5 hours at the old 2/s-plus-pauses default) and a 185k list completes automatically over ~3 quota windows with no operator action. Tune with GitHub repository variables `SES_AUTOPILOT_RATE` (default 13), `SES_QUOTA_RESERVE` (500), and — only if the SES webhook overloads Supabase — `SES_BULK_RECOVERY_PAUSE_EVERY` / `SES_BULK_RECOVERY_PAUSE_MS`.
+
+**Safety invariants kept.** Nothing sends without a human approving the exact count in the app (or a manual `send` dispatch with `send:<emailId>`); a campaign that is `sending` without an approval record is shown as "Not sending — press Send" and is never picked up; claims are conditional so no row can be sent by two workers; ambiguous outcomes are never retried; Actions logs are public, so the worker never prints recipient addresses.
+
+**Local testing without production.** `npm run dev:fake` serves an in-memory Supabase REST + SES stand-in with demo campaigns and prints the env for `next dev` (bypass login) and `npm run worker:autopilot`. `scripts/ses-bulk-worker.integration.test.mjs` runs the real worker against the same fake for 14 failure scenarios.
+
+### PARKED — needs a human or new permissions
+
+Everything below is code-complete in this repo; each item needs someone with the right access. Remove an item once verified.
+
+1. **Merge the autopilot branch to `master`.** GitHub only runs scheduled workflows from the default branch, and Vercel deploys the new Send button from `master`. Until merged, production still uses the old manual flow.
+2. **Before merging, look at any campaign currently `sending`.** Manual SES Bulk Worker runs happened on 2026-09-25/26. The autopilot never touches a `sending` campaign without a new approval, so it is safe, but the Queue page will show such a campaign as "Not sending — press Send". Decide whether to press Send (resumes the unsent remainder) or Pause it.
+3. **Confirm the GitHub secrets/variables the SES Autopilot workflow reads.** Secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (all used by the previous worker), optional `SUPABASE_DB_CONNECTION`. Variables: `AWS_REGION`, `AWS_SES_CONFIGURATION_SET`; optional `SES_OPERATOR_EMAIL`, `SES_NOTIFY_FROM`, `SES_AUTOPILOT_RATE`, `SES_QUOTA_RESERVE`, `APP_BASE_URL`. After merging, run **Actions → SES Autopilot → Run workflow** with `mode=dry-run` and a campaign UUID to see live quota and queue counts without sending.
+4. **IAM: allow `ses:SendEmail` for the worker's AWS user** (in addition to `ses:SendBulkEmail` and `ses:GetAccount`) so completion/blocker emails go out. If missing, sends still work; only the notice email fails (logged as a warning).
+5. **Optional: instant start from the app.** Create a fine-grained GitHub token scoped to this repository only with **Actions: Read and write**, and set `GITHUB_ACTIONS_DISPATCH_TOKEN` (plus `GITHUB_ACTIONS_REF=master`) in Vercel. Without it, pickup takes up to ~5 minutes (GitHub cron can lag further under load). Never reuse a broad personal `gh` token.
+6. **Keep the schedule alive.** This repository is public: GitHub disables scheduled workflows after 60 days with no repository activity. The health check flags "approved campaign with no worker for 20+ minutes"; re-enable the workflow in the Actions tab if that happens.
+7. **Decide on SES capacity.** Throughput is capped by SES (15/s, 65,400/24 h). Autopilot uses all of it automatically; going faster needs an AWS quota increase, which was previously declined.
+8. **Queue preparation for very large lists is still browser-paced.** The Composer materializes `mail_queue` rows 1,000 per server-action call, so a 185k list keeps the tab open for several minutes while *queueing* (sending itself needs no tab). The fix is a set-based SQL function (one `insert … select` per list) — it requires applying a new Supabase migration to production.
+9. **Webhook headroom at full speed.** At 13/s the SES → SNS → Vercel → Supabase event path writes ~30 rows/s. The September sends used recovery pauses because of this. Autopilot backs off when the worker sees the database slow down; if Supabase still struggles, set `SES_BULK_RECOVERY_PAUSE_EVERY`/`_MS` repository variables, or (longer term) buffer SES events through SQS before Supabase.
+10. **Previously parked, still open:** `supabase/migrations/20260810_free_tier_load_reduction.sql` application status is unverified; the AWS-native plane (OIDC role, HMAC unsubscribe Lambda, S3/DynamoDB) remains unapproved and is now optional hardening rather than a prerequisite.
 
 ---
 
@@ -38,6 +76,8 @@ When the user opens this project without a specific task, offer this concise men
 ---
 
 ## OPERATOR STATUS - READ THIS FIRST
+
+> **2026-09-28:** The "how to send" instructions in the dated entries below (manual `ses-bulk-worker.yml` dispatch with `send:<emailId>`, Resume not starting a worker, fixed recovery pauses) are superseded by **HOW SENDING WORKS NOW — CLOUD AUTOPILOT** above once that branch is merged. The entries remain as incident history and for their campaign facts.
 
 **2026-09-10 FINAL-REMINDER SEND POSTMORTEM AND NEXT-TIME RUNBOOK:** Two reviewed final-reminder campaigns completed through the legacy Supabase queue plus the durable, campaign-scoped GitHub **SES Bulk Worker**. LP campaign `f2a7dcb0-0850-40c0-9023-ed9271c19568` sent subject `Final Reminder: LifeX AGM: Health AI’s leading CEOs + Dr. Nir Barzilai` to `LP-prospects`; the queue contained `1,012` active list members plus the automatic owner copy `a@sarva.co`, and finished with `1,013` SES acceptances, `0` pending, `0` processing, and `0` failed/dead/canceled. Newsletter campaign `1200685f-f50f-475c-aa48-d62da3371a9c` sent the same subject to `LifeX newsletter`; the queue contained `12,336` then-active list members plus the automatic owner copy, and finished with `12,337` SES acceptances and `0` pending/processing/failed/dead/canceled. Its durable worker run was `https://github.com/Knotable/knotable-props-mailer/actions/runs/34384687202`. `succeeded` means SES accepted the message; it does not by itself prove inbox delivery. The canonical Amolworld draft is `e1ca5c92-8316-4070-b673-026041e51cbb`, subject `From Amolworld: LifeX AGM: Health AI’s leading CEOs + Dr. Nir Barzilai`, addressed to `Amols202604`; it remained an unqueued draft with `0` queue rows. The list had `184,983` active members at inspection time, but live size must be recounted before any future action.
 
@@ -133,6 +173,7 @@ Update this section as work progresses so future agents do not re-derive the sta
 
 | Item | Status | Notes / Checks |
 |---|---|---|
+| Autopilot: send without browser or manual dispatch | Code done 2026-09-28; merge pending | Approval record + scheduled SES Autopilot workflow + live Queue/Monitor status + completion email. 14 end-to-end worker scenarios pass against a fake Supabase/SES; browser walkthrough verified locally. See PARKED list for the remaining human steps. |
 | Replace browser-owned monitor worker | Done 2026-09-03 | Monitor is status-only; browser, `/api/email/send-monitor`, `/api/email/queue`, and `/api/workers/send-queued` cannot drain queue rows. |
 | Disable accidental global queue drains | Done 2026-09-03 | All Vercel worker entry points fail closed with 410. The GitHub Actions worker requires one exact campaign UUID and rejects `processing > 0`. |
 | Require explicit per-email release confirmation | Done 2026-05-21 | `Send Now` now requires a campaign-specific `release:<emailId>` confirmation token; the server action preflights email status plus due/held/processing counts before calling `release_mail_queue_campaign`. Direct action calls without the token fail before mutating queue rows. |
@@ -388,6 +429,11 @@ supabase/
   migrations/               # Incremental SQL migrations (apply in date order)
 
 scripts/
+  ses-bulk-worker.mjs       # SES Autopilot worker (autopilot | send | dry-run); drains approved mail_queue campaigns
+  autopilot-probe.mjs       # Dependency-free "is anything due?" check run by the scheduled workflow
+  lib/autopilot-core.mjs    # Approval-record contract, pacing, back-off, quota, SES error classification
+  dev-fake-stack.mjs        # `npm run dev:fake`: in-memory Supabase REST + SES stand-in with demo data
+  lib/test-support/fake-backend.mjs # The fake used by dev:fake and the worker integration tests
   build-ses-native-campaign.mjs # Read-only Supabase audience snapshot -> immutable local/S3 package
   ses-native-worker.mjs     # S3 + DynamoDB + SES v2 autonomous large-send worker
   lib/ses-native-core.mjs   # Hashing, validation, confirmations, and outcome helpers
@@ -398,8 +444,8 @@ infra/ses-native-worker/
   cloudformation.yml        # S3, DynamoDB, SES events, SNS, and Lambda persistence stack
 
 .github/workflows/
-  ses-native-worker.yml     # Target large-send runner; no Vercel/Supabase execution writes
-  ses-bulk-worker.yml       # Legacy Supabase-backed bulk worker for existing queues only
+  ses-bulk-worker.yml       # "SES Autopilot": every 5 min + manual dispatch; the production sender
+  ses-native-worker.yml     # Optional AWS-native (S3/DynamoDB) runner; not production-authorized
 
 docs/
   ai-operator-runbook.md    # AI playbook for live-app, UI-adjacent, Supabase, analytics, send, and operator tasks
@@ -457,16 +503,15 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 7. SES publishes provider events to SNS. Lambda writes latest state/suppression to DynamoDB and raw immutable events to S3.
 8. When the batch is unambiguously terminal, a conditional, one-time operator notification links back to the app. The operator reviews current state and explicitly approves the next batch; notification alone never promotes or sends it.
 
-### Legacy Supabase queue path
+### Supabase queue + cloud autopilot path (default for every campaign size)
 
 1. **Composer** (`/email/composer`): User drafts an email. Server action in `email/actions.ts` saves to `emails` table as `draft`.
-2. **Queue**: Queueing action creates rows in `mail_queue` (one per recipient), sets `emails.status = 'queued'`.
-3. **Send Monitor** (`/email/monitor?emailId=<uuid>`): Read-only status page. It refreshes a snapshot every 15 seconds but never starts, sustains, or stops a campaign worker. A campaign with processing rows older than 15 minutes displays **Stalled — reconciliation required**.
-4. **Durable Queue Worker** (`.github/workflows/ses-bulk-worker.yml`): Campaign-scoped GitHub Actions job, manually dispatched until a narrowly scoped server-side GitHub dispatch token is provisioned. It refuses to send if any `processing` row exists, uses the workflow's conservative claim/rate settings, checkpoints every SES result, and is the only approved drain path. Tune it only after a staged load test; never trade checkpoint safety for a larger batch.
-5. **Legacy Vercel worker** (`src/lib/queueWorker.ts`): Retained as implementation history only. All public Vercel worker routes and browser controls fail closed and must not be re-enabled as a campaign drain.
-6. **SES Webhooks** (`/api/webhooks/ses`): SNS signature-verified; ingests delivery/bounce events into `provider_events`; auto-suppresses hard bounces and complaints in `list_members`.
-
-Do not use this legacy path for the proposed 150k campaign. It remains documented for already-materialized queues, small/test sends, and incident recovery during the migration.
+2. **Queue**: Queueing action creates held rows in `mail_queue` (one per deduplicated recipient) and sets `emails.status = 'queued'`. Re-queueing after Edit/Unqueue revives that campaign's canceled rows for current active members; succeeded/dead rows are never touched.
+3. **Send** (Queue page, or Composer **Send Now**): writes the `send_autopilot:<emailId>` approval and sets `sending`. See **HOW SENDING WORKS NOW** at the top of this file.
+4. **SES Autopilot** (`.github/workflows/ses-bulk-worker.yml` → `scripts/ses-bulk-worker.mjs`): scheduled every 5 minutes; also `workflow_dispatch` with `mode=autopilot|send|dry-run`. It is the only drain path.
+5. **Monitor** (`/email/monitor?emailId=<uuid>`): read-only; shows the autopilot state, heartbeat, rate, ETA, run link, and the latest 50 recipient status changes.
+6. **Legacy Vercel worker** (`src/lib/queueWorker.ts`): Retained as implementation history only. All public Vercel worker routes fail closed and must not be re-enabled as a campaign drain.
+7. **SES Webhooks** (`/api/webhooks/ses`): SNS signature-verified; ingests delivery/bounce events into `provider_events`; auto-suppresses hard bounces and complaints in `list_members`; flips a `processing` or `ambiguous_claim:`-parked row to `succeeded` when SES's tagged Send event arrives.
 
 **Daily send limit** is defined in `dailyQuota.ts` — check that file for the current cap constant.
 
