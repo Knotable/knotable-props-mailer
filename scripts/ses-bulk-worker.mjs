@@ -165,7 +165,13 @@ const queue = {
         "select id from public.mail_queue where email_id = $1 and status = 'pending' and available_at >= $2 order by available_at asc limit $3",
         [emailId, HOLD_FLOOR, limit - due.rows.length],
       ));
-      return [...due.rows, ...held.rows].map((row) => row.id);
+      const found = [...due.rows, ...held.rows];
+      if (found.length >= limit) return found.map((row) => row.id);
+      const undated = await retry("select undated batch", () => dbPool.query(
+        "select id from public.mail_queue where email_id = $1 and status = 'pending' and available_at is null limit $2",
+        [emailId, limit - found.length],
+      ));
+      return [...found, ...undated.rows].map((row) => row.id);
     }
     const due = await retry("select due batch", () => unwrap("select due batch")(
       supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "pending")
@@ -176,7 +182,14 @@ const queue = {
       supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "pending")
         .gte("available_at", HOLD_FLOOR).order("available_at", { ascending: true }).limit(limit - due.length),
     ));
-    return [...due, ...held].map((row) => row.id);
+    const found = [...due, ...held];
+    if (found.length >= limit) return found.map((row) => row.id);
+    // available_at is nullable; such rows are neither due nor held but must still send.
+    const undated = await retry("select undated batch", () => unwrap("select undated batch")(
+      supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "pending")
+        .is("available_at", null).limit(limit - found.length),
+    ));
+    return [...found, ...undated].map((row) => row.id);
   },
 
   async claim(emailId, ids) {
@@ -814,6 +827,7 @@ async function runCampaign(record) {
   let nextRecoveryPauseAt = config.recoveryPauseEvery;
   let stopReason = null;
   let stopDetail = "";
+  let racedClaims = 0;
 
   console.log(JSON.stringify({ campaign: emailId, subject: email.subject, remaining: remainingAtStart, rate, requestSize, claimSize: config.claimSize, quotaAvailable: available }));
   summaryLine(`- START **${email.subject}** — ${remainingAtStart.toLocaleString()} unsent, target ${rate.toFixed(1)}/s`);
@@ -874,9 +888,12 @@ async function runCampaign(record) {
 
     const claim = await claimBatch(emailId, Math.min(config.claimSize, available));
     if (!claim.items.length) {
-      if (claim.raced) continue;
+      // Selected rows changed before the claim (e.g. canceled by an edit).
+      // Reselect a few times, never forever.
+      if (claim.raced && (racedClaims += 1) < 5) continue;
       break;
     }
+    racedClaims = 0;
     const { invalid, deliverable } = buildDeliverable(email, compiled, claim.items);
     const results = [...invalid];
     const groups = new Map();

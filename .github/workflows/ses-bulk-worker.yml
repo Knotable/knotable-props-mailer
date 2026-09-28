@@ -6,7 +6,8 @@ name: SES Autopilot
 # the default branch.
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    # Offset from :00 — GitHub delays schedules that fire on the hour.
+    - cron: "4-59/5 * * * *"
   workflow_dispatch:
     inputs:
       mode:
