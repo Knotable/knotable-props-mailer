@@ -208,6 +208,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
     try {
       const fd = new FormData(formRef.current);
       fd.set("recipients", userEmail);
+      fd.set("mode", "test");
       const res = await sendTestAction(fd);
       if (res.error) {
         setBanner({ ok: false, message: res.error });

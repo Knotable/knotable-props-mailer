@@ -19,6 +19,7 @@ import {
   dispatchAutopilotWorker,
   formatUtc,
   parseFutureSendAt,
+  parseSendWindowInput,
   getAutopilotRecord,
   isActiveAutopilot,
   setAutopilotState,
@@ -935,8 +936,9 @@ export async function sendTestAction(formData: FormData): Promise<{ sent: number
       };
     }
 
-    // All succeeded — mark the draft as sent.
-    if (id) {
+    // A direct send (no list) completes the email; a test send must leave the
+    // draft in place so it can still be queued.
+    if (id && formData.get("mode") !== "test") {
       const supabase = getSupabaseAdmin();
       await supabase.from("emails").update({ status: "sent" }).eq("id", id);
       revalidatePath("/email/sends");
@@ -1183,9 +1185,11 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
 
     const schedule = parseFutureSendAt(formData.get("sendAt"));
     if (schedule.error) return { error: schedule.error };
+    const windowInput = parseSendWindowInput(formData.get("sendWindow"));
+    if (windowInput.error) return { error: windowInput.error };
 
     const contentSha256 = campaignContentDigest(emailRow);
-    if (!schedule.startAt && existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
+    if (!schedule.startAt && !windowInput.sendWindow && existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
       const dispatch = await dispatchAutopilotWorker(id);
       return { recipients: unsent, alreadyActive: true, dispatched: dispatch.dispatched, detail: `Already approved and sending. ${dispatch.detail}` };
     }
@@ -1206,6 +1210,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
       heartbeatAt: null,
       nextCheckAt: schedule.startAt,
       startAt: schedule.startAt,
+      sendWindow: windowInput.sendWindow,
     });
 
     const { error: resumeError } = await supabase

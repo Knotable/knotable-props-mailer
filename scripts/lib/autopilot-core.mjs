@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 export const AUTOPILOT_KEY_PREFIX = "send_autopilot:";
 export const WORKER_LEASE_KEY = "send_worker_lease";
-export const ACTIVE_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"];
+export const ACTIVE_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"];
 export const AMBIGUOUS_CLAIM_PREFIX = "ambiguous_claim:";
 
 export const autopilotKey = (emailId) => `${AUTOPILOT_KEY_PREFIX}${emailId}`;
@@ -170,4 +170,38 @@ export function lateSuppressedIds(items, inactiveMembers) {
     if (members.some((member) => member.status === "blocked" || (item.list_id && member.list_id === item.list_id))) suppressed.add(item.id);
   }
   return suppressed;
+}
+
+// Send window like "07:00-21:00 America/New_York" (may wrap midnight).
+export function parseSendWindow(spec) {
+  const match = String(spec ?? "").trim().match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})\s+([A-Za-z_]+(?:\/[A-Za-z_+-]+)*)$/);
+  if (!match) return null;
+  const [, sh, sm, eh, em, timeZone] = match;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone }).format(0);
+  } catch {
+    return null;
+  }
+  const startMin = Number(sh) * 60 + Number(sm);
+  const endMin = Number(eh) * 60 + Number(em);
+  if (startMin >= 1440 || endMin > 1440 || startMin === endMin) return null;
+  return { startMin, endMin, timeZone, label: `${sh.padStart(2, "0")}:${sm}–${eh.padStart(2, "0")}:${em} ${timeZone}` };
+}
+
+function localMinutes(nowMs, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(nowMs);
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? 0);
+  const minute = Number(parts.find((part) => part.type === "minute")?.value ?? 0);
+  return (hour % 24) * 60 + minute;
+}
+
+export function sendWindowStatus(nowMs, window) {
+  if (!window) return { open: true, nextOpenAt: null };
+  const local = localMinutes(nowMs, window.timeZone);
+  const { startMin, endMin } = window;
+  const open = startMin < endMin ? local >= startMin && local < endMin : local >= startMin || local < endMin;
+  if (open) return { open: true, nextOpenAt: null };
+  const minutesUntil = (startMin - local + 1440) % 1440 || 1440;
+  // Round to the minute; the worker re-checks, so DST edges self-correct.
+  return { open: false, nextOpenAt: new Date(Math.ceil((nowMs + minutesUntil * 60_000) / 60_000) * 60_000).toISOString() };
 }

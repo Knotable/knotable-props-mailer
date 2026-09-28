@@ -45,6 +45,8 @@ import {
   formatDuration,
   lateSuppressedIds,
   orderDueRecords,
+  parseSendWindow,
+  sendWindowStatus,
   runUrlFromEnv,
 } from "./lib/autopilot-core.mjs";
 import { buildMemberQueueRow, buildSenderCopyQueueRow, extractEmailAddress } from "./lib/queue-rows.mjs";
@@ -91,12 +93,14 @@ const config = {
   maxConsecutiveErrors: 5,
   canaryRecipients: Math.max(0, numberEnv("SES_CANARY_RECIPIENTS", 300)),
   canaryWaitMs: Math.max(0, numberEnv("SES_CANARY_WAIT_SECONDS", 180)) * 1_000,
-  breakerCheckMs: 120_000,
+  breakerCheckMs: Math.max(1, numberEnv("SES_BREAKER_CHECK_SECONDS", 120)) * 1_000,
   breaker: {
     minSample: Math.max(1, numberEnv("SES_BREAKER_MIN_SAMPLE", 300)),
     maxHardBounceRate: numberEnv("SES_BREAKER_MAX_HARD_BOUNCE_RATE", 0.08),
     maxComplaintRate: numberEnv("SES_BREAKER_MAX_COMPLAINT_RATE", 0.003),
   },
+  sendWindow: parseSendWindow(process.env.SES_SEND_WINDOW),
+  blindAfterAccepted: 1_000,
   operatorEmail: process.env.SES_OPERATOR_EMAIL || "a@sarva.co",
   notifyFrom: process.env.SES_NOTIFY_FROM || "",
 };
@@ -519,11 +523,12 @@ async function deliverabilityCounts(emailId) {
     if (error) throw new Error(`deliverability count: ${error.message}`);
     return value ?? 0;
   };
-  const [hardBounces, complaints] = await Promise.all([
+  const [hardBounces, complaints, delivered] = await Promise.all([
     count((query) => query.eq("event_type", "bounced").eq("payload->bounce->>bounceType", "Permanent")),
     count((query) => query.eq("event_type", "complained")),
+    count((query) => query.eq("event_type", "delivered")),
   ]);
-  return { hardBounces, complaints };
+  return { hardBounces, complaints, delivered };
 }
 
 // Honors unsubscribes, bounces, complaints, and blocks that happened after
@@ -823,6 +828,20 @@ async function runCampaign(record) {
     return block(email, record, `Queue grew to ${remainingAtStart.toLocaleString()} unsent recipients after approval of ${Number(record.approvedRecipients).toLocaleString()}. Re-approve the new count.`);
   }
 
+  const window = parseSendWindow(record.sendWindow) ?? config.sendWindow;
+  const windowGate = async () => {
+    const status = sendWindowStatus(Date.now(), window);
+    if (status.open) return false;
+    await patchRecord(record, {
+      state: "waiting_window",
+      heartbeatAt: nowIso(),
+      nextCheckAt: status.nextOpenAt,
+      message: `Outside the send window (${window.label}). Resumes automatically at ${status.nextOpenAt.replace("T", " ").slice(0, 16)} UTC.`,
+    });
+    return true;
+  };
+  if (await windowGate()) return "window";
+
   const quota = await sesQuota();
   if (!quota.sendingEnabled) return block(email, record, "SES account sending is disabled.");
   let available = availableQuota({ ...quota, reserve: config.quotaReserve });
@@ -935,7 +954,18 @@ async function runCampaign(record) {
       hardBounces: Math.max(0, counts.hardBounces - baseline.hardBounces),
       complaints: Math.max(0, counts.complaints - baseline.complaints),
     };
-    deliverability = { ...sample, maxHardBounceRate: config.breaker.maxHardBounceRate, maxComplaintRate: config.breaker.maxComplaintRate, checkedAt: nowIso() };
+    const deliveredSince = Math.max(0, counts.delivered - (baseline.delivered ?? 0));
+    const blind = sample.accepted >= config.blindAfterAccepted && deliveredSince === 0;
+    deliverability = { ...sample, delivered: deliveredSince, blind, maxHardBounceRate: config.breaker.maxHardBounceRate, maxComplaintRate: config.breaker.maxComplaintRate, checkedAt: nowIso() };
+    if (blind && !record.eventsBlindNotified) {
+      await patchRecord(record, { eventsBlindNotified: true });
+      await notifyOperator(email, `No SES events arriving: ${email.subject}`, [
+        `${sample.accepted.toLocaleString()} recipients were accepted by SES since approval, but no Delivery events have reached the app.`,
+        "Sending continues, but the bounce/complaint circuit breaker cannot see problems until events flow again.",
+        "Check the SES configuration-set event destination, the SNS subscription, and /api/webhooks/ses (see /api/health).",
+        `Campaign: ${emailId}`,
+      ]);
+    }
     return evaluateDeliverability(sample, { ...config.breaker, minSample });
   };
 
@@ -946,6 +976,10 @@ async function runCampaign(record) {
     }
     if (Date.now() - lastHeartbeat >= config.heartbeatMs && !(await heartbeat())) {
       stopReason = "paused";
+      break;
+    }
+    if (window && !sendWindowStatus(Date.now(), window).open) {
+      stopReason = "window";
       break;
     }
     if (Date.now() - lastQuotaRefresh >= config.quotaRefreshMs) {
@@ -1072,6 +1106,10 @@ async function runCampaign(record) {
 
   if (stopReason === "paused") return "paused";
   if (stopReason === "blocked") return block(email, record, stopDetail);
+  if (stopReason === "window") {
+    await windowGate();
+    return "window";
+  }
   if (stopReason === "quota") {
     const nextCheckAt = new Date(Date.now() + config.quotaRecheckMs).toISOString();
     const summary = await loadSummary(emailId).catch(() => null);

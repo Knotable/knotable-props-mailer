@@ -261,6 +261,36 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(recordFor(email.id).state).toBe("complete");
   });
 
+  it("waits outside the approval's send window and names the reopening time", async () => {
+    const email = seedCampaign({ recipients: 3 });
+    const hour = new Date().getUTCHours();
+    const pad = (value) => String(value % 24).padStart(2, "0");
+    recordFor(email.id).sendWindow = `${pad(hour + 2)}:00-${pad(hour + 3)}:00 UTC`;
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    const record = recordFor(email.id);
+    expect(record.state).toBe("waiting_window");
+    expect(new Date(record.nextCheckAt).getUTCHours()).toBe((hour + 2) % 24);
+  });
+
+  it("alarms once when SES delivery events stop arriving mid-send", async () => {
+    const email = seedCampaign({ recipients: 1_200 });
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "0", SES_BREAKER_CHECK_SECONDS: "1", SES_BULK_MAX_RECIPIENTS_PER_SECOND: "200" });
+    expect(result.code, result.stderr).toBe(0);
+    const subjects = backend.ses.notices.map((notice) => notice.Content.Simple.Subject.Data);
+    expect(subjects.filter((subject) => /No SES events arriving/.test(subject))).toHaveLength(1);
+    expect(recordFor(email.id)).toMatchObject({ state: "complete", eventsBlindNotified: true });
+  });
+
+  it("stays quiet when delivery events flow", async () => {
+    backend.ses.emitDeliveries = true;
+    seedCampaign({ recipients: 1_200 });
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "0", SES_BREAKER_CHECK_SECONDS: "1", SES_BULK_MAX_RECIPIENTS_PER_SECOND: "200" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.notices.map((notice) => notice.Content.Simple.Subject.Data)).toEqual(["[Props Mailer] Sent: Autumn update"]);
+  });
+
   it("holds a scheduled campaign until its start time", async () => {
     const email = seedCampaign({ recipients: 3 });
     const record = recordFor(email.id);

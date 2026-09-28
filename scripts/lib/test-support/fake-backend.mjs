@@ -74,6 +74,7 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     dropConnectionNext: 0,
     entryStatus: null,
     bounceEvery: 0,
+    emitDeliveries: false,
     acceptedCount: 0,
   };
   const failures = { finalizeNext: 0 };
@@ -277,6 +278,16 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
             event_type: "bounced",
             message_id: messageId,
             payload: { bounce: { bounceType: "Permanent" } },
+            received_at: new Date(now()).toISOString(),
+          });
+        }
+        if (ses.emitDeliveries) {
+          tables.provider_events.push({
+            id: crypto.randomUUID(),
+            email_id: entry.ReplacementTags?.find((tag) => tag.Name === "campaign_id")?.Value ?? null,
+            event_type: "delivered",
+            message_id: messageId,
+            payload: {},
             received_at: new Date(now()).toISOString(),
           });
         }

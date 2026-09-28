@@ -123,3 +123,27 @@ describe("deliverability guards", () => {
     expect([...lateSuppressedIds(items, inactive)].sort()).toEqual(["1", "3"]);
   });
 });
+
+describe("send windows", () => {
+  it("parses windows and rejects nonsense", async () => {
+    const { parseSendWindow } = await import("./autopilot-core.mjs");
+    expect(parseSendWindow("07:00-21:00 America/New_York")).toMatchObject({ startMin: 420, endMin: 1260, timeZone: "America/New_York" });
+    expect(parseSendWindow("22:00-06:00 Europe/London")).toMatchObject({ startMin: 1320, endMin: 360 });
+    expect(parseSendWindow("")).toBeNull();
+    expect(parseSendWindow("07:00-21:00 Mars/Olympus")).toBeNull();
+    expect(parseSendWindow("9-5 UTC")).toBeNull();
+  });
+
+  it("opens inside the window and computes the next opening outside it", async () => {
+    const { parseSendWindow, sendWindowStatus } = await import("./autopilot-core.mjs");
+    const ny = parseSendWindow("07:00-21:00 America/New_York");
+    // 2026-09-28 12:00Z = 08:00 EDT → open.
+    expect(sendWindowStatus(Date.parse("2026-09-28T12:00:00Z"), ny).open).toBe(true);
+    // 02:00Z = 22:00 EDT previous day → closed until 07:00 EDT = 11:00Z.
+    expect(sendWindowStatus(Date.parse("2026-09-28T02:00:00Z"), ny)).toEqual({ open: false, nextOpenAt: "2026-09-28T11:00:00.000Z" });
+    expect(sendWindowStatus(Date.now(), null).open).toBe(true);
+    const overnight = parseSendWindow("22:00-06:00 UTC");
+    expect(sendWindowStatus(Date.parse("2026-09-28T23:30:00Z"), overnight).open).toBe(true);
+    expect(sendWindowStatus(Date.parse("2026-09-28T12:00:00Z"), overnight).nextOpenAt).toBe("2026-09-28T22:00:00.000Z");
+  });
+});

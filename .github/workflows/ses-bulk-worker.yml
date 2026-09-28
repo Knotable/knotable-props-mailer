@@ -81,6 +81,7 @@ jobs:
       SES_CANARY_WAIT_SECONDS: ${{ vars.SES_CANARY_WAIT_SECONDS || '180' }}
       SES_BREAKER_MAX_HARD_BOUNCE_RATE: ${{ vars.SES_BREAKER_MAX_HARD_BOUNCE_RATE || '0.08' }}
       SES_BREAKER_MAX_COMPLAINT_RATE: ${{ vars.SES_BREAKER_MAX_COMPLAINT_RATE || '0.003' }}
+      SES_SEND_WINDOW: ${{ vars.SES_SEND_WINDOW }}
       SES_WORKER_MAX_RUNTIME_MINUTES: "330"
       WORKER_MODE: ${{ inputs.mode || 'autopilot' }}
       WORKER_EMAIL_ID: ${{ inputs.email_id }}

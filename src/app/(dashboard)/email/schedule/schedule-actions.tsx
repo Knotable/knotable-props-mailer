@@ -39,6 +39,15 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
   const [progress, setProgress] = useState<string | null>(null);
   const [sendConfirmationArmed, setSendConfirmationArmed] = useState(false);
   const [sendAtLocal, setSendAtLocal] = useState("");
+  const [businessHours, setBusinessHours] = useState(false);
+  const localTimeZone = (() => {
+    try {
+      return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    } catch {
+      return "UTC";
+    }
+  })();
+  const sendWindow = businessHours ? `07:00-21:00 ${localTimeZone}` : "";
   const sendAtIso = (() => {
     if (!sendAtLocal) return "";
     const date = new Date(sendAtLocal);
@@ -145,6 +154,7 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
                 <input type="hidden" name="releaseConfirmation" value={buildQueueReleaseConfirmation(id)} />
                 <input type="hidden" name="expectedRecipients" value={String(unsent)} />
                 <input type="hidden" name="sendAt" value={sendAtIso} />
+                <input type="hidden" name="sendWindow" value={sendWindow} />
                 <SendButton disabled={working} armed={sendConfirmationArmed} unsent={unsent} scheduled={Boolean(sendAtIso)} />
                 {sendConfirmationArmed && (
                   <button
@@ -174,6 +184,10 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
       {sendConfirmationArmed && canStart && (
         <div className="w-full min-w-64 space-y-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
           {estimate && <p>Estimated send time: <span className="font-semibold">{estimate}</span></p>}
+          <label className="flex items-center gap-2">
+            <input type="checkbox" checked={businessHours} onChange={(event) => setBusinessHours(event.target.checked)} />
+            Only send 7am–9pm {localTimeZone.replace(/_/g, " ")} time (multi-day sends pause overnight)
+          </label>
           <label className="flex flex-wrap items-center gap-2">
             Send later (optional, your local time):
             <input

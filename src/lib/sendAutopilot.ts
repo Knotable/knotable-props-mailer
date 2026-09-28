@@ -4,7 +4,7 @@ import type { Json } from "@/supabase/types";
 
 // Shared contract with scripts/ses-bulk-worker.mjs (scripts/lib/autopilot-core.mjs).
 export const AUTOPILOT_KEY_PREFIX = "send_autopilot:";
-export const ACTIVE_AUTOPILOT_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"] as const;
+export const ACTIVE_AUTOPILOT_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"] as const;
 export const HEARTBEAT_STALE_MS = 3 * 60_000;
 export const AUTOPILOT_SCHEDULE_MINUTES = 5;
 
@@ -33,6 +33,8 @@ export type AutopilotRecord = {
   heartbeatAt?: string | null;
   nextCheckAt?: string | null;
   startAt?: string | null;
+  sendWindow?: string | null;
+  eventsBlindNotified?: boolean;
   updatedAt?: string;
   completedAt?: string;
   lastError?: string;
@@ -58,6 +60,8 @@ export type AutopilotRecord = {
     complaints: number;
     maxHardBounceRate: number;
     maxComplaintRate: number;
+    delivered?: number;
+    blind?: boolean;
     checkedAt?: string;
   };
 };
@@ -212,6 +216,8 @@ export function describeAutopilot(record: AutopilotRecord | null | undefined, no
         : { label: "Restarting", tone: "amber", detail: "Worker heartbeat is stale; the next scheduled run takes over automatically.", live };
     case "waiting_quota":
       return { label: "Waiting for SES quota", tone: "amber", detail, live };
+    case "waiting_window":
+      return { label: "Waiting for send window", tone: "slate", detail, live };
     case "waiting_reconcile":
       return { label: "Settling interrupted batch", tone: "amber", detail, live };
     case "waiting_retry":
@@ -253,4 +259,18 @@ export function parseFutureSendAt(raw: unknown, nowMs = Date.now()): { startAt: 
   if (ms <= nowMs + 60_000) return { startAt: null };
   if (ms > nowMs + 60 * 24 * 3_600_000) return { startAt: null, error: "Schedule sends at most 60 days ahead." };
   return { startAt: new Date(ms).toISOString() };
+}
+
+const SEND_WINDOW_RE = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-4]):[0-5]\d [A-Za-z_]+(?:\/[A-Za-z_+-]+)*$/;
+
+export function parseSendWindowInput(raw: unknown): { sendWindow: string | null; error?: string } {
+  if (typeof raw !== "string" || !raw.trim()) return { sendWindow: null };
+  const value = raw.trim();
+  if (!SEND_WINDOW_RE.test(value)) return { sendWindow: null, error: "Send window must look like 07:00-21:00 America/New_York." };
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value.split(" ")[1] }).format(0);
+  } catch {
+    return { sendWindow: null, error: "Send window has an unknown time zone." };
+  }
+  return { sendWindow: value };
 }

@@ -431,6 +431,12 @@ function AutopilotPanel({ record, view }: { record: AutopilotRecord; view: Autop
             Canary: {record.canary.sent.toLocaleString()} of first {record.canary.recipients.toLocaleString()} sent; full speed after a bounce/complaint check.
           </p>
         )}
+        {record.deliverability?.blind && (
+          <p className="font-semibold text-red-700 sm:col-span-2">
+            No SES delivery events have arrived since approval — bounce/complaint protection is blind. Check /api/health and the SNS subscription.
+          </p>
+        )}
+        {record.sendWindow && <p>Send window: {record.sendWindow.replace("-", "–").replace(/_/g, " ")}</p>}
         {record.deliverability && (
           <p>
             Since approval: hard bounces {formatPercent(record.deliverability.hardBounces, record.deliverability.accepted)} · complaints{" "}

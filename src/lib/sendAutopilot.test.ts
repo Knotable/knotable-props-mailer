@@ -55,3 +55,14 @@ describe("send scheduling and estimates", () => {
     expect(estimateSendDuration(184_983)).toMatch(/^~3 quota windows/);
   });
 });
+
+describe("send window input", () => {
+  it("accepts HH:MM-HH:MM Zone and rejects the rest", async () => {
+    const { parseSendWindowInput } = await import("./sendAutopilot");
+    expect(parseSendWindowInput("")).toEqual({ sendWindow: null });
+    expect(parseSendWindowInput("07:00-21:00 America/New_York")).toEqual({ sendWindow: "07:00-21:00 America/New_York" });
+    expect(parseSendWindowInput("7-21 NY").error).toBeDefined();
+    expect(parseSendWindowInput("07:00-21:00 Nowhere/Land").error).toMatch(/time zone/);
+    expect(workerCore.parseSendWindow("07:00-21:00 America/New_York")).not.toBeNull();
+  });
+});
