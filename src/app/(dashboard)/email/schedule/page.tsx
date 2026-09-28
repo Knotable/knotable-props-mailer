@@ -3,6 +3,7 @@ import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
+import { describeAutopilot, getAutopilotRecords, isActiveAutopilot, type AutopilotView } from "@/lib/sendAutopilot";
 
 const DIRECT_RECIPIENTS_ID = "__direct_recipients__";
 
@@ -66,6 +67,9 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
     : { data: [] as ScheduleQueueSummaryRow[], error: null };
   if (queueSummaryError) throw queueSummaryError;
   const queueRows = (queueSummaryData ?? []) as ScheduleQueueSummaryRow[];
+  const autopilotRecords = await getAutopilotRecords(
+    baseEmails.filter((email) => email.status !== "draft").map((email) => email.id),
+  );
   const totalActiveQueueRows = queueRows.reduce(
     (sum, row) => sum + row.pending_due + row.pending_held + row.processing,
     0,
@@ -165,7 +169,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
           <p className="text-xs uppercase tracking-wide text-slate-400">Queue</p>
           <h2 className="text-2xl font-semibold text-slate-900">Drafts &amp; Active Queue</h2>
           <p className="text-sm text-slate-500">
-            Drafts, manually held mailings, and campaigns with unsent queue rows.
+            Drafts, campaigns ready to send, and sends in progress.
           </p>
         </div>
         <QueueSafetyNotice />
@@ -198,12 +202,20 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
               activeCounts &&
                 activeCounts.pendingDue + activeCounts.pendingHeld + activeCounts.processing > 0,
             );
+            const autopilotRecord = autopilotRecords.get(item.id);
+            const autopilotActive = isActiveAutopilot(autopilotRecord);
+            const autopilot = autopilotRecord && (autopilotActive || item.status === "sending" || autopilotRecord.state === "blocked")
+              ? describeAutopilot(autopilotRecord)
+              : null;
+            const unsent = activeCounts ? activeCounts.pendingDue + activeCounts.pendingHeld : 0;
             const displayStatus = isDraft
               ? "Draft"
               : item.status === "sending"
-                ? "Sending"
+                ? autopilotActive
+                  ? autopilot?.label ?? "Sending"
+                  : "Not sending — press Send"
                 : hasActiveQueue
-                  ? "Unsent"
+                  ? "Ready to send"
                   : item.status === "queued"
                     ? "Queued"
                     : item.status ?? "Unknown";
@@ -239,10 +251,12 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                           ? `Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
                           : "Draft only"
                         : updatedIso
-                          ? `Queued for manual send · Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
-                          : "Queued for manual send"}
+                          ? `${item.status === "sending" ? "Sending" : "Queued"} · Updated ${updatedIso.replace("T", " ").slice(0, 16)} UTC`
+                          : item.status === "sending" ? "Sending" : "Queued"}
                     </span>
                   </div>
+
+                  {autopilot && <AutopilotLine view={autopilot} />}
 
                   {statusCounts && (
                     <QueueStatusSummary
@@ -294,6 +308,8 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                       subject={item.subject ?? ""}
                       status={item.status}
                       canSend={auth.canSend}
+                      unsent={unsent}
+                      autopilotActive={autopilotActive}
                     />
                   ) : null}
                 </div>
@@ -304,6 +320,23 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
           <p className="p-6 text-sm text-slate-500">No drafts or queued emails.</p>
         )}
       </div>
+    </div>
+  );
+}
+
+function AutopilotLine({ view }: { view: AutopilotView }) {
+  const tones: Record<AutopilotView["tone"], string> = {
+    green: "border-green-200 bg-green-50 text-green-800",
+    blue: "border-blue-200 bg-blue-50 text-blue-800",
+    amber: "border-amber-200 bg-amber-50 text-amber-900",
+    red: "border-red-200 bg-red-50 text-red-800",
+    slate: "border-slate-200 bg-slate-50 text-slate-700",
+  };
+  return (
+    <div className={`rounded-md border px-3 py-2 text-xs ${tones[view.tone]}`}>
+      <span className="font-semibold">Autopilot: {view.label}</span>
+      {view.live && <span className="ml-2 inline-block h-2 w-2 animate-pulse rounded-full bg-current align-middle" aria-label="worker live" />}
+      {view.detail && <span className="ml-2">{view.detail}</span>}
     </div>
   );
 }

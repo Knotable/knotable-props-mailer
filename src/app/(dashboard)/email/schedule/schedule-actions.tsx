@@ -12,11 +12,11 @@ import {
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 import { ProgressStatus } from "@/components/progress-status";
 
-// ── Header safety notice: this page still releases specific rows only. ──
 export function QueueSafetyNotice() {
   return (
-    <div className="max-w-sm rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-      Process sends from a specific row here. The monitor page has a guarded global drain for queued, sending, or sent campaigns.
+    <div className="max-w-sm rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+      <span className="font-semibold">Sends run in the cloud.</span> Press Send, confirm the recipient count, and close the
+      tab — autopilot paces SES, waits out quota windows, and emails you when it finishes.
     </div>
   );
 }
@@ -26,9 +26,11 @@ type RowProps = {
   subject: string;
   status: "draft" | "queued" | "sending";
   canSend: boolean;
+  unsent: number;
+  autopilotActive: boolean;
 };
 
-export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
+export function ScheduleActions({ id, subject, status, canSend, unsent, autopilotActive }: RowProps) {
   const router = useRouter();
   const [working, startWorking] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -53,6 +55,7 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
   };
 
   const handleEdit = () => {
+    if (status === "sending" && !confirm("Editing stops this send and cancels its unsent recipients. Continue?")) return;
     runAction("Unlocking the queued email so it can be edited...", async () => {
       const fd = new FormData();
       fd.set("id", id);
@@ -63,19 +66,14 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
     });
   };
 
-  const handleSendNowSubmit = (event: FormEvent<HTMLFormElement>) => {
+  const handleSendSubmit = (event: FormEvent<HTMLFormElement>) => {
     if (!sendConfirmationArmed) {
       event.preventDefault();
       setSendConfirmationArmed(true);
       return;
     }
-
     setResult(null);
-    setProgress(
-      status === "queued"
-        ? "Resuming the background sender and opening the scoped monitor..."
-        : "Releasing due recipients and opening the scoped monitor...",
-    );
+    setProgress("Approving this exact recipient count for the cloud sender...");
   };
 
   const handlePause = () => {
@@ -88,8 +86,8 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
         ok: true,
         message:
           res.processing > 0
-            ? `Paused ${res.paused.toLocaleString()} pending recipients. ${res.processing.toLocaleString()} in-flight recipient(s) may finish.`
-            : `Paused with ${res.paused.toLocaleString()} pending recipients preserved.`,
+            ? `Paused. ${res.paused.toLocaleString()} unsent recipients kept; ${res.processing.toLocaleString()} in-flight will finish.`
+            : `Paused with ${res.paused.toLocaleString()} unsent recipients kept.`,
       });
       router.refresh();
     });
@@ -106,10 +104,13 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
   };
 
   const isQueued = status === "queued" || status === "sending";
+  // "sending" without an active approval is a legacy/stalled state: nothing is
+  // draining it, so offer Send to hand it to autopilot.
+  const canStart = canSend && unsent > 0 && (status === "queued" || (status === "sending" && !autopilotActive));
 
   return (
     <div className="flex flex-col items-end gap-2">
-      <div className="flex shrink-0 gap-2">
+      <div className="flex shrink-0 flex-wrap justify-end gap-2">
         {isQueued && (
           <>
             <button
@@ -130,23 +131,21 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
                 {working ? "Working..." : "Pause"}
               </button>
             )}
-            {canSend && status === "queued" && (
-              <form
-                action={sendQueuedEmailAndRedirectAction}
-                onSubmit={handleSendNowSubmit}
-                className="contents"
-              >
+            {canStart && (
+              <form action={sendQueuedEmailAndRedirectAction} onSubmit={handleSendSubmit} className="contents">
                 <input type="hidden" name="id" value={id} />
-                <input
-                  type="hidden"
-                  name="releaseConfirmation"
-                  value={buildQueueReleaseConfirmation(id)}
-                />
-                <SendNowButton
-                  disabled={working}
-                  confirmationArmed={sendConfirmationArmed}
-                  resume
-                />
+                <input type="hidden" name="releaseConfirmation" value={buildQueueReleaseConfirmation(id)} />
+                <input type="hidden" name="expectedRecipients" value={String(unsent)} />
+                <SendButton disabled={working} armed={sendConfirmationArmed} unsent={unsent} />
+                {sendConfirmationArmed && (
+                  <button
+                    type="button"
+                    onClick={() => setSendConfirmationArmed(false)}
+                    className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </button>
+                )}
               </form>
             )}
           </>
@@ -162,11 +161,7 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
       </div>
       {progress && (
         <div className="w-full min-w-64">
-          <ProgressStatus
-            title={progress}
-            detail="Waiting for the server action to finish."
-            tone="slate"
-          />
+          <ProgressStatus title={progress} detail="Waiting for the server action to finish." tone="slate" />
         </div>
       )}
       {result && (
@@ -178,30 +173,21 @@ export function ScheduleActions({ id, subject, status, canSend }: RowProps) {
   );
 }
 
-function SendNowButton({
-  disabled,
-  confirmationArmed,
-  resume,
-}: {
-  disabled: boolean;
-  confirmationArmed: boolean;
-  resume: boolean;
-}) {
+function SendButton({ disabled, armed, unsent }: { disabled: boolean; armed: boolean; unsent: number }) {
   const { pending } = useFormStatus();
   const isDisabled = disabled || pending;
+  const count = unsent.toLocaleString();
 
   return (
     <button
       type="submit"
       disabled={isDisabled}
-      aria-label={confirmationArmed ? "Confirm resume" : "Resume"}
+      aria-label={armed ? `Confirm send to ${count} recipients` : `Send to ${count} recipients`}
       className={`rounded-md px-3 py-1 text-xs font-semibold text-white disabled:opacity-50 ${
-        confirmationArmed
-          ? "bg-red-600 hover:bg-red-700"
-          : "bg-slate-900 hover:bg-slate-700"
+        armed ? "bg-red-600 hover:bg-red-700" : "bg-slate-900 hover:bg-slate-700"
       }`}
     >
-      {isDisabled ? "Working..." : confirmationArmed ? "Sure?" : resume ? "Resume" : "Send Now"}
+      {isDisabled ? "Approving..." : armed ? `Yes, send to ${count}` : `Send to ${count}`}
     </button>
   );
 }

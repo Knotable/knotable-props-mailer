@@ -405,26 +405,21 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
 
       if (lastOk?.ok) {
         if (target === "sendNow") {
-          setActionStatus("Queue preparation finished. Releasing this campaign now...");
+          setActionStatus("Queue preparation finished. Handing this campaign to the cloud sender...");
           const releaseFd = new FormData();
           releaseFd.set("id", emailId);
           releaseFd.set("releaseConfirmation", buildQueueReleaseConfirmation(emailId));
           const release = await sendQueuedEmailAction(releaseFd);
           if (release.error) throw new Error(release.error);
-          setActionStatus("Release started. Opening the scoped monitor...");
-          setBanner({
-            ok: true,
-            message:
-              (release.remainingQueued ?? 0) > 0
-                ? `Released ${release.dueNow ?? 0} for today; opening the monitor for this campaign.`
-                : `Send completed: ${release.succeeded ?? 0} accepted${(release.failed ?? 0) > 0 ? `, ${release.failed} failed` : ""}.`,
-          });
-          router.push(`/email/monitor?emailId=${emailId}&auto=1`);
+          const notice = `Approved ${release.recipients?.toLocaleString() ?? ""} recipients. ${release.detail ?? ""} You can close this tab.`;
+          setActionStatus("Approved. Opening the campaign monitor...");
+          setBanner({ ok: true, message: notice });
+          router.push(`/email/monitor?emailId=${emailId}&notice=${encodeURIComponent(notice)}`);
         } else {
           setActionStatus("Queue preparation finished. Opening the Queue page...");
           setBanner({
             ok: true,
-            message: `Queued ${lastOk.totalRecipients.toLocaleString()} emails for manual send${lastOk.daysNeeded > 1 ? ` (${lastOk.daysNeeded} send-days at current quota)` : ""}.`,
+            message: `Queued ${lastOk.totalRecipients.toLocaleString()} recipients. Press Send on the Queue page when ready${lastOk.daysNeeded > 1 ? ` (autopilot spreads it over ~${lastOk.daysNeeded} SES quota windows automatically)` : ""}.`,
           });
           router.push("/email/schedule");
         }

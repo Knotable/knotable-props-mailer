@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { ProgressStatus } from "@/components/progress-status";
 import { DataFreshness } from "@/components/data-freshness";
+import type { AutopilotRecord, AutopilotView } from "@/lib/sendAutopilot";
 
 type RecipientLogRow = {
   recipientEmail: string | null;
@@ -49,10 +50,20 @@ type QueueSnapshot = {
   dead: number;
   canceled: number;
   recipientLog?: RecipientLogRow[];
+  autopilot?: AutopilotRecord | null;
+  autopilotView?: AutopilotView | null;
+  autopilotQueue?: {
+    emailId: string;
+    subject: string | null;
+    state: string;
+    view: AutopilotView | null;
+    progress: AutopilotRecord["progress"] | null;
+  }[];
 };
 
 type Props = {
   emailId?: string;
+  notice?: string;
 };
 
 const POLL_MS = 15_000;
@@ -82,7 +93,7 @@ function formatError(error: unknown, fallback: string) {
   }
 }
 
-export function MonitorClient({ emailId }: Props) {
+export function MonitorClient({ emailId, notice }: Props) {
   const scopedEmailId = emailId && UUID_RE.test(emailId) ? emailId : undefined;
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -161,14 +172,41 @@ export function MonitorClient({ emailId }: Props) {
             {snapshot?.subject ?? "Outbound Queue"}
           </h2>
           <p className="text-sm text-slate-500">
-            Status refreshes here; closing this page does not start, stop, or sustain a campaign worker.
+            Sending runs in the cloud. This page only watches — close it any time.
           </p>
         </div>
       </header>
 
+      {notice && (
+        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{notice}</div>
+      )}
+
+      {snapshot?.autopilot && snapshot.autopilotView && (
+        <AutopilotPanel record={snapshot.autopilot} view={snapshot.autopilotView} />
+      )}
+
+      {!scopedEmailId && (snapshot?.autopilotQueue?.length ?? 0) > 0 && (
+        <div className="rounded-lg border border-slate-200">
+          <p className="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-900">Autopilot queue (sent one at a time, oldest approval first)</p>
+          <ul className="divide-y divide-slate-100">
+            {snapshot?.autopilotQueue?.map((item) => (
+              <li key={item.emailId} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
+                <a href={`/email/monitor?emailId=${item.emailId}`} className="font-medium text-blue-700 hover:underline">
+                  {item.subject ?? item.emailId}
+                </a>
+                <span className="text-slate-600">
+                  {item.view?.label ?? item.state}
+                  {item.progress?.etaSeconds ? ` · ~${formatEta(item.progress.etaSeconds)} left` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {!scopedEmailId && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          This is a read-only global view. It never drains queue rows.
+          Account-wide view. Open a campaign for its live progress.
         </div>
       )}
       {error && (
@@ -321,6 +359,70 @@ export function MonitorClient({ emailId }: Props) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function formatEta(seconds: number) {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m`;
+  return `${total}s`;
+}
+
+function secondsAgo(value: string | null | undefined) {
+  const at = Date.parse(value ?? "");
+  if (!Number.isFinite(at)) return null;
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  return seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)}m ago`;
+}
+
+function AutopilotPanel({ record, view }: { record: AutopilotRecord; view: AutopilotView }) {
+  const tones: Record<AutopilotView["tone"], string> = {
+    green: "border-green-200 bg-green-50 text-green-900",
+    blue: "border-blue-200 bg-blue-50 text-blue-900",
+    amber: "border-amber-200 bg-amber-50 text-amber-900",
+    red: "border-red-200 bg-red-50 text-red-900",
+    slate: "border-slate-200 bg-slate-50 text-slate-800",
+  };
+  const progress = record.progress;
+  const quota = record.quota;
+  const heartbeat = secondsAgo(record.heartbeatAt);
+  return (
+    <div className={`space-y-2 rounded-lg border px-4 py-3 text-sm ${tones[view.tone]}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="font-semibold">Cloud autopilot: {view.label}</p>
+        {view.live && <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-current" aria-label="worker live" />}
+        {heartbeat && <span className="text-xs opacity-75">worker heartbeat {heartbeat}</span>}
+        {record.run?.url && (
+          <a href={record.run.url} target="_blank" rel="noreferrer" className="text-xs underline">
+            worker run
+          </a>
+        )}
+      </div>
+      {view.detail && <p>{view.detail}</p>}
+      <div className="grid gap-1 text-xs sm:grid-cols-2">
+        <p>
+          Approved {record.approvedRecipients?.toLocaleString() ?? "?"} recipients
+          {record.approvedBy ? ` by ${record.approvedBy}` : ""} · {record.approvedAt?.replace("T", " ").slice(0, 16)} UTC
+        </p>
+        {progress && (
+          <p>
+            This run: {progress.acceptedThisRun?.toLocaleString() ?? 0} accepted at {progress.ratePerSecond ?? 0}/s
+            {progress.etaSeconds ? ` · ~${formatEta(progress.etaSeconds)} left` : ""}
+            {progress.backoffMs ? ` · easing off database ${Math.round(progress.backoffMs / 1000)}s` : ""}
+          </p>
+        )}
+        {quota?.max24HourSend ? (
+          <p>
+            SES rolling 24h: {quota.sentLast24Hours?.toLocaleString()} / {quota.max24HourSend.toLocaleString()} used
+            {typeof quota.available === "number" ? ` · ${quota.available.toLocaleString()} available` : ""}
+          </p>
+        ) : null}
+        {record.nextCheckAt && <p>Next automatic check: {record.nextCheckAt.replace("T", " ").slice(0, 16)} UTC</p>}
+      </div>
     </div>
   );
 }

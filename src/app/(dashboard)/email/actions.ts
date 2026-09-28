@@ -14,6 +14,14 @@ import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
 import { assertSendReadySubject } from "@/lib/subjectReadiness";
+import {
+  campaignContentDigest,
+  dispatchAutopilotWorker,
+  getAutopilotRecord,
+  isActiveAutopilot,
+  setAutopilotState,
+  writeAutopilotRecord,
+} from "@/lib/sendAutopilot";
 import type { Json } from "@/supabase/types";
 
 /**
@@ -852,6 +860,14 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     }
   }
 
+  const { data: canceledSample } = await supabase
+    .from("mail_queue")
+    .select("id")
+    .eq("email_id", emailId)
+    .eq("status", "canceled")
+    .limit(1);
+  const hasCanceledRows = Boolean(canceledSample?.length);
+
   // Upsert in batches of 500 to stay within Supabase payload limits.
   const CHUNK = 500;
   for (let i = 0; i < queueRows.length; i += CHUNK) {
@@ -862,6 +878,30 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
         ignoreDuplicates: true,
       });
     if (error) throw error;
+
+    // Re-queueing after Edit/Unqueue: those recipients still have canceled rows
+    // holding the same dedupe hash, which the upsert above silently skips.
+    // Revive them; succeeded and dead rows are never touched, so nobody who
+    // already received this email gets it twice.
+    // Hashes travel in the URL, so revive in slices that stay well under
+    // proxy URL limits.
+    const hashes = hasCanceledRows ? queueRows.slice(i, i + CHUNK).map((row) => row.dedupe_hash) : [];
+    for (let j = 0; j < hashes.length; j += 100) {
+      const { error: reviveError } = await supabase
+        .from("mail_queue")
+        .update({
+          status: "pending",
+          available_at: QUEUE_HOLD_AT,
+          locked_at: null,
+          last_error: null,
+          attempts: 0,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("email_id", emailId)
+        .eq("status", "canceled")
+        .in("dedupe_hash", hashes.slice(j, j + 100));
+      if (reviveError) throw reviveError;
+    }
   }
 
   await supabase
@@ -1022,19 +1062,6 @@ export async function sendTestAction(formData: FormData): Promise<{ sent: number
   }
 }
 
-// ── Manually trigger the queue worker ───────────────────────────────────────
-export async function triggerQueueAction(emailId: string): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
-  await requireCanSendAuthContext();
-  const parsed = EmailIdSchema.safeParse({ id: emailId });
-  if (!parsed.success) throw new Error("Invalid email id");
-  return {
-    processed: 0,
-    succeeded: 0,
-    failed: 0,
-    message: "Browser queue workers are disabled. Use the durable GitHub Actions worker after reconciliation.",
-  };
-}
-
 export async function getQueueSnapshotAction(emailId?: string) {
   await requireAuthUserId();
   const supabase = getSupabaseAdmin();
@@ -1183,19 +1210,21 @@ export async function getRecipientSendLogAction(emailId: string, limit = 200) {
   }));
 }
 
-export async function sendQueuedEmailAction(formData: FormData): Promise<{
-  released?: number;
-  dueNow?: number;
-  scheduledFuture?: number;
-  pendingDueBefore?: number;
-  pendingHeldBefore?: number;
-  processingBefore?: number;
-  processed?: number;
-  succeeded?: number;
-  failed?: number;
-  remainingQueued?: number;
+export type SendQueuedEmailResult = {
   error?: string;
-}> {
+  recipients?: number;
+  dispatched?: boolean;
+  detail?: string;
+  alreadyActive?: boolean;
+};
+
+/**
+ * Approve a queued campaign for the cloud autopilot. The approval binds the
+ * exact unsent recipient count and a SHA-256 of sender/subject/body; the
+ * worker refuses to send if either drifts. Nothing here depends on the
+ * browser staying open.
+ */
+export async function sendQueuedEmailAction(formData: FormData): Promise<SendQueuedEmailResult> {
   try {
     const auth = await requireCanSendAuthContext();
 
@@ -1205,25 +1234,21 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     const { id } = parsed.data;
     const supabase = getSupabaseAdmin();
 
-    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
-      return { error: "Email not found" };
-    }
-    const userId = auth.userId;
-
-    const nowIso = new Date().toISOString();
-    const [{ data: emailRow, error: emailError }, { data: summaryRows, error: summaryError }] = await Promise.all([
-      supabase.from("emails").select("status, subject").eq("id", id).maybeSingle(),
+    const [{ data: emailRow, error: emailError }, { data: summaryRows, error: summaryError }, existing] = await Promise.all([
+      supabase.from("emails").select("status, subject, from_address, reply_to, html, text").eq("id", id).maybeSingle(),
       supabase.rpc("get_queue_campaign_summaries", {
         p_email_ids: [id],
-        p_now: nowIso,
+        p_now: new Date().toISOString(),
       }),
+      getAutopilotRecord(id),
     ]);
 
     if (emailError) return { error: emailError.message };
     if (summaryError) return { error: summaryError.message };
+    if (!emailRow) return { error: "Email not found" };
 
-    if (emailRow?.status !== "queued" && emailRow?.status !== "sending") {
-      return { error: "Only queued or sending emails can be released." };
+    if (emailRow.status !== "queued" && emailRow.status !== "sending") {
+      return { error: "Only queued or sending emails can be sent." };
     }
     try {
       assertSendReadySubject(emailRow.subject ?? "");
@@ -1239,70 +1264,72 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       }),
       { pendingDue: 0, pendingHeld: 0, processing: 0 },
     );
-
-    if (preflight.pendingDue + preflight.pendingHeld + preflight.processing === 0) {
-      return { error: "No queued recipients are ready for this email." };
-    }
-
-    // A row reaches processing before SES acceptance is durably checkpointed.
-    // A second worker here could therefore create duplicate deliveries. Never
-    // make a campaign look newly released while such a claim is unresolved.
-    if (preflight.processing > 0) {
-      return {
-        error: `${preflight.processing} processing recipient${preflight.processing === 1 ? " is" : "s are"} unresolved. Reconcile SES acceptance before releasing another worker.`,
-      };
-    }
+    const unsent = preflight.pendingDue + preflight.pendingHeld;
+    if (unsent === 0) return { error: "No unsent recipients remain for this email." };
 
     if (!isQueueReleaseConfirmed(id, formData.get("releaseConfirmation"))) {
-      return {
-        error: `Release confirmation required for ${describeQueueReleasePreflight(preflight)}.`,
-      };
+      return { error: `Send confirmation required for ${describeQueueReleasePreflight(preflight)}.` };
     }
 
-    const quota = await getQuotaUsageSnapshot();
-    if (quota.remainingRolling24h === 0) {
-      return { error: `SES rolling 24-hour cap of ${quota.dailyCap.toLocaleString()} reached. Nothing can be sent right now.` };
+    const expectedRaw = formData.get("expectedRecipients");
+    if (typeof expectedRaw === "string" && expectedRaw.trim()) {
+      const expected = Number.parseInt(expectedRaw, 10);
+      if (expected !== unsent) {
+        return {
+          error: `The queue changed since you looked: ${unsent.toLocaleString()} unsent recipients now (you confirmed ${Number.isFinite(expected) ? expected.toLocaleString() : "an unknown count"}). Review and confirm again.`,
+        };
+      }
     }
+
+    const contentSha256 = campaignContentDigest(emailRow);
+    if (existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
+      const dispatch = await dispatchAutopilotWorker(id);
+      return { recipients: unsent, alreadyActive: true, dispatched: dispatch.dispatched, detail: `Already approved and sending. ${dispatch.detail}` };
+    }
+
+    await writeAutopilotRecord({
+      emailId: id,
+      approvalId: randomUUID(),
+      approvedAt: new Date().toISOString(),
+      approvedBy: auth.email,
+      approvedRecipients: unsent,
+      contentSha256,
+      subject: emailRow.subject,
+      source: "app",
+      state: "approved",
+      message: `Approved for ${unsent.toLocaleString()} recipients. Waiting for a cloud worker.`,
+      heartbeatAt: null,
+      nextCheckAt: null,
+    });
 
     const { error: resumeError } = await supabase
       .from("emails")
       .update({ status: "sending" })
       .eq("id", id);
     if (resumeError) return { error: resumeError.message };
-    const remainingQueued = preflight.pendingDue + preflight.pendingHeld;
+
+    const dispatch = await dispatchAutopilotWorker(id);
 
     logAudit({
-      userId,
-      action: "campaign.send_now",
+      userId: auth.userId,
+      action: "campaign.autopilot_approved",
       entity: "emails",
       entityId: id,
       payload: {
-        released: 0,
-        dueNow: preflight.pendingDue,
-        scheduledFuture: preflight.pendingHeld,
-        pendingDueBefore: preflight.pendingDue,
-        pendingHeldBefore: preflight.pendingHeld,
-        processingBefore: preflight.processing,
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        remainingQueued,
-        mode: "incremental_background_resume",
+        approvedRecipients: unsent,
+        pendingDue: preflight.pendingDue,
+        pendingHeld: preflight.pendingHeld,
+        processing: preflight.processing,
+        contentSha256,
+        dispatched: dispatch.dispatched,
       },
     }).catch(console.error);
 
     revalidatePath("/email/schedule");
     revalidatePath("/email/sends");
+    revalidatePath("/email/monitor");
 
-    return {
-      released: 0,
-      dueNow: preflight.pendingDue,
-      scheduledFuture: preflight.pendingHeld,
-      processed: 0,
-      succeeded: 0,
-      failed: 0,
-      remainingQueued,
-    };
+    return { recipients: unsent, dispatched: dispatch.dispatched, detail: dispatch.detail };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to send email" };
   }
@@ -1319,7 +1346,7 @@ export async function sendQueuedEmailAndRedirectAction(formData: FormData): Prom
     redirect(`/email/schedule?sendError=${encodeURIComponent(result.error)}`);
   }
 
-  redirect(`/email/monitor?emailId=${parsed.data.id}`);
+  redirect(`/email/monitor?emailId=${parsed.data.id}&notice=${encodeURIComponent(`Approved ${result.recipients?.toLocaleString() ?? ""} recipients. ${result.detail ?? ""} You can close this tab.`)}`);
 }
 
 // Pause a campaign without canceling or rewriting its queue rows. Completed
@@ -1347,6 +1374,7 @@ export async function pauseQueuedEmailAction(
       .update({ status: "queued" })
       .eq("id", id);
     if (emailError) return { paused: 0, processing: 0, error: emailError.message };
+    await setAutopilotState(id, "paused", "Paused from the Queue page. Press Send to resume.");
 
     const { data: summaryRows, error: summaryError } = await supabase.rpc(
       "get_queue_campaign_summaries",
@@ -1399,15 +1427,16 @@ export async function editQueuedEmailAction(
     const userId = auth.userId;
 
     // Soft-cancel unsent rows so we preserve a record of who wasn't sent to.
-    // 'processing' rows are also canceled here — the stuck-lock reclaim won't
-    // touch canceled rows, so they won't resurface after the edit.
     const nowIso = new Date().toISOString();
+    // Only unsent rows: rows a live worker already claimed are finalized by
+    // that worker, so the send history stays truthful.
     await supabase
       .from("mail_queue")
       .update({ status: "canceled", locked_at: null, updated_at: nowIso })
       .eq("email_id", id)
-      .in("status", ["pending", "processing"]);
+      .eq("status", "pending");
 
+    await setAutopilotState(id, "canceled", "Unsent recipients were canceled so the draft could be edited.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
@@ -1498,12 +1527,15 @@ export async function cancelEmailAction(formData: FormData): Promise<{ error?: s
     // A subsequent re-queue can use mail_queue WHERE status='canceled' to find
     // exactly who needs to be retried.
     const nowIso = new Date().toISOString();
+    // Only unsent rows: rows a live worker already claimed are finalized by
+    // that worker, so the send history stays truthful.
     await supabase
       .from("mail_queue")
       .update({ status: "canceled", locked_at: null, updated_at: nowIso })
       .eq("email_id", id)
-      .in("status", ["pending", "processing"]);
+      .eq("status", "pending");
 
+    await setAutopilotState(id, "canceled", "Unqueued; unsent recipients were canceled.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
@@ -1540,6 +1572,7 @@ export async function deleteEmailAction(formData: FormData): Promise<{ error?: s
     }
     const userId = auth.userId;
 
+    await setAutopilotState(id, "canceled", "Email deleted.");
     await supabase.from("mail_queue").delete().eq("email_id", id);
     await supabase.from("email_recipients").delete().eq("email_id", id);
 

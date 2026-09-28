@@ -15,6 +15,7 @@
 
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { AUTOPILOT_KEY_PREFIX, isActiveAutopilot, type AutopilotRecord } from "@/lib/sendAutopilot";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -492,7 +493,58 @@ export async function GET() {
     // provider_events table might not exist — already caught above
   }
 
-  // ── 7. Verified SES sending identity ─────────────────────────────────────
+  // ── 7. Cloud autopilot sender ─────────────────────────────────────────────
+  try {
+    const { data: autopilotRows, error: autopilotError } = await db
+      .from("app_settings")
+      .select("key, value")
+      .like("key", `${AUTOPILOT_KEY_PREFIX}%`);
+    if (autopilotError) throw autopilotError;
+    const records = (autopilotRows ?? [])
+      .map((row) => (row as { value?: AutopilotRecord }).value)
+      .filter((record): record is AutopilotRecord => Boolean(record?.state));
+    const blocked = records.filter((record) => record.state === "blocked" && Date.now() - Date.parse(record.updatedAt ?? record.approvedAt) < 7 * 24 * 3_600_000);
+    // Approved campaigns waiting 20+ minutes while no worker has heartbeated
+    // anywhere mean the schedule is not firing (workflow disabled, secrets
+    // missing, or not merged to the default branch). A campaign queued behind
+    // another live send is fine.
+    const staleMs = 20 * 60_000;
+    const lastWorkerActivity = Math.max(0, ...records.map((record) => Date.parse(record.heartbeatAt ?? "") || 0));
+    const orphaned = records.filter((record) => {
+      if (!["approved", "running"].includes(record.state)) return false;
+      const since = Date.parse(record.heartbeatAt ?? record.approvedAt);
+      return Number.isFinite(since) && Date.now() - since > staleMs && Date.now() - lastWorkerActivity > staleMs;
+    });
+    const active = records.filter((record) => isActiveAutopilot(record));
+    checks.push({
+      id: "send_autopilot",
+      label: "Cloud send autopilot",
+      severity: "warning",
+      ok: blocked.length === 0 && orphaned.length === 0,
+      message: orphaned.length
+        ? `${orphaned.length} approved campaign(s) have had no worker for 20+ minutes: ${orphaned.map((record) => record.subject ?? record.emailId).join(", ")}`
+        : blocked.length
+          ? `${blocked.length} campaign(s) blocked: ${blocked.map((record) => `${record.subject ?? record.emailId} — ${record.message ?? "see monitor"}`).join("; ")}`
+          : active.length
+            ? `${active.length} campaign(s) in autopilot: ${active.map((record) => `${record.subject ?? record.emailId} (${record.state})`).join(", ")}`
+            : "Idle — no approved campaigns waiting.",
+      fix: orphaned.length
+        ? "GitHub → Actions → SES Autopilot: confirm the workflow is enabled on the default branch and its latest run succeeded (secrets SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY; variable AWS_REGION)."
+        : blocked.length
+          ? "Open the campaign monitor for the reason, fix it, then press Send on the Queue page to re-approve."
+          : undefined,
+    });
+  } catch (error) {
+    checks.push({
+      id: "send_autopilot",
+      label: "Cloud send autopilot",
+      severity: "warning",
+      ok: false,
+      message: `Unable to read autopilot status: ${error instanceof Error ? error.message : String(error)}`,
+    });
+  }
+
+  // ── 8. Verified SES sending identity ─────────────────────────────────────
   // We can't call SES API from here without aws-sdk, so just flag it as advisory.
   checks.push({
     id: "ses_identity",

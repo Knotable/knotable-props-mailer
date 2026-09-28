@@ -1,8 +1,8 @@
 /**
  * GET /api/email/send-monitor
  *
- * Returns a live snapshot of the queue for the send-monitor page.
- * Called every ~31 seconds by the browser while a send is in progress.
+ * Returns a live snapshot of the queue plus the cloud autopilot's status for
+ * the monitor page. Read-only: closing the page never affects sending.
  *
  * POST /api/email/send-monitor
  *
@@ -20,6 +20,7 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { QUOTA_WINDOW_HOURS, getMailerRuntimeLimits, todayUTC } from "@/lib/dailyQuota";
 import { parseUuid } from "@/lib/ids";
 import { effectiveSesSendRate } from "@/lib/queueWorker";
+import { describeAutopilot, getAutopilotRecord, listActiveAutopilotRecords } from "@/lib/sendAutopilot";
 
 export const dynamic = "force-dynamic";
 
@@ -78,9 +79,10 @@ async function buildMonitorSnapshot(emailId?: string) {
   const nowIso = now.toISOString();
 
   if (!emailId) {
-    const [runtime, { data: activeRows, error: activeError }] = await Promise.all([
+    const [runtime, { data: activeRows, error: activeError }, autopilotQueue] = await Promise.all([
       getMailerRuntimeLimits(null, now),
       supabase.rpc("get_global_active_queue_summary", { p_now: nowIso }),
+      listActiveAutopilotRecords(),
     ]);
     if (activeError) throw activeError;
     const active = activeRows?.[0];
@@ -132,6 +134,15 @@ async function buildMonitorSnapshot(emailId?: string) {
       dead: 0,
       canceled: 0,
       recipientLog: [],
+      autopilot: null,
+      autopilotView: null,
+      autopilotQueue: autopilotQueue.map((record) => ({
+        emailId: record.emailId,
+        subject: record.subject ?? null,
+        state: record.state,
+        view: describeAutopilot(record, now.getTime()),
+        progress: record.progress ?? null,
+      })),
     };
   }
 
@@ -140,6 +151,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     { data: summaryRows, error: summaryError },
     { data: emailData, error: emailError },
     { data: oldestProcessing, error: processingError },
+    autopilot,
   ] =
     await Promise.all([
       getMailerRuntimeLimits(emailId, now),
@@ -156,6 +168,7 @@ async function buildMonitorSnapshot(emailId?: string) {
         .order("locked_at", { ascending: true })
         .limit(1)
         .maybeSingle(),
+      getAutopilotRecord(emailId),
     ]);
   if (summaryError) throw summaryError;
   if (emailError) throw emailError;
@@ -198,13 +211,19 @@ async function buildMonitorSnapshot(emailId?: string) {
   const stalledProcessing = Boolean(
     oldestProcessingLockedAt && new Date(oldestProcessingLockedAt).getTime() < now.getTime() - 15 * 60 * 1000,
   );
+  const autopilotView = describeAutopilot(autopilot, now.getTime());
+  const autopilotActive = Boolean(autopilot && ["approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"].includes(autopilot.state));
   const displayStatus =
     total === 0
       ? emailStatus ?? "No queue rows"
-      : stalledProcessing
-        ? "Stalled — reconciliation required"
+      : stalledProcessing && !autopilotActive
+        ? "Stalled — press Send to let autopilot reconcile"
+      : (pending > 0 || processing > 0) && autopilotView && (autopilotActive || autopilot?.state === "blocked" || autopilot?.state === "paused")
+        ? autopilotView.label
+      : (pending > 0 || processing > 0) && emailStatus === "queued"
+        ? "Ready — not sending until you press Send"
       : pending > 0 || processing > 0
-        ? "Sending"
+        ? "Not sending — no worker assigned"
         : succeeded > 0 && terminalFailures > 0
           ? "Complete with permanent failures"
           : succeeded > 0
@@ -217,10 +236,12 @@ async function buildMonitorSnapshot(emailId?: string) {
   const statusDetail =
     total === 0
       ? "No queue rows exist for this email."
-      : stalledProcessing
-        ? `${processing.toLocaleString()} processing row${processing === 1 ? " is" : "s are"} stale. No browser worker is running; reconcile before retrying to avoid duplicate delivery.`
+      : stalledProcessing && !autopilotActive
+        ? `${processing.toLocaleString()} processing row${processing === 1 ? " is" : "s are"} from an interrupted worker. Autopilot parks them (never resends) when the campaign is sent.`
+      : (pending > 0 || processing > 0) && autopilotView?.detail
+        ? autopilotView.detail
       : pending > 0 || processing > 0
-        ? `${pending + processing} recipient${pending + processing === 1 ? "" : "s"} still waiting or sending.`
+        ? `${(pending + processing).toLocaleString()} recipient${pending + processing === 1 ? "" : "s"} unsent.`
         : terminalFailures > 0
           ? `${succeeded.toLocaleString()} accepted by SES; ${terminalFailures.toLocaleString()} recipient${
               terminalFailures === 1 ? "" : "s"
@@ -262,6 +283,9 @@ async function buildMonitorSnapshot(emailId?: string) {
     dead,
     canceled,
     recipientLog: [],
+    autopilot,
+    autopilotView,
+    autopilotQueue: [],
   };
 }
 
