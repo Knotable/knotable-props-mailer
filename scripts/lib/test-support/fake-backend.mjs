@@ -50,6 +50,13 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
   const tables = { app_settings: [], emails: [], mail_queue: [], list_members: [], provider_events: [] };
   // Extra RPCs for running the Next.js app against this fake (lenient mode).
   const rpcHandlers = {
+    get_email_queue_analytics_metric: ({ p_email_id }) => [{
+      sent: tables.mail_queue.filter((row) => row.email_id === p_email_id && row.status === "succeeded").length,
+    }],
+    get_email_provider_analytics_metric: ({ p_email_id, p_event_type }) => {
+      const events = tables.provider_events.filter((row) => row.email_id === p_email_id && row.event_type === p_event_type);
+      return [{ unique_recipients: new Set(events.map((row) => row.recipient ?? row.message_id)).size, event_count: events.length }];
+    },
     get_mailer_runtime_limits: () => {
       const dayMs = 24 * 3_600_000;
       const succeeded = tables.mail_queue.filter((row) => row.status === "succeeded");

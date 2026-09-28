@@ -53,6 +53,8 @@ export type AutopilotRecord = {
   quota?: { max24HourSend?: number; sentLast24Hours?: number; available?: number; reserve?: number; checkedAt?: string };
   totals?: Record<string, number>;
   canaryPassed?: boolean;
+  reportSentAt?: string;
+  report?: { accepted: number; delivered: number; bounced: number; complained: number; opened: number; clicked: number; at?: string };
   canary?: { recipients: number; sent: number } | null;
   deliverability?: {
     accepted: number;

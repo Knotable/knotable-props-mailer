@@ -205,3 +205,24 @@ export function sendWindowStatus(nowMs, window) {
   // Round to the minute; the worker re-checks, so DST edges self-correct.
   return { open: false, nextOpenAt: new Date(Math.ceil((nowMs + minutesUntil * 60_000) / 60_000) * 60_000).toISOString() };
 }
+
+// Results report sent once, a day after a campaign completes, when provider
+// events (deliveries, bounces, opens, clicks) have mostly arrived.
+export function isReportDue(record, nowMs, delayMs = 24 * 3_600_000) {
+  if (record?.state !== "complete" || record.reportSentAt) return false;
+  const completed = Date.parse(record.completedAt ?? "");
+  return Number.isFinite(completed) && nowMs - completed >= delayMs;
+}
+
+const pct = (part, whole, digits = 1) => (whole > 0 ? `${((part / whole) * 100).toFixed(digits)}%` : "—");
+
+export function formatResultsReport({ accepted, delivered, bounced, complained, opened, clicked }) {
+  return [
+    `Accepted by SES: ${accepted.toLocaleString()}`,
+    `Delivered: ${delivered.toLocaleString()} (${pct(delivered, accepted)})`,
+    `Bounced: ${bounced.toLocaleString()} (${pct(bounced, accepted)})`,
+    `Complaints: ${complained.toLocaleString()} (${pct(complained, accepted, 2)})`,
+    `Opened (unique): ${opened.toLocaleString()} (${pct(opened, delivered || accepted)} of delivered; Apple Mail privacy inflates opens)`,
+    `Clicked (unique): ${clicked.toLocaleString()} (${pct(clicked, delivered || accepted)} of delivered; ${pct(clicked, opened)} of openers)`,
+  ];
+}

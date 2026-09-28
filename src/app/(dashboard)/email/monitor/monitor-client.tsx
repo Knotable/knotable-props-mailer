@@ -486,7 +486,20 @@ function AutopilotPanel({ record, view, onPause }: { record: AutopilotRecord; vi
           </p>
         )}
         {!terminal && record.nextCheckAt && <p>Next automatic check: {record.nextCheckAt.replace("T", " ").slice(0, 16)} UTC</p>}
-        {record.state === "complete" && record.completedAt && <p>Finished {record.completedAt.replace("T", " ").slice(0, 16)} UTC</p>}
+        {record.state === "complete" && record.completedAt && (
+          <p>
+            Finished {record.completedAt.replace("T", " ").slice(0, 16)} UTC
+            {record.report ? "" : " · results report emails ~24h after finishing"}
+          </p>
+        )}
+        {record.report && (
+          <p className="sm:col-span-2">
+            24h results: delivered {formatPercent(record.report.delivered, record.report.accepted)} · bounced{" "}
+            {formatPercent(record.report.bounced, record.report.accepted)} · complaints {formatPercent(record.report.complained, record.report.accepted, 2)} ·
+            opened {formatPercent(record.report.opened, record.report.delivered || record.report.accepted)} · clicked{" "}
+            {formatPercent(record.report.clicked, record.report.delivered || record.report.accepted)}
+          </p>
+        )}
         {record.state === "blocked" && <p>Fix the reason above, then press Send on the Queue page to re-approve.</p>}
       </div>
     </div>

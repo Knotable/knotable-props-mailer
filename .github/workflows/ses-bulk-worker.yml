@@ -51,6 +51,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SES_REPORT_DELAY_HOURS: ${{ vars.SES_REPORT_DELAY_HOURS || '24' }}
         run: node scripts/autopilot-probe.mjs
 
   drain:
@@ -82,6 +83,7 @@ jobs:
       SES_BREAKER_MAX_HARD_BOUNCE_RATE: ${{ vars.SES_BREAKER_MAX_HARD_BOUNCE_RATE || '0.08' }}
       SES_BREAKER_MAX_COMPLAINT_RATE: ${{ vars.SES_BREAKER_MAX_COMPLAINT_RATE || '0.003' }}
       SES_SEND_WINDOW: ${{ vars.SES_SEND_WINDOW }}
+      SES_REPORT_DELAY_HOURS: ${{ vars.SES_REPORT_DELAY_HOURS || '24' }}
       SES_WORKER_MAX_RUNTIME_MINUTES: "330"
       WORKER_MODE: ${{ inputs.mode || 'autopilot' }}
       WORKER_EMAIL_ID: ${{ inputs.email_id }}

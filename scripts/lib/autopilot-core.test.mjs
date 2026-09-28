@@ -147,3 +147,22 @@ describe("send windows", () => {
     expect(sendWindowStatus(Date.parse("2026-09-28T12:00:00Z"), overnight).nextOpenAt).toBe("2026-09-28T22:00:00.000Z");
   });
 });
+
+describe("results report", () => {
+  it("is due once, a day after completion", async () => {
+    const { isReportDue } = await import("./autopilot-core.mjs");
+    const completedAt = "2026-09-27T10:00:00Z";
+    expect(isReportDue({ state: "complete", completedAt }, Date.parse("2026-09-28T09:00:00Z"))).toBe(false);
+    expect(isReportDue({ state: "complete", completedAt }, Date.parse("2026-09-28T10:00:00Z"))).toBe(true);
+    expect(isReportDue({ state: "complete", completedAt, reportSentAt: "x" }, Date.parse("2026-09-29T10:00:00Z"))).toBe(false);
+    expect(isReportDue({ state: "blocked", completedAt }, Date.parse("2026-09-29T10:00:00Z"))).toBe(false);
+  });
+
+  it("formats rates against sensible denominators", async () => {
+    const { formatResultsReport } = await import("./autopilot-core.mjs");
+    const lines = formatResultsReport({ accepted: 1_000, delivered: 980, bounced: 20, complained: 1, opened: 490, clicked: 98 });
+    expect(lines).toContain("Delivered: 980 (98.0%)");
+    expect(lines).toContain("Complaints: 1 (0.10%)");
+    expect(lines.find((line) => line.startsWith("Clicked"))).toContain("10.0% of delivered; 20.0% of openers");
+  });
+});

@@ -283,6 +283,22 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(recordFor(email.id)).toMatchObject({ state: "complete", eventsBlindNotified: true });
   });
 
+  it("emails a results report once when it falls due", async () => {
+    backend.ses.emitDeliveries = true;
+    backend.ses.bounceEvery = 10;
+    const email = seedCampaign({ recipients: 50 });
+    const first = await runWorker(["--mode", "autopilot"], { SES_REPORT_DELAY_HOURS: "0" });
+    expect(first.code, first.stderr).toBe(0);
+    const subjects = backend.ses.notices.map((notice) => notice.Content.Simple.Subject.Data);
+    expect(subjects).toEqual(["[Props Mailer] Sent: Autumn update", "[Props Mailer] Results: Autumn update"]);
+    const body = backend.ses.notices[1].Content.Simple.Body.Text.Data;
+    expect(body).toContain("Delivered: 50 (100.0%)");
+    expect(body).toContain("Bounced: 5 (10.0%)");
+    expect(recordFor(email.id).report).toMatchObject({ accepted: 50, delivered: 50, bounced: 5 });
+    await runWorker(["--mode", "autopilot"], { SES_REPORT_DELAY_HOURS: "0" });
+    expect(backend.ses.notices).toHaveLength(2);
+  });
+
   it("stays quiet when delivery events flow", async () => {
     backend.ses.emitDeliveries = true;
     seedCampaign({ recipients: 1_200 });

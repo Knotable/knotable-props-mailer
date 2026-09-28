@@ -43,6 +43,8 @@ import {
   estimateEtaSeconds,
   evaluateDeliverability,
   formatDuration,
+  formatResultsReport,
+  isReportDue,
   lateSuppressedIds,
   orderDueRecords,
   parseSendWindow,
@@ -100,6 +102,7 @@ const config = {
     maxComplaintRate: numberEnv("SES_BREAKER_MAX_COMPLAINT_RATE", 0.003),
   },
   sendWindow: parseSendWindow(process.env.SES_SEND_WINDOW),
+  reportDelayMs: Math.max(0, numberEnv("SES_REPORT_DELAY_HOURS", 24)) * 3_600_000,
   blindAfterAccepted: 1_000,
   operatorEmail: process.env.SES_OPERATOR_EMAIL || "a@sarva.co",
   notifyFrom: process.env.SES_NOTIFY_FROM || "",
@@ -1224,6 +1227,49 @@ async function manualSend(emailId) {
   return runCampaignSafely(record);
 }
 
+async function campaignResults(emailId) {
+  const queueRows = await unwrap("queue analytics")(supabase.rpc("get_email_queue_analytics_metric", { p_email_id: emailId }));
+  const metrics = { accepted: Number(queueRows?.[0]?.sent ?? 0) };
+  for (const metric of ["delivered", "bounced", "complained", "opened", "clicked"]) {
+    const rows = await unwrap(`${metric} analytics`)(supabase.rpc("get_email_provider_analytics_metric", { p_email_id: emailId, p_event_type: metric }));
+    metrics[metric] = Number(rows?.[0]?.unique_recipients ?? 0);
+  }
+  return metrics;
+}
+
+// Terminal records are outside patchRecord's active-state guard; write the
+// report fields conditionally on this exact completed approval.
+async function markReported(record, patch) {
+  const current = await readRecord(record.emailId).catch(() => null);
+  if (!current || current.approvalId !== record.approvalId || current.state !== "complete" || current.reportSentAt) return false;
+  const next = { ...current, ...patch, updatedAt: nowIso() };
+  const { data, error } = await supabase.from("app_settings").update({ value: next, updated_at: next.updatedAt })
+    .eq("key", autopilotKey(record.emailId)).eq("value->>approvalId", record.approvalId).eq("value->>state", "complete")
+    .select("key");
+  return !error && Boolean(data?.length);
+}
+
+async function sendDueReports(records) {
+  const due = records.filter((record) => isReportDue(record, Date.now(), config.reportDelayMs)).slice(0, 5);
+  for (const record of due) {
+    try {
+      const email = await loadEmail(record.emailId);
+      if (!email) continue;
+      const results = await campaignResults(record.emailId);
+      // Claim the report first so a crash can never send it twice.
+      if (!(await markReported(record, { reportSentAt: nowIso(), report: { ...results, at: nowIso() } }))) continue;
+      await notifyOperator(email, `Results: ${email.subject}`, [
+        `Results ${Math.round(config.reportDelayMs / 3_600_000)}h after the send finished:`,
+        ...formatResultsReport(results),
+        `Campaign: ${record.emailId}`,
+      ]);
+      summaryLine(`- REPORT **${email.subject}** — delivered ${results.delivered}, opened ${results.opened}, clicked ${results.clicked}`);
+    } catch (error) {
+      console.warn(`results report for ${record.emailId} failed (${conciseError(error)}); will retry next run`);
+    }
+  }
+}
+
 async function autopilot() {
   const processed = new Set();
   const outcomes = [];
@@ -1242,6 +1288,7 @@ async function autopilot() {
     // SES quota is account-wide: when one campaign waits, every campaign waits.
     if (outcome === "quota" || outcome === "deadline") break;
   }
+  if (!emailIdArg) await sendDueReports(await listRecords());
   return outcomes;
 }
 
