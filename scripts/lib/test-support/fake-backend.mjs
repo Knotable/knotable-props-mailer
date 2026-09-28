@@ -23,6 +23,7 @@ function parseInList(raw) {
 }
 
 function matches(row, column, expression) {
+  if (expression.startsWith("not.")) return !matches(row, column, expression.slice(4));
   const dot = expression.indexOf(".");
   const op = expression.slice(0, dot);
   const raw = expression.slice(dot + 1);

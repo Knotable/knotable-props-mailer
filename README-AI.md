@@ -39,11 +39,13 @@ States in the approval record: `approved` → `running` → (`waiting_quota` | `
 
 **Blind-breaker alarm.** If 1,000+ recipients are accepted since approval and no SES Delivery events have reached the app, the worker emails you once and the Monitor shows a red warning: sending continues, but bounce/complaint protection cannot see anything until the SNS → webhook path is fixed.
 
+**Retry failed never resends ambiguous rows.** The Sends page's requeue of permanent failures skips rows parked as `ambiguous_claim:` (SES may already have delivered them) and moves the campaign back to the Queue page so a normal Send approval drives the retry.
+
 **Test sends no longer finish the draft.** Composer "Send Test" used to mark a saved draft `sent`, which removed it from the Queue page; it now leaves the draft alone (direct sends to typed recipients still complete the email).
 
 **24-hour results email.** A day after a campaign completes (repository variable `SES_REPORT_DELAY_HOURS`, default 24), the scheduled worker emails a results report — delivered, bounced, complaints, unique opens and clicks with rates — using the same `get_email_*_analytics_metric` RPCs as the Analytics page, and stores it on the approval record so the Monitor shows it. The report is claimed before it is sent, so it can never be sent twice.
 
-**Controls where you look.** The Monitor has **Pause send** next to the live status. Queue rows have **Duplicate** (new draft from this email) and, for legacy campaigns stuck in queued/sending with nothing left to send, **Mark as sent** (refused while anything is unsent or in flight).
+**Controls where you look.** The Monitor has **Pause send** next to the live status. Queue rows have **Test to me** (emails you the exact queued content, personalized as the first unsent recipient, subject prefixed `[TEST]`), **Duplicate** (new draft from this email) and, for legacy campaigns stuck in queued/sending with nothing left to send, **Mark as sent** (refused while anything is unsent or in flight).
 
 **Scheduled sends and estimates.** When Send is armed, the Queue row shows the estimated send time (minutes, or how many quota windows) and an optional "Send later" picker in the operator's local time. A scheduled approval stays `approved` with `startAt`/`nextCheckAt` in the future and shows **Scheduled**; the worker ignores it until then. Pause cancels it.
 

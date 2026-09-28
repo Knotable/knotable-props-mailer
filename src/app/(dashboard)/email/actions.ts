@@ -1483,14 +1483,17 @@ export async function requeueDeadAction(formData: FormData) {
 
   const supabase = getSupabaseAdmin();
 
+  // Rows parked as ambiguous_claim may already have been delivered (SES never
+  // confirmed either way); retrying them risks duplicate email.
   const { data: dead } = await supabase
     .from("mail_queue")
     .select("id")
     .eq("email_id", emailId)
     .eq("status", "dead")
+    .not("last_error", "like", "ambiguous_claim:%")
     .limit(500);
 
-  if (!dead || dead.length === 0) throw new Error("No dead items found for this email");
+  if (!dead || dead.length === 0) throw new Error("No retryable failed recipients for this email (ambiguous sends are never retried).");
 
   const ids = dead.map((r) => r.id);
   const { error } = await supabase
@@ -1506,6 +1509,9 @@ export async function requeueDeadAction(formData: FormData) {
     .in("id", ids);
 
   if (error) throw error;
+
+  // Surface the retry on the Queue page, where Send hands it to autopilot.
+  await supabase.from("emails").update({ status: "queued" }).eq("id", emailId).in("status", ["sent", "failed", "queued"]);
 
   logAudit({
     userId,
@@ -1638,5 +1644,52 @@ export async function markCampaignSentAction(formData: FormData): Promise<{ erro
     return {};
   } catch (err) {
     return { error: toActionErrorMessage(err, "Unable to mark this campaign sent.") };
+  }
+}
+
+// Sends the queued campaign's exact content to the signed-in operator,
+// personalized with the first unsent recipient's merge data, so the approval
+// is based on what recipients will actually see.
+export async function sendQueuedTestAction(formData: FormData): Promise<{ error?: string; sentTo?: string; personalizedAs?: string | null }> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
+    const supabase = getSupabaseAdmin();
+    const { data: email, error: emailError } = await supabase
+      .from("emails")
+      .select("from_address, reply_to, subject, html, text, tags, campaigns")
+      .eq("id", parsed.data.id)
+      .maybeSingle();
+    if (emailError) return { error: emailError.message };
+    if (!email) return { error: "Email not found" };
+    const { data: firstRecipient } = await supabase
+      .from("mail_queue")
+      .select("payload")
+      .eq("email_id", parsed.data.id)
+      .eq("status", "pending")
+      .not("list_id", "is", null)
+      .limit(1)
+      .maybeSingle();
+    const payload = (firstRecipient?.payload ?? {}) as { to?: string; toName?: string; merge?: Record<string, string> };
+    const personalized = personalizeEmailContent(
+      { subject: email.subject, html: email.html, text: email.text ?? undefined },
+      buildRecipientPersonalization({ email: payload.to ?? auth.email, displayName: payload.toName, mergeData: payload.merge }),
+    );
+    await sendEmail({
+      from: email.from_address,
+      replyTo: email.reply_to ?? undefined,
+      to: [auth.email],
+      subject: `[TEST] ${personalized.subject}`,
+      html: personalized.html,
+      text: personalized.text,
+      tags: email.tags ?? undefined,
+      campaigns: email.campaigns ?? undefined,
+      testMode: true,
+    });
+    logAudit({ userId: auth.userId, action: "campaign.queued_test_sent", entity: "emails", entityId: parsed.data.id, payload: { personalizedAs: payload.to ?? null } }).catch(console.error);
+    return { sentTo: auth.email, personalizedAs: payload.to ?? null };
+  } catch (err) {
+    return { error: toActionErrorMessage(err, "Test send failed.") };
   }
 }

@@ -9,6 +9,7 @@ import {
   markCampaignSentAction,
   pauseQueuedEmailAction,
   sendQueuedEmailAndRedirectAction,
+  sendQueuedTestAction,
 } from "../actions";
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 import { ProgressStatus } from "@/components/progress-status";
@@ -111,6 +112,19 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
     });
   };
 
+  const handleTestToMe = () => {
+    runAction("Sending you a personalized test of this exact content...", async () => {
+      const fd = new FormData();
+      fd.set("id", id);
+      const res = await sendQueuedTestAction(fd);
+      if (res.error) throw new Error(res.error);
+      setResult({
+        ok: true,
+        message: `Test sent to ${res.sentTo}${res.personalizedAs ? `, personalized as ${res.personalizedAs}` : ""}.`,
+      });
+    });
+  };
+
   const handleMarkSent = () => {
     runAction("Closing out this campaign...", async () => {
       const fd = new FormData();
@@ -150,6 +164,17 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
             >
               {working ? "Working..." : "Edit"}
             </button>
+            {canSend && unsent > 0 && (
+              <button
+                type="button"
+                onClick={handleTestToMe}
+                disabled={working}
+                title="Email yourself this exact content, personalized as the first recipient"
+                className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {working ? "Working..." : "Test to me"}
+              </button>
+            )}
             {canSend && finishedButOpen && (
               <button
                 type="button"
