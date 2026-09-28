@@ -261,6 +261,71 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(count(rowsFor(email.id), "pending")).toBe(3);
   });
 
+  function seedListCampaign({ sendAfterPrepare, approvedMaxRecipients = 1_533 }) {
+    const email = seedCampaign({ recipients: 0, status: "queued", approve: false });
+    const listA = crypto.randomUUID();
+    const listB = crypto.randomUUID();
+    const member = (listId, address, status = "active", metadata = {}) =>
+      backend.tables.list_members.push({ id: crypto.randomUUID(), list_id: listId, email: address, status, metadata });
+    for (let index = 0; index < 1_500; index += 1) member(listA, `a${String(index).padStart(4, "0")}@example.test`, "active", { name: `A ${index}` });
+    for (let index = 0; index < 10; index += 1) member(listB, `a${String(index).padStart(4, "0")}@example.test`);
+    for (let index = 0; index < 20; index += 1) member(listB, `b${index}@example.test`);
+    member(listB, "reminder@fut.io");
+    member(listB, "gone@example.test", "unsubscribed");
+    member(listB, "excluded@example.test");
+    backend.tables.app_settings.push({
+      key: autopilotKey(email.id),
+      value: {
+        emailId: email.id,
+        approvalId: crypto.randomUUID(),
+        approvedAt: new Date().toISOString(),
+        approvedMaxRecipients,
+        audience: { listIds: [listA, listB], excludeRecipients: ["Excluded@example.test"] },
+        sendAfterPrepare,
+        contentSha256: campaignContentDigest(email),
+        subject: email.subject,
+        state: "preparing",
+      },
+    });
+    return email;
+  }
+
+  it("prepares a large multi-list audience in the cloud and sends it, deduplicated", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: true });
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    const rows = rowsFor(email.id);
+    // 1,500 + 20 unique list members + sender copy; overlap, blocked, unsubscribed, and excluded are skipped.
+    expect(rows).toHaveLength(1_521);
+    expect(count(rows, "succeeded")).toBe(1_521);
+    const destinations = sentDestinations();
+    expect(new Set(destinations).size).toBe(1_521);
+    expect(destinations).not.toContain("reminder@fut.io");
+    expect(destinations).not.toContain("gone@example.test");
+    expect(destinations).not.toContain("excluded@example.test");
+    expect(destinations).toContain("sender@example.test");
+    expect(backend.tables.emails.find((row) => row.id === email.id).status).toBe("sent");
+    expect(recordFor(email.id).state).toBe("complete");
+  });
+
+  it("prepares without sending when the operator only queued", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: false });
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(count(rowsFor(email.id), "pending")).toBe(1_521);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    expect(recordFor(email.id), recordFor(email.id).message).toMatchObject({ state: "prepared", approvedRecipients: 1_521 });
+    expect(backend.tables.emails.find((row) => row.id === email.id).status).toBe("queued");
+  });
+
+  it("blocks when preparation yields more recipients than approved", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: true, approvedMaxRecipients: 100 });
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    expect(recordFor(email.id).state).toBe("blocked");
+  });
+
   it("drains several approved campaigns oldest-approval first in one run", async () => {
     const first = seedCampaign({ recipients: 5 });
     const second = seedCampaign({ recipients: 5 });

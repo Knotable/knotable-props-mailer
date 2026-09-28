@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 export const AUTOPILOT_KEY_PREFIX = "send_autopilot:";
 export const WORKER_LEASE_KEY = "send_worker_lease";
-export const ACTIVE_STATES = ["approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"];
+export const ACTIVE_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"];
 export const AMBIGUOUS_CLAIM_PREFIX = "ambiguous_claim:";
 
 export const autopilotKey = (emailId) => `${AUTOPILOT_KEY_PREFIX}${emailId}`;
@@ -30,7 +30,7 @@ export function isHeartbeatFresh(record, nowMs, staleMs = 3 * 60_000) {
 // it, and any deliberate back-off (quota or reconciliation wait) has elapsed.
 export function isRecordDue(record, nowMs, staleMs) {
   if (!isActiveRecord(record)) return false;
-  if (record.state === "running" && isHeartbeatFresh(record, nowMs, staleMs)) return false;
+  if (["running", "preparing"].includes(record.state) && isHeartbeatFresh(record, nowMs, staleMs)) return false;
   const nextCheckAt = Date.parse(record.nextCheckAt ?? "");
   return !Number.isFinite(nextCheckAt) || nextCheckAt <= nowMs;
 }

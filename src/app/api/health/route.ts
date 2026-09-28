@@ -511,7 +511,7 @@ export async function GET() {
     const staleMs = 20 * 60_000;
     const lastWorkerActivity = Math.max(0, ...records.map((record) => Date.parse(record.heartbeatAt ?? "") || 0));
     const orphaned = records.filter((record) => {
-      if (!["approved", "running"].includes(record.state)) return false;
+      if (!["preparing", "approved", "running"].includes(record.state)) return false;
       const since = Date.parse(record.heartbeatAt ?? record.approvedAt);
       return Number.isFinite(since) && Date.now() - since > staleMs && Date.now() - lastWorkerActivity > staleMs;
     });

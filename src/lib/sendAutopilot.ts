@@ -4,12 +4,13 @@ import type { Json } from "@/supabase/types";
 
 // Shared contract with scripts/ses-bulk-worker.mjs (scripts/lib/autopilot-core.mjs).
 export const AUTOPILOT_KEY_PREFIX = "send_autopilot:";
-export const ACTIVE_AUTOPILOT_STATES = ["approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"] as const;
+export const ACTIVE_AUTOPILOT_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"] as const;
 export const HEARTBEAT_STALE_MS = 3 * 60_000;
 export const AUTOPILOT_SCHEDULE_MINUTES = 5;
 
 export type AutopilotState =
   | (typeof ACTIVE_AUTOPILOT_STATES)[number]
+  | "prepared"
   | "paused"
   | "canceled"
   | "blocked"
@@ -21,6 +22,9 @@ export type AutopilotRecord = {
   approvedAt: string;
   approvedBy?: string;
   approvedRecipients?: number;
+  approvedMaxRecipients?: number;
+  audience?: { listIds: string[]; excludeRecipients?: string[] };
+  sendAfterPrepare?: boolean;
   contentSha256?: string;
   subject?: string;
   source?: string;
@@ -34,6 +38,7 @@ export type AutopilotRecord = {
   errorCount?: number;
   run?: { url?: string | null; startedAt?: string };
   progress?: {
+    prepared?: number;
     acceptedThisRun?: number;
     failedThisRun?: number;
     remainingEstimate?: number;
@@ -127,7 +132,10 @@ export async function writeAutopilotRecord(record: AutopilotRecord) {
 export async function setAutopilotState(emailId: string, state: "paused" | "canceled", message: string) {
   const record = await getAutopilotRecord(emailId);
   if (!record || !isActiveAutopilot(record)) return false;
-  await writeAutopilotRecord({ ...record, state, message, nextCheckAt: null });
+  const detail = record.state === "preparing"
+    ? "Preparation stopped before the recipient list was complete. Queue it again from the Composer to finish."
+    : message;
+  await writeAutopilotRecord({ ...record, state, message: detail, nextCheckAt: null });
   return true;
 }
 
@@ -174,6 +182,12 @@ export function describeAutopilot(record: AutopilotRecord | null | undefined, no
   const live = Number.isFinite(heartbeatMs) && nowMs - heartbeatMs < HEARTBEAT_STALE_MS;
   const detail = record.message ?? "";
   switch (record.state) {
+    case "preparing":
+      return live
+        ? { label: "Preparing recipients", tone: "blue", detail, live }
+        : { label: "Preparing recipients", tone: "blue", detail: detail || `Waiting for a cloud worker to build the recipient queue (within ${AUTOPILOT_SCHEDULE_MINUTES} minutes).`, live };
+    case "prepared":
+      return { label: "Prepared", tone: "slate", detail: detail || "Recipients are queued. Review, then press Send.", live: false };
     case "approved":
       return { label: "Starting", tone: "blue", detail: detail || `Approved; a worker starts within ${AUTOPILOT_SCHEDULE_MINUTES} minutes.`, live };
     case "running":

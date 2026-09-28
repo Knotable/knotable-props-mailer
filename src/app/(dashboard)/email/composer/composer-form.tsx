@@ -24,6 +24,7 @@ import {
   sendTestAction,
   queueCampaignAction,
   sendQueuedEmailAction,
+  prepareInCloudAction,
   importOneTimeAudienceAction,
   type QueueCampaignConfirm,
   type QueueCampaignOk,
@@ -65,6 +66,7 @@ type Props = {
 
 type AutosaveState = "idle" | "pending" | "saving" | "saved" | "error";
 type QueueWorkflowTarget = "queue" | "sendNow";
+const CLOUD_PREP_THRESHOLD = 5_000;
 type WarningGroup = QueueCampaignConfirm["warningGroups"][number];
 
 function isOneTimeList(list: List | null) {
@@ -358,6 +360,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
       }
 
       let lastOk: QueueCampaignOk | null = null;
+      let needsCloudPrep = false;
 
       for (const selectedList of selectedLists) {
         let offset = 0;
@@ -399,8 +402,33 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         });
 
         if (!res.hasMore || !res.nextOffset) break;
+        // The first page already ran the duplicate check; large lists are
+        // finished by the cloud worker so this tab can close.
+        if (res.totalRecipients > CLOUD_PREP_THRESHOLD) {
+          needsCloudPrep = true;
+          break;
+        }
         offset = res.nextOffset;
         }
+      }
+
+      if (lastOk?.ok && needsCloudPrep) {
+        setActionStatus("Handing the rest of the list to the cloud worker...");
+        const prepFd = new FormData();
+        prepFd.set("emailId", emailId);
+        prepFd.set("listIds", JSON.stringify(selectedLists.map((list) => list.id)));
+        prepFd.set("excludeRecipients", JSON.stringify(excludeRecipients ?? []));
+        prepFd.set("sendAfterPrepare", target === "sendNow" ? "true" : "false");
+        const prep = await prepareInCloudAction(prepFd);
+        if (prep.error) throw new Error(prep.error);
+        const notice = target === "sendNow"
+          ? `Approved up to ${prep.maxRecipients?.toLocaleString() ?? ""} recipients. The cloud worker builds the queue, then sends. ${prep.detail ?? ""} You can close this tab.`
+          : `Preparing up to ${prep.maxRecipients?.toLocaleString() ?? ""} recipients in the cloud. ${prep.detail ?? ""} Press Send on the Queue page once it shows Prepared. You can close this tab.`;
+        setBanner({ ok: true, message: notice });
+        router.push(target === "sendNow"
+          ? `/email/monitor?emailId=${emailId}&notice=${encodeURIComponent(notice)}`
+          : `/email/schedule?notice=${encodeURIComponent(notice)}`);
+        return;
       }
 
       if (lastOk?.ok) {

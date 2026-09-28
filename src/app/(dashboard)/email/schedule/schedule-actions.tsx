@@ -28,9 +28,10 @@ type RowProps = {
   canSend: boolean;
   unsent: number;
   autopilotActive: boolean;
+  preparing?: boolean;
 };
 
-export function ScheduleActions({ id, subject, status, canSend, unsent, autopilotActive }: RowProps) {
+export function ScheduleActions({ id, subject, status, canSend, unsent, autopilotActive, preparing = false }: RowProps) {
   const router = useRouter();
   const [working, startWorking] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -106,7 +107,7 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
   const isQueued = status === "queued" || status === "sending";
   // "sending" without an active approval is a legacy/stalled state: nothing is
   // draining it, so offer Send to hand it to autopilot.
-  const canStart = canSend && unsent > 0 && (status === "queued" || (status === "sending" && !autopilotActive));
+  const canStart = canSend && unsent > 0 && !preparing && (status === "queued" || (status === "sending" && !autopilotActive));
 
   return (
     <div className="flex flex-col items-end gap-2">
@@ -121,7 +122,7 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
             >
               {working ? "Working..." : "Edit"}
             </button>
-            {canSend && status === "sending" && (
+            {canSend && (status === "sending" || preparing) && (
               <button
                 type="button"
                 onClick={handlePause}

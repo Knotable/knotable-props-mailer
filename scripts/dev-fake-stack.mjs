@@ -15,7 +15,15 @@ const bypassPassword = process.env.FAKE_BYPASS_PASSWORD ?? "local-demo-bypass";
 
 backend.tables.profiles = [{ id: "00000000-0000-0000-0000-000000000001", email: "a@sarva.co", role: "admin", can_send: true }];
 const list = { id: crypto.randomUUID(), owner_id: "00000000-0000-0000-0000-000000000001", name: "Demo newsletter", address: "demo@props.local" };
-backend.tables.lists = [list];
+const bigList = { id: crypto.randomUUID(), owner_id: "00000000-0000-0000-0000-000000000001", name: "Big demo list (6,000)", address: "big-demo@props.local" };
+backend.tables.lists = [list, bigList];
+backend.tables.list_members = Array.from({ length: 6_000 }, (_, index) => ({
+  id: crypto.randomUUID(),
+  list_id: bigList.id,
+  email: `member${String(index).padStart(5, "0")}@example.test`,
+  status: "active",
+  metadata: { name: `Member ${index}` },
+}));
 
 function campaign(subject, status, recipients) {
   const email = {
@@ -52,7 +60,7 @@ function campaign(subject, status, recipients) {
 
 campaign("October investor update", "queued", 250);
 campaign("Legacy stuck send", "sending", 40);
-campaign("Next month draft", "draft", 0);
+campaign("November founders dinner", "draft", 0);
 
 const url = await backend.start(port);
 const hmacKey = crypto.randomBytes(32).toString("hex");

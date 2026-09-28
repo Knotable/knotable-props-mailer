@@ -1,6 +1,6 @@
 'use server';
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -23,24 +23,12 @@ import {
   writeAutopilotRecord,
 } from "@/lib/sendAutopilot";
 import type { Json } from "@/supabase/types";
-
-/**
- * Stable deduplication hash for a queue row.
- * SHA-256(emailId:recipientEmail) — fits in a text column, unique per
- * (campaign, recipient) pair. The DB enforces uniqueness with
- * mail_queue_dedupe_hash_unique_idx, so queue creation can be safely retried.
- */
-function makeDedupeHash(emailId: string, recipientEmail: string): string {
-  return createHash("sha256")
-    .update(`${emailId}:${recipientEmail.toLowerCase().trim()}`)
-    .digest("hex");
-}
-
-function makeSenderCopyDedupeHash(emailId: string, senderEmail: string): string {
-  return createHash("sha256")
-    .update(`${emailId}:sender-copy:${senderEmail.toLowerCase().trim()}`)
-    .digest("hex");
-}
+import {
+  QUEUE_HOLD_AT,
+  buildMemberQueueRow,
+  buildSenderCopyQueueRow,
+  extractEmailAddress,
+} from "../../../../scripts/lib/queue-rows.mjs";
 
 const SaveDraftSchema = z.object({
   id: z.string().uuid().optional().nullable(),
@@ -126,7 +114,6 @@ type DraftPayload = {
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
 
 const parseRecipients = (input: string) =>
   input
@@ -320,14 +307,6 @@ export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm | Queue
 const normalizeEmailAddress = (value: string | null | undefined) =>
   value?.trim().toLowerCase() ?? "";
 
-function extractEmailAddress(value: string | null | undefined) {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed) return null;
-
-  const angleMatch = trimmed.match(/<([^<>@\s]+@[^<>@\s]+\.[^<>@\s]+)>/);
-  const candidate = (angleMatch?.[1] ?? trimmed).trim().toLowerCase();
-  return EMAIL_RE.test(candidate) ? candidate : null;
-}
 
 type WarningAccumulator = {
   key: string;
@@ -369,55 +348,6 @@ async function loadActiveListMemberPage(
 
   if (error) throw error;
   return data ?? [];
-}
-
-function listMemberToName(metadata: Json | null | undefined) {
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
-
-  const record = metadata as Record<string, unknown>;
-  for (const key of ["toName", "display_name", "displayName", "full_name", "fullName"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-
-  const name = typeof record.name === "string" ? record.name.trim() : "";
-  const rank =
-    typeof record.rank === "number" || typeof record.rank === "string"
-      ? String(record.rank).trim()
-      : "";
-
-  if (name && rank) return `${name} #${rank}`;
-  return name || undefined;
-}
-
-function jsonRecord(value: Json | null | undefined): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
-}
-
-function listMemberToMergeData(metadata: Json | null | undefined): Record<string, string> {
-  const record = jsonRecord(metadata);
-  const directMerge = jsonRecord(record.merge as Json | null | undefined);
-  const mergeData = jsonRecord(record.merge_data as Json | null | undefined);
-  const source = Object.keys(directMerge).length > 0 ? directMerge : mergeData;
-  const entries = Object.entries(source).flatMap(([key, value]) => {
-    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return [];
-    const text = String(value).trim();
-    if (!key.trim() || !text) return [];
-    return [[key, text]];
-  });
-
-  const name = listMemberToName(metadata);
-  if (name && !entries.some(([key]) => key === "name")) entries.push(["name", name]);
-
-  const firstName = typeof record.first_name === "string"
-    ? record.first_name.trim()
-    : typeof record.firstName === "string"
-      ? record.firstName.trim()
-      : "";
-  if (firstName && !entries.some(([key]) => key === "first_name")) entries.push(["first_name", firstName]);
-
-  return Object.fromEntries(entries);
 }
 
 export async function importOneTimeAudienceAction(formData: FormData) {
@@ -809,54 +739,16 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
 
   // Prebuild the queue, but keep everything on hold until the operator hits
   // "Send Now" for this email.
-  const queueRows: {
-    email_id: string;
-    list_id: string | null;
-    payload: Json;
-    status: "pending";
-    available_at: string;
-    send_date: string | null;
-    campaign_label: string;
-    dedupe_hash: string;
-  }[] = [];
+  const queueRows: Array<ReturnType<typeof buildMemberQueueRow> | ReturnType<typeof buildSenderCopyQueueRow>> = [];
 
   for (const member of membersToQueue) {
-    queueRows.push({
-      email_id: emailId,
-      list_id: listId,
-      payload: {
-        to: member.email,
-        toName: listMemberToName(member.metadata),
-        merge: listMemberToMergeData(member.metadata),
-        tags: email.tags ?? [],
-        campaigns: email.campaigns ?? [],
-      },
-      status: "pending",
-      available_at: QUEUE_HOLD_AT,
-      send_date: null,
-      campaign_label: campaignLabel,
-      dedupe_hash: makeDedupeHash(emailId, member.email),
-    });
+    queueRows.push(buildMemberQueueRow({ emailId, listId, email, member, campaignLabel }));
   }
 
   if (offset === 0) {
     const senderEmail = extractEmailAddress(email.from_address);
     if (senderEmail && !isBlockedRecipientEmail(senderEmail)) {
-      queueRows.push({
-        email_id: emailId,
-        list_id: null,
-        payload: {
-          to: senderEmail,
-          subject: `[SENDER COPY] ${email.subject}`,
-          tags: email.tags ?? [],
-          campaigns: [...(email.campaigns ?? []), "sender-copy"],
-        },
-        status: "pending",
-        available_at: QUEUE_HOLD_AT,
-        send_date: null,
-        campaign_label: campaignLabel,
-        dedupe_hash: makeSenderCopyDedupeHash(emailId, senderEmail),
-      });
+      queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
     }
   }
 
@@ -1265,6 +1157,12 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
       { pendingDue: 0, pendingHeld: 0, processing: 0 },
     );
     const unsent = preflight.pendingDue + preflight.pendingHeld;
+    if (existing?.state === "preparing") {
+      return { error: "Recipients are still being prepared in the cloud. Send becomes available when preparation finishes." };
+    }
+    if (existing?.audience && existing.approvedRecipients === undefined && existing.state !== "complete") {
+      return { error: "Cloud preparation stopped before the recipient list was complete. Queue it again from the Composer to finish, then Send." };
+    }
     if (unsent === 0) return { error: "No unsent recipients remain for this email." };
 
     if (!isQueueReleaseConfirmed(id, formData.get("releaseConfirmation"))) {
@@ -1332,6 +1230,105 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
     return { recipients: unsent, dispatched: dispatch.dispatched, detail: dispatch.detail };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to send email" };
+  }
+}
+
+const CloudPrepareSchema = z.object({
+  emailId: z.string().uuid(),
+  listIds: z.array(z.string().uuid()).min(1).max(25),
+  excludeRecipients: z.array(z.string().max(320)).max(20_000).default([]),
+  sendAfterPrepare: z.boolean(),
+});
+
+export type CloudPrepareResult = {
+  error?: string;
+  maxRecipients?: number;
+  dispatched?: boolean;
+  detail?: string;
+};
+
+/**
+ * Hand queue preparation for large lists to the cloud worker instead of
+ * paging through them from the browser. The approval caps the result at the
+ * current active member count (+1 sender copy); the worker blocks if the
+ * prepared queue exceeds it. With sendAfterPrepare the worker sends
+ * immediately afterward, otherwise it stops at "prepared" for review.
+ */
+export async function prepareInCloudAction(formData: FormData): Promise<CloudPrepareResult> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parseJson = (key: string) => {
+      const raw = formData.get(key);
+      if (typeof raw !== "string" || !raw) return undefined;
+      try {
+        return JSON.parse(raw) as unknown;
+      } catch {
+        return undefined;
+      }
+    };
+    const parsed = CloudPrepareSchema.safeParse({
+      emailId: formData.get("emailId"),
+      listIds: parseJson("listIds"),
+      excludeRecipients: parseJson("excludeRecipients") ?? [],
+      sendAfterPrepare: formData.get("sendAfterPrepare") === "true",
+    });
+    if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+    const { emailId, sendAfterPrepare } = parsed.data;
+    const listIds = [...new Set(parsed.data.listIds)];
+    const supabase = getSupabaseAdmin();
+
+    const [{ data: email, error: emailError }, existing] = await Promise.all([
+      supabase.from("emails").select("status, subject, from_address, reply_to, html, text").eq("id", emailId).maybeSingle(),
+      getAutopilotRecord(emailId),
+    ]);
+    if (emailError) return { error: emailError.message };
+    if (!email) return { error: "Email not found" };
+    if (!["draft", "queued"].includes(email.status)) return { error: `Email is ${email.status}; only drafts or queued emails can be prepared.` };
+    if (existing && isActiveAutopilot(existing) && existing.state !== "preparing") {
+      return { error: "This email is already approved for sending. Pause it first." };
+    }
+    try {
+      assertSendReadySubject(email.subject ?? "");
+    } catch (error) {
+      return { error: toActionErrorMessage(error, "Subject is not send-ready.") };
+    }
+
+    const counts = await Promise.all(listIds.map((listId) => countActiveListMembers(supabase, listId)));
+    const maxRecipients = counts.reduce((sum, value) => sum + value, 0) + 1;
+
+    await writeAutopilotRecord({
+      emailId,
+      approvalId: randomUUID(),
+      approvedAt: new Date().toISOString(),
+      approvedBy: auth.email,
+      approvedMaxRecipients: maxRecipients,
+      audience: { listIds, excludeRecipients: parsed.data.excludeRecipients },
+      sendAfterPrepare,
+      contentSha256: campaignContentDigest(email),
+      subject: email.subject,
+      source: "app-cloud-prepare",
+      state: "preparing",
+      message: `Preparing up to ${maxRecipients.toLocaleString()} recipients in the cloud${sendAfterPrepare ? ", then sending" : ""}.`,
+      heartbeatAt: null,
+      nextCheckAt: null,
+    });
+    const { error: statusError } = await supabase.from("emails").update({ status: "queued" }).eq("id", emailId);
+    if (statusError) return { error: statusError.message };
+
+    const dispatch = await dispatchAutopilotWorker(emailId);
+    logAudit({
+      userId: auth.userId,
+      action: sendAfterPrepare ? "campaign.cloud_prepare_and_send" : "campaign.cloud_prepare",
+      entity: "emails",
+      entityId: emailId,
+      payload: { listIds, maxRecipients, excluded: parsed.data.excludeRecipients.length, dispatched: dispatch.dispatched },
+    }).catch(console.error);
+
+    revalidatePath("/email/schedule");
+    revalidatePath("/email/monitor");
+    return { maxRecipients, dispatched: dispatch.dispatched, detail: dispatch.detail };
+  } catch (err) {
+    return { error: toActionErrorMessage(err, "Unable to start cloud preparation.") };
   }
 }
 

@@ -47,7 +47,7 @@ function matches(row, column, expression) {
 const RESERVED = new Set(["select", "order", "limit", "on_conflict", "columns", "offset"]);
 
 export function createFakeBackend({ now = () => Date.now(), lenient = false } = {}) {
-  const tables = { app_settings: [], emails: [], mail_queue: [] };
+  const tables = { app_settings: [], emails: [], mail_queue: [], list_members: [] };
   // Extra RPCs for running the Next.js app against this fake (lenient mode).
   const rpcHandlers = {
     get_mailer_runtime_limits: () => {
@@ -206,17 +206,26 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
       const incoming = Array.isArray(payload) ? payload : [payload];
       const conflict = get("on_conflict");
       const merge = prefer.includes("resolution=merge-duplicates");
+      const ignore = prefer.includes("resolution=ignore-duplicates");
       const written = [];
+      const uniqueKeys = { app_settings: ["key"], mail_queue: ["id", "dedupe_hash"] }[table] ?? ["id"];
       for (const raw of incoming) {
         const row = structuredClone(raw);
-        const key = conflict ?? (table === "app_settings" ? "key" : "id");
-        const existing = tables[table].find((candidate) => candidate[key] === row[key] && row[key] !== undefined);
+        const keys = conflict ? [conflict] : uniqueKeys;
+        const existing = tables[table].find((candidate) => keys.some((key) => row[key] !== undefined && row[key] !== null && candidate[key] === row[key]));
         if (existing) {
+          if (ignore) continue;
           if (!merge) return send(response, 409, { code: "23505", message: "duplicate key" });
           Object.assign(existing, row);
           written.push(existing);
         } else {
           if (table !== "app_settings" && !row.id) row.id = crypto.randomUUID();
+          if (table === "mail_queue") {
+            const stamp = new Date(now()).toISOString();
+            for (const [column, value] of Object.entries({ attempts: 0, max_attempts: 5, locked_at: null, correlation_id: null, ses_message_id: null, last_error: null, created_at: stamp, updated_at: stamp })) {
+              if (row[column] === undefined) row[column] = value;
+            }
+          }
           tables[table].push(row);
           written.push(row);
         }
@@ -226,6 +235,12 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
         return send(response, 201, wantsObject ? projected[0] : projected);
       }
       return send(response, 201);
+    }
+    if (request.method === "DELETE") {
+      const doomed = new Set(filterRows(table, params));
+      tables[table] = tables[table].filter((row) => !doomed.has(row));
+      if (prefer.includes("return=representation")) return send(response, 200, project([...doomed], get("select")));
+      return send(response, 204);
     }
     return send(response, 405, { message: "method not allowed" });
   }

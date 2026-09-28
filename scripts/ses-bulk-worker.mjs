@@ -45,6 +45,7 @@ import {
   orderDueRecords,
   runUrlFromEnv,
 } from "./lib/autopilot-core.mjs";
+import { buildMemberQueueRow, buildSenderCopyQueueRow, extractEmailAddress } from "./lib/queue-rows.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -607,13 +608,125 @@ async function block(email, record, reason) {
   return "blocked";
 }
 
+// Builds held mail_queue rows for the approved lists in the cloud, so queueing
+// a large list never depends on a browser tab paging through it. Keyset
+// pagination on (list_id, email) keeps every page an index range scan.
+async function prepareQueue(record, email) {
+  const emailId = email.id;
+  const listIds = (record.audience?.listIds ?? []).filter((id) => uuidPattern.test(id));
+  if (!listIds.length) return { stop: await block(email, record, "Cloud preparation had no lists to read.") };
+  const excluded = new Set((record.audience?.excludeRecipients ?? []).map((value) => String(value).trim().toLowerCase()));
+  const campaignLabel = `${emailId}:${nowIso().slice(0, 10)}`;
+  const canceledSample = await unwrap("canceled sample")(
+    supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "canceled").limit(1),
+  );
+  const reviveCanceled = Boolean(canceledSample?.length);
+  let prepared = 0;
+  let lastBeat = 0;
+
+  const upsertRows = async (rows) => {
+    for (let offset = 0; offset < rows.length; offset += 500) {
+      const chunk = rows.slice(offset, offset + 500);
+      await retry("upsert queue rows", () => unwrap("upsert queue rows")(
+        supabase.from("mail_queue").upsert(chunk, { onConflict: "dedupe_hash", ignoreDuplicates: true }),
+      ), 6);
+      if (!reviveCanceled) continue;
+      // Recipients canceled by an earlier Edit/Unqueue keep their dedupe hash;
+      // revive them. Sent and dead rows are never touched.
+      for (let index = 0; index < chunk.length; index += 100) {
+        await retry("revive canceled rows", () => unwrap("revive canceled rows")(
+          supabase.from("mail_queue")
+            .update({ status: "pending", available_at: chunk[0].available_at, locked_at: null, last_error: null, attempts: 0, updated_at: nowIso() })
+            .eq("email_id", emailId).eq("status", "canceled")
+            .in("dedupe_hash", chunk.slice(index, index + 100).map((row) => row.dedupe_hash)),
+        ), 6);
+      }
+    }
+  };
+
+  for (const listId of listIds) {
+    let lastEmail = null;
+    for (;;) {
+      let query = supabase.from("list_members").select("email, metadata").eq("list_id", listId).eq("status", "active")
+        .order("email", { ascending: true }).limit(1_000);
+      if (lastEmail !== null) query = query.gt("email", lastEmail);
+      const page = await retry("read list members", () => unwrap("read list members")(query), 6);
+      if (!page?.length) break;
+      lastEmail = page[page.length - 1].email;
+      const rows = page
+        .filter((member) => !excluded.has(String(member.email).trim().toLowerCase()) && !isBlockedRecipient(member.email))
+        .map((member) => buildMemberQueueRow({ emailId, listId, email, member, campaignLabel }));
+      await upsertRows(rows);
+      prepared += rows.length;
+      if (Date.now() - lastBeat > 5_000) {
+        lastBeat = Date.now();
+        await renewLease();
+        const wrote = await patchRecord(record, {
+          heartbeatAt: nowIso(),
+          run: { url: runUrl, workerId, startedAt: new Date(startedAtMs).toISOString() },
+          progress: { prepared },
+          message: `Preparing recipients: ${prepared.toLocaleString()} of up to ${Number(record.approvedMaxRecipients ?? 0).toLocaleString()} queued.`,
+        });
+        if (wrote === false) return { stop: "paused" };
+      }
+      if (page.length < 1_000) break;
+    }
+  }
+
+  const senderEmail = extractEmailAddress(email.from_address);
+  if (senderEmail && !isBlockedRecipient(senderEmail)) {
+    await upsertRows([buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel })]);
+  }
+
+  const summary = await loadSummary(emailId);
+  const unsent = summary.pending_due + summary.pending_held;
+  if (record.approvedMaxRecipients && unsent > Number(record.approvedMaxRecipients)) {
+    return { stop: await block(email, record, `Preparation produced ${unsent.toLocaleString()} unsent recipients, more than the ${Number(record.approvedMaxRecipients).toLocaleString()} approved.`) };
+  }
+  console.log(`campaign ${emailId} prepared: ${unsent} unsent recipients`);
+  summaryLine(`- PREPARED **${email.subject}** — ${unsent.toLocaleString()} unsent recipients queued`);
+
+  if (!record.sendAfterPrepare) {
+    await supabase.from("emails").update({ status: "queued", updated_at: nowIso() }).eq("id", emailId).in("status", ["draft", "queued"]);
+    await patchRecord(record, {
+      state: "prepared",
+      approvedRecipients: unsent,
+      heartbeatAt: nowIso(),
+      progress: { prepared },
+      message: `Prepared ${unsent.toLocaleString()} recipients. Review, then press Send on the Queue page.`,
+    });
+    return { stop: "prepared" };
+  }
+  const { error } = await supabase.from("emails").update({ status: "sending", updated_at: nowIso() }).eq("id", emailId).in("status", ["draft", "queued", "sending"]);
+  if (error) throw new Error(`activate campaign after preparation: ${error.message}`);
+  const wrote = await patchRecord(record, {
+    state: "approved",
+    approvedRecipients: unsent,
+    heartbeatAt: nowIso(),
+    message: `Prepared ${unsent.toLocaleString()} recipients; sending.`,
+  });
+  return wrote === false ? { stop: "paused" } : { stop: null };
+}
+
 // Drains one approved campaign. Returns the stop reason.
 async function runCampaign(record) {
   const emailId = record.emailId;
-  const email = await loadEmail(emailId);
+  let email = await loadEmail(emailId);
   if (!email) {
     await patchRecord(record, { state: "canceled", message: "Campaign no longer exists." });
     return "skipped";
+  }
+  if (record.state === "preparing") {
+    if (!["draft", "queued", "sending"].includes(email.status)) {
+      await patchRecord(record, { state: "paused", message: `Campaign status is ${email.status}; preparation stopped.` });
+      return "skipped";
+    }
+    if (record.contentSha256 && campaignContentDigest(email) !== record.contentSha256) {
+      return block(email, record, "Subject, sender, or body changed after approval. Review and re-approve on the Queue page.");
+    }
+    const prepared = await prepareQueue(record, email);
+    if (prepared.stop) return prepared.stop;
+    email = await loadEmail(emailId);
   }
   if (email.status !== "sending") {
     if (email.status === "sent") {

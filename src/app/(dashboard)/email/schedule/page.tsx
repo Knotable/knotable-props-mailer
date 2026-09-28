@@ -38,6 +38,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
   const admin = getSupabaseAdmin();
   const params = (await searchParams) ?? {};
   const sendError = typeof params.sendError === "string" ? params.sendError : null;
+  const notice = typeof params.notice === "string" ? params.notice.slice(0, 400) : null;
 
   const { data: emails } = await admin
     .from("emails")
@@ -184,6 +185,10 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
         </div>
       )}
 
+      {notice && (
+        <div className="rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{notice}</div>
+      )}
+
       {sendError && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
           {sendError}
@@ -204,12 +209,14 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
             );
             const autopilotRecord = autopilotRecords.get(item.id);
             const autopilotActive = isActiveAutopilot(autopilotRecord);
-            const autopilot = autopilotRecord && (autopilotActive || item.status === "sending" || autopilotRecord.state === "blocked")
+            const autopilot = autopilotRecord && (autopilotActive || item.status === "sending" || ["blocked", "prepared"].includes(autopilotRecord.state))
               ? describeAutopilot(autopilotRecord)
               : null;
             const unsent = activeCounts ? activeCounts.pendingDue + activeCounts.pendingHeld : 0;
             const displayStatus = isDraft
               ? "Draft"
+              : autopilotRecord?.state === "preparing"
+                ? "Preparing recipients"
               : item.status === "sending"
                 ? autopilotActive
                   ? autopilot?.label ?? "Sending"
@@ -310,6 +317,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                       canSend={auth.canSend}
                       unsent={unsent}
                       autopilotActive={autopilotActive}
+                      preparing={autopilotRecord?.state === "preparing"}
                     />
                   ) : null}
                 </div>
