@@ -102,13 +102,16 @@ async function buildMonitorSnapshot(emailId?: string) {
       emailId: null,
       subject: null,
       emailStatus: null,
-      displayStatus: total > 0 ? "Sending" : "No active queue rows",
-      statusDetail:
-        total > 0
-          ? `${(pending + processing).toLocaleString()} recipient${
-              pending + processing === 1 ? "" : "s"
-            } still waiting or sending.`
-          : "No pending or processing queue rows.",
+      displayStatus: autopilotQueue.length
+        ? `Autopilot: ${autopilotQueue.length} campaign${autopilotQueue.length === 1 ? "" : "s"} approved`
+        : total > 0
+          ? "Unsent rows, nothing approved"
+          : "Idle",
+      statusDetail: autopilotQueue.length
+        ? `${(pending + processing).toLocaleString()} unsent recipient${pending + processing === 1 ? "" : "s"} across all campaigns; approved campaigns send one at a time.`
+        : total > 0
+          ? `${(pending + processing).toLocaleString()} unsent recipient${pending + processing === 1 ? "" : "s"} are waiting. Nothing sends until someone presses Send on the Queue page.`
+          : "No unsent queue rows.",
       date: today,
       dailyCap: quota.dailyCap,
       sentToday: quota.acceptedTodayUtc,
@@ -152,6 +155,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     { data: emailData, error: emailError },
     { data: oldestProcessing, error: processingError },
     autopilot,
+    { data: recentRows },
   ] =
     await Promise.all([
       getMailerRuntimeLimits(emailId, now),
@@ -169,6 +173,12 @@ async function buildMonitorSnapshot(emailId?: string) {
         .limit(1)
         .maybeSingle(),
       getAutopilotRecord(emailId),
+      supabase
+        .from("mail_queue")
+        .select("payload, status, attempts, max_attempts, available_at, updated_at, last_error")
+        .eq("email_id", emailId)
+        .order("updated_at", { ascending: false })
+        .limit(50),
     ]);
   if (summaryError) throw summaryError;
   if (emailError) throw emailError;
@@ -238,8 +248,8 @@ async function buildMonitorSnapshot(emailId?: string) {
       ? "No queue rows exist for this email."
       : stalledProcessing && !autopilotActive
         ? `${processing.toLocaleString()} processing row${processing === 1 ? " is" : "s are"} from an interrupted worker. Autopilot parks them (never resends) when the campaign is sent.`
-      : (pending > 0 || processing > 0) && autopilotView?.detail
-        ? autopilotView.detail
+      : (pending > 0 || processing > 0) && autopilotView
+        ? `${succeeded.toLocaleString()} of ${total.toLocaleString()} accepted by SES · ${pending.toLocaleString()} unsent${processing ? ` · ${processing.toLocaleString()} in flight` : ""}.`
       : pending > 0 || processing > 0
         ? `${(pending + processing).toLocaleString()} recipient${pending + processing === 1 ? "" : "s"} unsent.`
         : terminalFailures > 0
@@ -282,10 +292,26 @@ async function buildMonitorSnapshot(emailId?: string) {
     failed,
     dead,
     canceled,
-    recipientLog: [],
     autopilot,
     autopilotView,
     autopilotQueue: [],
+    recipientLog: ((recentRows ?? []) as Array<{
+      payload: { to?: string } | null;
+      status: string | null;
+      attempts: number | null;
+      max_attempts: number | null;
+      available_at: string | null;
+      updated_at: string | null;
+      last_error: string | null;
+    }>).map((row) => ({
+      recipientEmail: row.payload?.to ?? null,
+      status: row.status,
+      attemptCount: row.attempts,
+      maxAttempts: row.max_attempts,
+      availableAt: row.available_at,
+      updatedAt: row.updated_at,
+      lastError: row.last_error,
+    })),
   };
 }
 

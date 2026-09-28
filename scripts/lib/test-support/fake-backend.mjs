@@ -46,8 +46,25 @@ function matches(row, column, expression) {
 
 const RESERVED = new Set(["select", "order", "limit", "on_conflict", "columns", "offset"]);
 
-export function createFakeBackend({ now = () => Date.now() } = {}) {
+export function createFakeBackend({ now = () => Date.now(), lenient = false } = {}) {
   const tables = { app_settings: [], emails: [], mail_queue: [] };
+  // Extra RPCs for running the Next.js app against this fake (lenient mode).
+  const rpcHandlers = {
+    get_mailer_runtime_limits: () => {
+      const dayMs = 24 * 3_600_000;
+      const succeeded = tables.mail_queue.filter((row) => row.status === "succeeded");
+      const recent = succeeded.filter((row) => Date.parse(row.updated_at ?? 0) > now() - dayMs).length;
+      return [{ daily_cap: 65_400, ses_max_send_rate_per_second: 15, rolling_24h_sent: recent, accepted_today_utc: recent, sent_last_7_days: succeeded.length }];
+    },
+    get_global_active_queue_summary: (args) => {
+      const rows = summaries([...new Set(tables.mail_queue.map((row) => row.email_id))], args.p_now);
+      return [rows.reduce((total, row) => ({
+        pending_due: total.pending_due + row.pending_due,
+        pending_held: total.pending_held + row.pending_held,
+        processing: total.processing + row.processing,
+      }), { pending_due: 0, pending_held: 0, processing: 0 })];
+    },
+  };
   const ses = {
     quota: { Max24HourSend: 65_400, MaxSendRate: 1_000, SentLast24Hours: 0 },
     sendingEnabled: true,
@@ -154,15 +171,23 @@ export function createFakeBackend({ now = () => Date.now() } = {}) {
           return send(response, 500, { message: error.message });
         }
       }
+      if (rpcHandlers[fn]) return send(response, 200, rpcHandlers[fn](args ?? {}));
+      if (lenient) return send(response, 200, []);
       return send(response, 404, { message: `unknown rpc ${fn}` });
     }
 
     const table = path;
+    if (!tables[table] && lenient) tables[table] = [];
     if (!tables[table]) return send(response, 404, { message: `unknown table ${table}` });
 
-    if (request.method === "GET") {
-      let rows = order(filterRows(table, params), get("order"));
+    if (request.method === "GET" || request.method === "HEAD") {
+      const matched = order(filterRows(table, params), get("order"));
+      let rows = matched;
       if (get("limit")) rows = rows.slice(0, Number(get("limit")));
+      if (request.method === "HEAD" || prefer.includes("count=")) {
+        response.setHeader("content-range", `0-${Math.max(0, rows.length - 1)}/${matched.length}`);
+        if (request.method === "HEAD") return send(response, 200);
+      }
       const projected = project(rows, get("select"));
       if (wantsObject) return projected.length === 1 ? send(response, 200, projected[0]) : send(response, 406, { code: "PGRST116", message: "not one row" });
       return send(response, 200, projected);
@@ -196,7 +221,10 @@ export function createFakeBackend({ now = () => Date.now() } = {}) {
           written.push(row);
         }
       }
-      if (prefer.includes("return=representation")) return send(response, 201, project(written, get("select")));
+      if (prefer.includes("return=representation")) {
+        const projected = project(written, get("select"));
+        return send(response, 201, wantsObject ? projected[0] : projected);
+      }
       return send(response, 201);
     }
     return send(response, 405, { message: "method not allowed" });
@@ -236,6 +264,7 @@ export function createFakeBackend({ now = () => Date.now() } = {}) {
   const server = http.createServer(async (request, response) => {
     try {
       const url = new URL(request.url, "http://localhost");
+      if (url.pathname === "/__state") return send(response, 200, { tables, ses });
       if (url.pathname.startsWith("/rest/v1/")) return await handleRest(request, response, url);
       if (url.pathname.startsWith("/v2/email/")) return await handleSes(request, response, url);
       send(response, 404, { message: "not found" });
@@ -249,8 +278,9 @@ export function createFakeBackend({ now = () => Date.now() } = {}) {
     ses,
     failures,
     now,
-    async start() {
-      await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    rpcHandlers,
+    async start(port = 0) {
+      await new Promise((resolve) => server.listen(port, "127.0.0.1", resolve));
       return `http://127.0.0.1:${server.address().port}`;
     },
     async stop() {

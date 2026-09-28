@@ -235,20 +235,16 @@ export function MonitorClient({ emailId, notice }: Props) {
         <div className="h-3 overflow-hidden rounded-full bg-slate-100">
           <div className="h-full bg-green-600 transition-all" style={{ width: `${pct}%` }} />
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
           <Metric
-            label={isCampaignScoped ? "Campaign accepted" : "Sent last 7 days"}
+            label={isCampaignScoped ? "Accepted by SES" : "Sent last 7 days"}
             value={isCampaignScoped ? snapshot?.succeeded ?? 0 : snapshot?.sentLast7Days ?? 0}
             tone="green"
           />
-          <Metric label="Pending now" value={snapshot?.pendingDue ?? 0} tone="amber" />
-          <Metric label="Held" value={snapshot?.pendingHeld ?? 0} tone="slate" />
-          {isCampaignScoped && (
-            <Metric label="Accepted last 7 days" value={snapshot?.sentLast7Days ?? 0} tone="green" />
-          )}
-          <Metric label="Processing" value={snapshot?.processing ?? 0} tone="blue" />
-          <Metric label="Failed rows" value={snapshot?.failed ?? 0} tone="red" />
-          <Metric label="Permanent failures" value={snapshot?.dead ?? 0} tone="red" />
+          <Metric label="Unsent" value={snapshot?.pending ?? 0} tone="amber" />
+          <Metric label="In flight" value={snapshot?.processing ?? 0} tone="blue" />
+          <Metric label="Permanent failures" value={(snapshot?.dead ?? 0) + (snapshot?.failed ?? 0)} tone="red" />
+          {(snapshot?.canceled ?? 0) > 0 && <Metric label="Canceled" value={snapshot?.canceled ?? 0} tone="slate" />}
         </div>
       </div>
 
@@ -295,6 +291,10 @@ export function MonitorClient({ emailId, notice }: Props) {
             </span>
           </p>
           <p>
+            Account accepted last 7 days:{" "}
+            <span className="font-medium text-slate-900">{(snapshot?.sentLast7Days ?? 0).toLocaleString()}</span>
+          </p>
+          <p>
             Accepted today UTC:{" "}
             <span className="font-medium text-slate-900">
               {(snapshot?.acceptedTodayUtc ?? snapshot?.sentToday ?? 0).toLocaleString()}
@@ -321,7 +321,7 @@ export function MonitorClient({ emailId, notice }: Props) {
         <div className="rounded-lg border border-slate-200">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <p className="text-sm font-semibold text-slate-900">Recipient send log (latest first)</p>
-            <p className="text-xs text-slate-500">Showing up to 250 rows for audit visibility.</p>
+            <p className="text-xs text-slate-500">Latest 50 status changes.</p>
           </div>
           <div className="max-h-[420px] overflow-auto">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -387,9 +387,10 @@ function AutopilotPanel({ record, view }: { record: AutopilotRecord; view: Autop
     red: "border-red-200 bg-red-50 text-red-900",
     slate: "border-slate-200 bg-slate-50 text-slate-800",
   };
-  const progress = record.progress;
-  const quota = record.quota;
-  const heartbeat = secondsAgo(record.heartbeatAt);
+  const terminal = ["complete", "canceled", "paused", "blocked"].includes(record.state);
+  const progress = terminal ? undefined : record.progress;
+  const quota = terminal ? undefined : record.quota;
+  const heartbeat = terminal ? null : secondsAgo(record.heartbeatAt);
   return (
     <div className={`space-y-2 rounded-lg border px-4 py-3 text-sm ${tones[view.tone]}`}>
       <div className="flex flex-wrap items-center gap-2">
@@ -421,7 +422,9 @@ function AutopilotPanel({ record, view }: { record: AutopilotRecord; view: Autop
             {typeof quota.available === "number" ? ` · ${quota.available.toLocaleString()} available` : ""}
           </p>
         ) : null}
-        {record.nextCheckAt && <p>Next automatic check: {record.nextCheckAt.replace("T", " ").slice(0, 16)} UTC</p>}
+        {!terminal && record.nextCheckAt && <p>Next automatic check: {record.nextCheckAt.replace("T", " ").slice(0, 16)} UTC</p>}
+        {record.state === "complete" && record.completedAt && <p>Finished {record.completedAt.replace("T", " ").slice(0, 16)} UTC</p>}
+        {record.state === "blocked" && <p>Fix the reason above, then press Send on the Queue page to re-approve.</p>}
       </div>
     </div>
   );
