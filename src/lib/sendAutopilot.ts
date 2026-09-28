@@ -32,6 +32,7 @@ export type AutopilotRecord = {
   message?: string;
   heartbeatAt?: string | null;
   nextCheckAt?: string | null;
+  startAt?: string | null;
   updatedAt?: string;
   completedAt?: string;
   lastError?: string;
@@ -188,8 +189,13 @@ export function describeAutopilot(record: AutopilotRecord | null | undefined, no
         : { label: "Preparing recipients", tone: "blue", detail: detail || `Waiting for a cloud worker to build the recipient queue (within ${AUTOPILOT_SCHEDULE_MINUTES} minutes).`, live };
     case "prepared":
       return { label: "Prepared", tone: "slate", detail: detail || "Recipients are queued. Review, then press Send.", live: false };
-    case "approved":
+    case "approved": {
+      const startMs = Date.parse(record.startAt ?? "");
+      if (Number.isFinite(startMs) && startMs > nowMs) {
+        return { label: "Scheduled", tone: "slate", detail: `Sends automatically at ${formatUtc(record.startAt!)}. Pause to cancel.`, live: false };
+      }
       return { label: "Starting", tone: "blue", detail: detail || `Approved; a worker starts within ${AUTOPILOT_SCHEDULE_MINUTES} minutes.`, live };
+    }
     case "running":
       return live
         ? { label: "Sending", tone: "blue", detail, live }
@@ -211,4 +217,30 @@ export function describeAutopilot(record: AutopilotRecord | null | undefined, no
     default:
       return { label: String(record.state), tone: "slate", detail, live };
   }
+}
+
+export function formatUtc(iso: string) {
+  return `${iso.replace("T", " ").slice(0, 16)} UTC`;
+}
+
+// SES caps the account at 15/s and 65,400 per rolling 24h; autopilot runs at
+// ~13/s and keeps a 500-recipient reserve.
+export function estimateSendDuration(recipients: number, { ratePerSecond = 13, dailyCap = 65_400, reserve = 500 } = {}) {
+  if (recipients <= 0) return null;
+  const perWindow = Math.max(1, dailyCap - reserve);
+  if (recipients > perWindow) {
+    const days = Math.ceil(recipients / perWindow) - 1;
+    return `~${days + 1} quota windows (about ${days} day${days === 1 ? "" : "s"} + a few hours); autopilot resumes each window by itself`;
+  }
+  const minutes = Math.ceil(recipients / ratePerSecond / 60);
+  return minutes < 60 ? `~${minutes} min` : `~${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
+export function parseFutureSendAt(raw: unknown, nowMs = Date.now()): { startAt: string | null; error?: string } {
+  if (typeof raw !== "string" || !raw.trim()) return { startAt: null };
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return { startAt: null, error: "Scheduled time is not a valid date." };
+  if (ms <= nowMs + 60_000) return { startAt: null };
+  if (ms > nowMs + 60 * 24 * 3_600_000) return { startAt: null, error: "Schedule sends at most 60 days ahead." };
+  return { startAt: new Date(ms).toISOString() };
 }

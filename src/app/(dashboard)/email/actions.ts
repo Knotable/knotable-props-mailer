@@ -17,6 +17,8 @@ import { assertSendReadySubject } from "@/lib/subjectReadiness";
 import {
   campaignContentDigest,
   dispatchAutopilotWorker,
+  formatUtc,
+  parseFutureSendAt,
   getAutopilotRecord,
   isActiveAutopilot,
   setAutopilotState,
@@ -1179,8 +1181,11 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
       }
     }
 
+    const schedule = parseFutureSendAt(formData.get("sendAt"));
+    if (schedule.error) return { error: schedule.error };
+
     const contentSha256 = campaignContentDigest(emailRow);
-    if (existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
+    if (!schedule.startAt && existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
       const dispatch = await dispatchAutopilotWorker(id);
       return { recipients: unsent, alreadyActive: true, dispatched: dispatch.dispatched, detail: `Already approved and sending. ${dispatch.detail}` };
     }
@@ -1195,9 +1200,12 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
       subject: emailRow.subject,
       source: "app",
       state: "approved",
-      message: `Approved for ${unsent.toLocaleString()} recipients. Waiting for a cloud worker.`,
+      message: schedule.startAt
+        ? `Approved for ${unsent.toLocaleString()} recipients, scheduled for ${formatUtc(schedule.startAt)}.`
+        : `Approved for ${unsent.toLocaleString()} recipients. Waiting for a cloud worker.`,
       heartbeatAt: null,
-      nextCheckAt: null,
+      nextCheckAt: schedule.startAt,
+      startAt: schedule.startAt,
     });
 
     const { error: resumeError } = await supabase
@@ -1206,7 +1214,9 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
       .eq("id", id);
     if (resumeError) return { error: resumeError.message };
 
-    const dispatch = await dispatchAutopilotWorker(id);
+    const dispatch = schedule.startAt
+      ? { dispatched: false, detail: `It sends automatically at ${formatUtc(schedule.startAt)}.` }
+      : await dispatchAutopilotWorker(id);
 
     logAudit({
       userId: auth.userId,
@@ -1219,6 +1229,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
         pendingHeld: preflight.pendingHeld,
         processing: preflight.processing,
         contentSha256,
+        startAt: schedule.startAt,
         dispatched: dispatch.dispatched,
       },
     }).catch(console.error);
@@ -1236,7 +1247,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
 const CloudPrepareSchema = z.object({
   emailId: z.string().uuid(),
   listIds: z.array(z.string().uuid()).min(1).max(25),
-  excludeRecipients: z.array(z.string().max(320)).max(20_000).default([]),
+  excludeRecipients: z.array(z.string().max(320)).max(5_000).default([]),
   sendAfterPrepare: z.boolean(),
 });
 

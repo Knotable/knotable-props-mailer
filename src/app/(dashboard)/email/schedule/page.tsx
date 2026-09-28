@@ -3,7 +3,7 @@ import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
-import { describeAutopilot, getAutopilotRecords, isActiveAutopilot, type AutopilotView } from "@/lib/sendAutopilot";
+import { describeAutopilot, estimateSendDuration, getAutopilotRecords, isActiveAutopilot, type AutopilotView } from "@/lib/sendAutopilot";
 
 const DIRECT_RECIPIENTS_ID = "__direct_recipients__";
 
@@ -318,6 +318,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                       unsent={unsent}
                       autopilotActive={autopilotActive}
                       preparing={autopilotRecord?.state === "preparing"}
+                      estimate={estimateSendDuration(unsent)}
                     />
                   ) : null}
                 </div>

@@ -512,7 +512,8 @@ export async function GET() {
     const lastWorkerActivity = Math.max(0, ...records.map((record) => Date.parse(record.heartbeatAt ?? "") || 0));
     const orphaned = records.filter((record) => {
       if (!["preparing", "approved", "running"].includes(record.state)) return false;
-      const since = Date.parse(record.heartbeatAt ?? record.approvedAt);
+      if (Date.parse(record.nextCheckAt ?? "") > Date.now()) return false;
+      const since = Date.parse(record.heartbeatAt ?? record.nextCheckAt ?? record.approvedAt);
       return Number.isFinite(since) && Date.now() - since > staleMs && Date.now() - lastWorkerActivity > staleMs;
     });
     const active = records.filter((record) => isActiveAutopilot(record));

@@ -29,14 +29,21 @@ type RowProps = {
   unsent: number;
   autopilotActive: boolean;
   preparing?: boolean;
+  estimate?: string | null;
 };
 
-export function ScheduleActions({ id, subject, status, canSend, unsent, autopilotActive, preparing = false }: RowProps) {
+export function ScheduleActions({ id, subject, status, canSend, unsent, autopilotActive, preparing = false, estimate = null }: RowProps) {
   const router = useRouter();
   const [working, startWorking] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [sendConfirmationArmed, setSendConfirmationArmed] = useState(false);
+  const [sendAtLocal, setSendAtLocal] = useState("");
+  const sendAtIso = (() => {
+    if (!sendAtLocal) return "";
+    const date = new Date(sendAtLocal);
+    return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+  })();
 
   const runAction = (initialProgress: string, task: () => Promise<void>) => {
     setResult(null);
@@ -137,11 +144,15 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
                 <input type="hidden" name="id" value={id} />
                 <input type="hidden" name="releaseConfirmation" value={buildQueueReleaseConfirmation(id)} />
                 <input type="hidden" name="expectedRecipients" value={String(unsent)} />
-                <SendButton disabled={working} armed={sendConfirmationArmed} unsent={unsent} />
+                <input type="hidden" name="sendAt" value={sendAtIso} />
+                <SendButton disabled={working} armed={sendConfirmationArmed} unsent={unsent} scheduled={Boolean(sendAtIso)} />
                 {sendConfirmationArmed && (
                   <button
                     type="button"
-                    onClick={() => setSendConfirmationArmed(false)}
+                    onClick={() => {
+                      setSendConfirmationArmed(false);
+                      setSendAtLocal("");
+                    }}
                     className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
                   >
                     Cancel
@@ -160,6 +171,20 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
           {working ? "Working..." : "Delete"}
         </button>
       </div>
+      {sendConfirmationArmed && canStart && (
+        <div className="w-full min-w-64 space-y-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+          {estimate && <p>Estimated send time: <span className="font-semibold">{estimate}</span></p>}
+          <label className="flex flex-wrap items-center gap-2">
+            Send later (optional, your local time):
+            <input
+              type="datetime-local"
+              value={sendAtLocal}
+              onChange={(event) => setSendAtLocal(event.target.value)}
+              className="rounded border border-slate-300 bg-white px-2 py-0.5 text-xs"
+            />
+          </label>
+        </div>
+      )}
       {progress && (
         <div className="w-full min-w-64">
           <ProgressStatus title={progress} detail="Waiting for the server action to finish." tone="slate" />
@@ -174,7 +199,7 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
   );
 }
 
-function SendButton({ disabled, armed, unsent }: { disabled: boolean; armed: boolean; unsent: number }) {
+function SendButton({ disabled, armed, unsent, scheduled }: { disabled: boolean; armed: boolean; unsent: number; scheduled: boolean }) {
   const { pending } = useFormStatus();
   const isDisabled = disabled || pending;
   const count = unsent.toLocaleString();
@@ -183,12 +208,12 @@ function SendButton({ disabled, armed, unsent }: { disabled: boolean; armed: boo
     <button
       type="submit"
       disabled={isDisabled}
-      aria-label={armed ? `Confirm send to ${count} recipients` : `Send to ${count} recipients`}
+      aria-label={armed ? `Confirm ${scheduled ? "scheduled " : ""}send to ${count} recipients` : `Send to ${count} recipients`}
       className={`rounded-md px-3 py-1 text-xs font-semibold text-white disabled:opacity-50 ${
         armed ? "bg-red-600 hover:bg-red-700" : "bg-slate-900 hover:bg-slate-700"
       }`}
     >
-      {isDisabled ? "Approving..." : armed ? `Yes, send to ${count}` : `Send to ${count}`}
+      {isDisabled ? "Approving..." : armed ? (scheduled ? `Yes, schedule ${count}` : `Yes, send to ${count}`) : `Send to ${count}`}
     </button>
   );
 }

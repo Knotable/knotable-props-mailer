@@ -6,6 +6,8 @@ import {
   autopilotKey,
   campaignContentDigest,
   describeAutopilot,
+  estimateSendDuration,
+  parseFutureSendAt,
   type AutopilotRecord,
 } from "./sendAutopilot";
 
@@ -28,5 +30,28 @@ describe("send autopilot contract", () => {
     expect(describeAutopilot({ ...base, state: "blocked", message: "Content changed" }, NOW)).toMatchObject({ tone: "red", detail: "Content changed" });
     expect(describeAutopilot({ ...base, state: "complete" }, NOW)?.label).toBe("Sent");
     expect(describeAutopilot(null, NOW)).toBeNull();
+  });
+});
+
+describe("send scheduling and estimates", () => {
+  it("accepts only future times within 60 days", () => {
+    expect(parseFutureSendAt("", NOW)).toEqual({ startAt: null });
+    expect(parseFutureSendAt("2026-09-28T11:00:00Z", NOW)).toEqual({ startAt: null });
+    expect(parseFutureSendAt("2026-09-29T09:00:00Z", NOW)).toEqual({ startAt: "2026-09-29T09:00:00.000Z" });
+    expect(parseFutureSendAt("2027-09-29T09:00:00Z", NOW).error).toMatch(/60 days/);
+    expect(parseFutureSendAt("not a date", NOW).error).toMatch(/valid date/);
+  });
+
+  it("shows a scheduled approval as Scheduled until its start time", () => {
+    const scheduled = { ...base, startAt: "2026-09-29T09:00:00.000Z", nextCheckAt: "2026-09-29T09:00:00.000Z" };
+    expect(describeAutopilot(scheduled, NOW)?.label).toBe("Scheduled");
+    expect(describeAutopilot(scheduled, Date.parse("2026-09-29T09:01:00Z"))?.label).toBe("Starting");
+  });
+
+  it("estimates minutes for one quota window and windows beyond it", () => {
+    expect(estimateSendDuration(0)).toBeNull();
+    expect(estimateSendDuration(12_337)).toBe("~16 min");
+    expect(estimateSendDuration(60_000)).toBe("~1h 17m");
+    expect(estimateSendDuration(184_983)).toMatch(/^~3 quota windows/);
   });
 });

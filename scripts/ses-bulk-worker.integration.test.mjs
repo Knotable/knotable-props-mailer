@@ -194,6 +194,19 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(backend.ses.notices).toHaveLength(1);
   });
 
+  it("holds a scheduled campaign until its start time", async () => {
+    const email = seedCampaign({ recipients: 3 });
+    const record = recordFor(email.id);
+    record.startAt = record.nextCheckAt = new Date(Date.now() + 3_600_000).toISOString();
+    const early = await runWorker();
+    expect(early.code).toBe(0);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    record.startAt = record.nextCheckAt = new Date(Date.now() - 1_000).toISOString();
+    const onTime = await runWorker();
+    expect(onTime.code, onTime.stderr).toBe(0);
+    expect(count(rowsFor(email.id), "succeeded")).toBe(3);
+  });
+
   it("stops when the operator paused the campaign", async () => {
     const email = seedCampaign({ recipients: 3, status: "queued" });
     const result = await runWorker();
