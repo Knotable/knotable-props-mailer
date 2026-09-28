@@ -363,6 +363,10 @@ export function MonitorClient({ emailId, notice }: Props) {
   );
 }
 
+function formatPercent(part: number, whole: number, digits = 1) {
+  return whole > 0 ? `${((part / whole) * 100).toFixed(digits)}%` : "—";
+}
+
 function formatEta(seconds: number) {
   const total = Math.max(0, Math.round(seconds));
   const hours = Math.floor(total / 3600);
@@ -422,6 +426,18 @@ function AutopilotPanel({ record, view }: { record: AutopilotRecord; view: Autop
             {typeof quota.available === "number" ? ` · ${quota.available.toLocaleString()} available` : ""}
           </p>
         ) : null}
+        {record.canary && !terminal && (
+          <p>
+            Canary: {record.canary.sent.toLocaleString()} of first {record.canary.recipients.toLocaleString()} sent; full speed after a bounce/complaint check.
+          </p>
+        )}
+        {record.deliverability && (
+          <p>
+            Since approval: hard bounces {formatPercent(record.deliverability.hardBounces, record.deliverability.accepted)} · complaints{" "}
+            {formatPercent(record.deliverability.complaints, record.deliverability.accepted, 2)} (auto-stop above{" "}
+            {(record.deliverability.maxHardBounceRate * 100).toFixed(0)}% / {(record.deliverability.maxComplaintRate * 100).toFixed(1)}%)
+          </p>
+        )}
         {!terminal && record.nextCheckAt && <p>Next automatic check: {record.nextCheckAt.replace("T", " ").slice(0, 16)} UTC</p>}
         {record.state === "complete" && record.completedAt && <p>Finished {record.completedAt.replace("T", " ").slice(0, 16)} UTC</p>}
         {record.state === "blocked" && <p>Fix the reason above, then press Send on the Queue page to re-approve.</p>}

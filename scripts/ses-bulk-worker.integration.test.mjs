@@ -26,6 +26,7 @@ function runWorker(args = ["--mode", "autopilot"], env = {}) {
         SES_BULK_MAX_RECIPIENTS_PER_SECOND: "1000",
         SES_QUOTA_RESERVE: "0",
         SES_OPERATOR_EMAIL: "ops@example.test",
+        SES_CANARY_WAIT_SECONDS: "0",
         ...env,
       },
     });
@@ -202,6 +203,61 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     const result = await runWorker();
     expect(result.code, result.stderr).toBe(0);
     expect(count(rowsFor(email.id), "succeeded")).toBe(4);
+    expect(recordFor(email.id).state).toBe("complete");
+  });
+
+  it("canary: stops a campaign whose first recipients hard-bounce heavily", async () => {
+    backend.ses.bounceEvery = 5;
+    const email = seedCampaign({ recipients: 600 });
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "100", SES_CANARY_WAIT_SECONDS: "1" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(count(rowsFor(email.id), "succeeded")).toBe(100);
+    expect(count(rowsFor(email.id), "pending")).toBe(500);
+    expect(recordFor(email.id).state).toBe("blocked");
+    expect(recordFor(email.id).message).toMatch(/circuit breaker \(canary\).*Hard-bounce rate 20\.0%/);
+    expect(backend.ses.notices[0].Content.Simple.Subject.Data).toMatch(/Blocked/);
+  });
+
+  it("canary: continues at full speed when early signals are healthy", async () => {
+    backend.ses.bounceEvery = 200;
+    const email = seedCampaign({ recipients: 600 });
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "100", SES_CANARY_WAIT_SECONDS: "1" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(count(rowsFor(email.id), "succeeded")).toBe(600);
+    expect(recordFor(email.id)).toMatchObject({ state: "complete", canaryPassed: true });
+    expect(recordFor(email.id).deliverability).toMatchObject({ accepted: 100, hardBounces: 0, complaints: 0 });
+  });
+
+  it("re-approval after a breaker trip judges only new events", async () => {
+    backend.ses.bounceEvery = 5;
+    const email = seedCampaign({ recipients: 600 });
+    await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "100", SES_CANARY_WAIT_SECONDS: "1" });
+    expect(recordFor(email.id).state).toBe("blocked");
+    backend.ses.bounceEvery = 0;
+    const record = recordFor(email.id);
+    Object.assign(record, { state: "approved", approvalId: crypto.randomUUID(), approvedRecipients: 500, breakerBaseline: undefined, canaryPassed: undefined });
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "100", SES_CANARY_WAIT_SECONDS: "1" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(count(rowsFor(email.id), "succeeded")).toBe(600);
+    expect(recordFor(email.id).state).toBe("complete");
+  });
+
+  it("cancels recipients who unsubscribed or were blocked after queueing", async () => {
+    const email = seedCampaign({ recipients: 5 });
+    const listId = crypto.randomUUID();
+    const rows = rowsFor(email.id);
+    for (const row of rows) row.list_id = listId;
+    backend.tables.list_members.push(
+      { list_id: listId, email: rows[0].payload.to, status: "unsubscribed" },
+      { list_id: crypto.randomUUID(), email: rows[1].payload.to, status: "blocked" },
+      { list_id: crypto.randomUUID(), email: rows[2].payload.to, status: "unsubscribed" },
+    );
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(rows[0].status).toBe("canceled");
+    expect(rows[1].status).toBe("canceled");
+    expect(rows[2].status).toBe("succeeded");
+    expect(sentDestinations()).not.toContain(rows[0].payload.to);
     expect(recordFor(email.id).state).toBe("complete");
   });
 

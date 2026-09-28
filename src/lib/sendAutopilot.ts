@@ -50,6 +50,16 @@ export type AutopilotRecord = {
   };
   quota?: { max24HourSend?: number; sentLast24Hours?: number; available?: number; reserve?: number; checkedAt?: string };
   totals?: Record<string, number>;
+  canaryPassed?: boolean;
+  canary?: { recipients: number; sent: number } | null;
+  deliverability?: {
+    accepted: number;
+    hardBounces: number;
+    complaints: number;
+    maxHardBounceRate: number;
+    maxComplaintRate: number;
+    checkedAt?: string;
+  };
 };
 
 export const autopilotKey = (emailId: string) => `${AUTOPILOT_KEY_PREFIX}${emailId}`;

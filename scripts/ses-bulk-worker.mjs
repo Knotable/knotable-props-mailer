@@ -41,7 +41,9 @@ import {
   effectiveRate,
   emailIdFromKey,
   estimateEtaSeconds,
+  evaluateDeliverability,
   formatDuration,
+  lateSuppressedIds,
   orderDueRecords,
   runUrlFromEnv,
 } from "./lib/autopilot-core.mjs";
@@ -87,6 +89,14 @@ const config = {
   leaseTtlMs: 3 * 60_000,
   heartbeatStaleMs: 3 * 60_000,
   maxConsecutiveErrors: 5,
+  canaryRecipients: Math.max(0, numberEnv("SES_CANARY_RECIPIENTS", 300)),
+  canaryWaitMs: Math.max(0, numberEnv("SES_CANARY_WAIT_SECONDS", 180)) * 1_000,
+  breakerCheckMs: 120_000,
+  breaker: {
+    minSample: Math.max(1, numberEnv("SES_BREAKER_MIN_SAMPLE", 300)),
+    maxHardBounceRate: numberEnv("SES_BREAKER_MAX_HARD_BOUNCE_RATE", 0.08),
+    maxComplaintRate: numberEnv("SES_BREAKER_MAX_COMPLAINT_RATE", 0.003),
+  },
   operatorEmail: process.env.SES_OPERATOR_EMAIL || "a@sarva.co",
   notifyFrom: process.env.SES_NOTIFY_FROM || "",
 };
@@ -503,6 +513,33 @@ async function reconcileStaleClaims(emailId) {
   return { resolved, waitUntil };
 }
 
+async function deliverabilityCounts(emailId) {
+  const count = async (build) => {
+    const { count: value, error } = await build(supabase.from("provider_events").select("id", { count: "exact", head: true }).eq("email_id", emailId));
+    if (error) throw new Error(`deliverability count: ${error.message}`);
+    return value ?? 0;
+  };
+  const [hardBounces, complaints] = await Promise.all([
+    count((query) => query.eq("event_type", "bounced").eq("payload->bounce->>bounceType", "Permanent")),
+    count((query) => query.eq("event_type", "complained")),
+  ]);
+  return { hardBounces, complaints };
+}
+
+// Honors unsubscribes, bounces, complaints, and blocks that happened after
+// the queue was built: those rows are canceled instead of sent.
+async function findLateSuppressed(items) {
+  const addresses = [...new Set(items.flatMap((item) => {
+    const to = String(item.payload?.to ?? "").trim();
+    return to ? [to, to.toLowerCase()] : [];
+  }))];
+  if (!addresses.length) return new Set();
+  const inactive = await retry("late suppression lookup", () => unwrap("late suppression lookup")(
+    supabase.from("list_members").select("list_id, email, status").in("email", addresses).neq("status", "active"),
+  ), 4);
+  return lateSuppressedIds(items, inactive ?? []);
+}
+
 async function earliestRetryAt(emailId) {
   const { data } = await supabase.from("mail_queue").select("available_at").eq("email_id", emailId).eq("status", "pending")
     .gt("available_at", nowIso()).lt("available_at", HOLD_FLOOR).order("available_at", { ascending: true }).limit(1).maybeSingle();
@@ -832,6 +869,10 @@ async function runCampaign(record) {
   console.log(JSON.stringify({ campaign: emailId, subject: email.subject, remaining: remainingAtStart, rate, requestSize, claimSize: config.claimSize, quotaAvailable: available }));
   summaryLine(`- START **${email.subject}** — ${remainingAtStart.toLocaleString()} unsent, target ${rate.toFixed(1)}/s`);
 
+  let sentSinceBaseline = 0;
+  let canaryPending = false;
+  let deliverability = null;
+
   const heartbeat = async (extra = {}) => {
     lastHeartbeat = Date.now();
     await renewLease();
@@ -865,6 +906,8 @@ async function runCampaign(record) {
         backoffMs: backoff.currentPauseMs,
       },
       quota: { ...quota, available, reserve: config.quotaReserve, checkedAt: new Date(lastQuotaRefresh).toISOString() },
+      ...(deliverability ? { deliverability } : {}),
+      canary: canaryPending ? { recipients: config.canaryRecipients, sent: sentSinceBaseline } : null,
       message: `Sending at ${measuredRate.toFixed(1)}/s. ${etaMessage}`,
       ...extra,
     });
@@ -872,6 +915,29 @@ async function runCampaign(record) {
   };
 
   if (!(await heartbeat())) return "paused";
+
+  // Breaker baseline is fixed per approval, so re-approving after a trip
+  // judges only new events.
+  if (!record.breakerBaseline) {
+    const counts = await deliverabilityCounts(emailId).catch(() => null);
+    if (counts) await patchRecord(record, { breakerBaseline: { accepted: summary.succeeded, ...counts, at: nowIso() } });
+  }
+  const baseline = record.breakerBaseline ?? { accepted: summary.succeeded, hardBounces: 0, complaints: 0 };
+  sentSinceBaseline = summary.succeeded - baseline.accepted;
+  canaryPending = config.canaryRecipients > 0 && !record.canaryPassed && sentSinceBaseline < config.canaryRecipients && remainingAtStart > config.canaryRecipients;
+  let lastBreakerCheck = Date.now();
+
+  const checkBreaker = async (minSample) => {
+    const counts = await deliverabilityCounts(emailId).catch(() => null);
+    if (!counts) return null;
+    const sample = {
+      accepted: Math.max(0, sentSinceBaseline),
+      hardBounces: Math.max(0, counts.hardBounces - baseline.hardBounces),
+      complaints: Math.max(0, counts.complaints - baseline.complaints),
+    };
+    deliverability = { ...sample, maxHardBounceRate: config.breaker.maxHardBounceRate, maxComplaintRate: config.breaker.maxComplaintRate, checkedAt: nowIso() };
+    return evaluateDeliverability(sample, { ...config.breaker, minSample });
+  };
 
   while (!stopReason) {
     if (Date.now() >= deadlineMs) {
@@ -895,7 +961,39 @@ async function runCampaign(record) {
       break;
     }
 
-    const claim = await claimBatch(emailId, Math.min(config.claimSize, available));
+    if (canaryPending && sentSinceBaseline >= config.canaryRecipients) {
+      canaryPending = false;
+      console.log(`canary: ${sentSinceBaseline} sent; waiting ${config.canaryWaitMs / 1000}s for bounce/complaint signals`);
+      const waitUntil = Date.now() + config.canaryWaitMs;
+      while (Date.now() < waitUntil) {
+        await sleep(Math.min(config.heartbeatMs, Math.max(0, waitUntil - Date.now())));
+        if (!(await heartbeat({ message: `Canary: first ${sentSinceBaseline.toLocaleString()} sent. Checking bounces and complaints before full speed.` }))) {
+          stopReason = "paused";
+          break;
+        }
+      }
+      if (stopReason) break;
+      const verdict = await checkBreaker(Math.min(config.breaker.minSample, config.canaryRecipients));
+      if (verdict?.trip) {
+        stopReason = "blocked";
+        stopDetail = `Deliverability circuit breaker (canary): ${verdict.reason} Check the list and content; press Send to override.`;
+        break;
+      }
+      await patchRecord(record, { canaryPassed: true, canary: null, ...(deliverability ? { deliverability } : {}) });
+      pacer.reset();
+    }
+    if (Date.now() - lastBreakerCheck >= config.breakerCheckMs) {
+      lastBreakerCheck = Date.now();
+      const verdict = await checkBreaker(config.breaker.minSample);
+      if (verdict?.trip) {
+        stopReason = "blocked";
+        stopDetail = `Deliverability circuit breaker: ${verdict.reason} Check the list and content; press Send to override.`;
+        break;
+      }
+    }
+
+    const claimLimit = canaryPending ? Math.max(1, config.canaryRecipients - sentSinceBaseline) : config.claimSize;
+    const claim = await claimBatch(emailId, Math.min(config.claimSize, claimLimit, available));
     if (!claim.items.length) {
       // Selected rows changed before the claim (e.g. canceled by an edit).
       // Reselect a few times, never forever.
@@ -903,8 +1001,12 @@ async function runCampaign(record) {
       break;
     }
     racedClaims = 0;
-    const { invalid, deliverable } = buildDeliverable(email, compiled, claim.items);
-    const results = [...invalid];
+    const suppressed = await findLateSuppressed(claim.items);
+    const { invalid, deliverable } = buildDeliverable(email, compiled, claim.items.filter((item) => !suppressed.has(item.id)));
+    const results = [
+      ...[...suppressed].map((id) => ({ id, outcome: "canceled", ses_message_id: null, last_error: "Canceled: recipient unsubscribed, bounced, complained, or was blocked after queueing." })),
+      ...invalid,
+    ];
     const groups = new Map();
     for (const entry of deliverable) {
       const key = JSON.stringify(entry.compiled.content);
@@ -930,6 +1032,7 @@ async function runCampaign(record) {
     const claimAccepted = results.filter((result) => result.outcome === "succeeded").length;
     const claimFailed = results.filter((result) => result.outcome === "dead" || result.outcome === "canceled").length;
     accepted += claimAccepted;
+    sentSinceBaseline += claimAccepted;
     failed += claimFailed;
     available -= claimAccepted;
     console.log(`claim=${claim.items.length} accepted=${claimAccepted} failed=${claimFailed} total_accepted=${accepted}`);

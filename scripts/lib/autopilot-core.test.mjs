@@ -97,3 +97,29 @@ describe("autopilot core", () => {
     expect(formatDuration(3_900)).toBe("1h 5m");
   });
 });
+
+describe("deliverability guards", () => {
+  it("trips on complaint or hard-bounce spikes only after a meaningful sample", async () => {
+    const { evaluateDeliverability } = await import("./autopilot-core.mjs");
+    expect(evaluateDeliverability({ accepted: 100, hardBounces: 50, complaints: 5 }).trip).toBe(false);
+    expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 20, complaints: 1 }).trip).toBe(false);
+    expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 90, complaints: 0 })).toMatchObject({ trip: true, reason: expect.stringMatching(/Hard-bounce/) });
+    expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 0, complaints: 4 })).toMatchObject({ trip: true, reason: expect.stringMatching(/Complaint/) });
+  });
+
+  it("cancels recipients suppressed on their own list or blocked anywhere", async () => {
+    const { lateSuppressedIds } = await import("./autopilot-core.mjs");
+    const items = [
+      { id: "1", list_id: "A", payload: { to: "Gone@x.co" } },
+      { id: "2", list_id: "A", payload: { to: "other-list@x.co" } },
+      { id: "3", list_id: null, payload: { to: "blocked@x.co" } },
+      { id: "4", list_id: "A", payload: { to: "fine@x.co" } },
+    ];
+    const inactive = [
+      { list_id: "A", email: "gone@x.co", status: "unsubscribed" },
+      { list_id: "B", email: "other-list@x.co", status: "unsubscribed" },
+      { list_id: "Z", email: "blocked@x.co", status: "blocked" },
+    ];
+    expect([...lateSuppressedIds(items, inactive)].sort()).toEqual(["1", "3"]);
+  });
+});

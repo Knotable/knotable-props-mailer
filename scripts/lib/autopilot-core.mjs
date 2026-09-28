@@ -137,3 +137,37 @@ export function runUrlFromEnv(env = process.env) {
     ? `${env.GITHUB_SERVER_URL ?? "https://github.com"}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`
     : null;
 }
+
+// Deliverability circuit breaker. Rates are measured on events since this
+// approval's baseline, so an operator's deliberate re-approval starts clean.
+export const BREAKER_DEFAULTS = { minSample: 300, maxHardBounceRate: 0.08, maxComplaintRate: 0.003 };
+
+export function evaluateDeliverability({ accepted, hardBounces, complaints }, thresholds = BREAKER_DEFAULTS) {
+  const { minSample, maxHardBounceRate, maxComplaintRate } = { ...BREAKER_DEFAULTS, ...thresholds };
+  if (accepted < minSample) return { trip: false };
+  const bounceRate = hardBounces / accepted;
+  const complaintRate = complaints / accepted;
+  if (complaintRate > maxComplaintRate) {
+    return { trip: true, reason: `Complaint rate ${(complaintRate * 100).toFixed(2)}% (${complaints} of ${accepted}) exceeds ${(maxComplaintRate * 100).toFixed(2)}%.` };
+  }
+  if (bounceRate > maxHardBounceRate) {
+    return { trip: true, reason: `Hard-bounce rate ${(bounceRate * 100).toFixed(1)}% (${hardBounces} of ${accepted}) exceeds ${(maxHardBounceRate * 100).toFixed(1)}%.` };
+  }
+  return { trip: false, bounceRate, complaintRate };
+}
+
+// Recipients to cancel at send time: unsubscribed/bounced/complained on the
+// row's own list after queueing, or blocked anywhere (global suppression).
+export function lateSuppressedIds(items, inactiveMembers) {
+  const byEmail = new Map();
+  for (const member of inactiveMembers) {
+    const key = String(member.email ?? "").trim().toLowerCase();
+    byEmail.set(key, [...(byEmail.get(key) ?? []), member]);
+  }
+  const suppressed = new Set();
+  for (const item of items) {
+    const members = byEmail.get(String(item.payload?.to ?? "").trim().toLowerCase()) ?? [];
+    if (members.some((member) => member.status === "blocked" || (item.list_id && member.list_id === item.list_id))) suppressed.add(item.id);
+  }
+  return suppressed;
+}

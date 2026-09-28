@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T/;
 
 function readPath(row, column) {
-  const [base, ...path] = column.split("->>");
+  const [base, ...path] = column.split(/->>?/);
   let value = row[base];
   for (const key of path) value = value && typeof value === "object" ? value[key] : undefined;
   return path.length && value !== undefined && value !== null ? String(value) : value;
@@ -47,7 +47,7 @@ function matches(row, column, expression) {
 const RESERVED = new Set(["select", "order", "limit", "on_conflict", "columns", "offset"]);
 
 export function createFakeBackend({ now = () => Date.now(), lenient = false } = {}) {
-  const tables = { app_settings: [], emails: [], mail_queue: [], list_members: [] };
+  const tables = { app_settings: [], emails: [], mail_queue: [], list_members: [], provider_events: [] };
   // Extra RPCs for running the Next.js app against this fake (lenient mode).
   const rpcHandlers = {
     get_mailer_runtime_limits: () => {
@@ -73,6 +73,8 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     throttleNext: 0,
     dropConnectionNext: 0,
     entryStatus: null,
+    bounceEvery: 0,
+    acceptedCount: 0,
   };
   const failures = { finalizeNext: 0 };
 
@@ -262,10 +264,23 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
         return send(response, 400, { message: "Maximum sending rate exceeded." }, { "x-amzn-errortype": "TooManyRequestsException" });
       }
       ses.bulkRequests.push(payload);
-      const results = payload.BulkEmailEntries.map(() => {
+      const results = payload.BulkEmailEntries.map((entry) => {
         if (ses.entryStatus) return { Status: ses.entryStatus };
         ses.quota.SentLast24Hours += 1;
-        return { Status: "SUCCESS", MessageId: `ses-${crypto.randomUUID()}` };
+        ses.acceptedCount += 1;
+        const messageId = `ses-${crypto.randomUUID()}`;
+        // Simulated SNS → webhook: a hard bounce for every Nth accepted recipient.
+        if (ses.bounceEvery && ses.acceptedCount % ses.bounceEvery === 0) {
+          tables.provider_events.push({
+            id: crypto.randomUUID(),
+            email_id: entry.ReplacementTags?.find((tag) => tag.Name === "campaign_id")?.Value ?? null,
+            event_type: "bounced",
+            message_id: messageId,
+            payload: { bounce: { bounceType: "Permanent" } },
+            received_at: new Date(now()).toISOString(),
+          });
+        }
+        return { Status: "SUCCESS", MessageId: messageId };
       });
       return send(response, 200, { BulkEmailEntryResults: results });
     }
