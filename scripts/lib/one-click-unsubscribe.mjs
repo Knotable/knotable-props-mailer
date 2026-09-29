@@ -26,22 +26,26 @@ function normalizeEmail(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
-export function unsubscribeSignature({ secret, emailId, recipient }) {
+// The signature binds campaign, list and address, so a link can only
+// unsubscribe that address from the list the message was sent to.
+export function unsubscribeSignature({ secret, emailId, listId, recipient }) {
   if (!normalizeUnsubscribeKey(secret)) throw new Error("A 64-hex-character unsubscribe signing key is required.");
-  return crypto.createHmac("sha256", secret).update(`v1\n${emailId}\n${normalizeEmail(recipient)}`).digest("hex");
+  if (!listId) throw new Error("An unsubscribe link needs the list the recipient was sent from.");
+  return crypto.createHmac("sha256", secret).update(`v2\n${emailId}\n${listId}\n${normalizeEmail(recipient)}`).digest("hex");
 }
 
-export function unsubscribeUrl({ baseUrl, secret, emailId, recipient }) {
+export function unsubscribeUrl({ baseUrl, secret, emailId, listId, recipient }) {
   const url = new URL(UNSUBSCRIBE_PATH, String(baseUrl).replace(/\/+$/, "") + "/");
   url.searchParams.set("c", emailId);
+  url.searchParams.set("l", listId);
   url.searchParams.set("r", Buffer.from(normalizeEmail(recipient), "utf8").toString("base64url"));
-  url.searchParams.set("s", unsubscribeSignature({ secret, emailId, recipient }));
+  url.searchParams.set("s", unsubscribeSignature({ secret, emailId, listId, recipient }));
   return url.toString();
 }
 
 // Returns the recipient address if the link is genuine, otherwise null.
-export function verifyUnsubscribe({ secret, emailId, encodedRecipient, signature }) {
-  if (!normalizeUnsubscribeKey(secret) || !emailId || !encodedRecipient || !/^[0-9a-f]{64}$/i.test(signature ?? "")) return null;
+export function verifyUnsubscribe({ secret, emailId, listId, encodedRecipient, signature }) {
+  if (!normalizeUnsubscribeKey(secret) || !emailId || !listId || !encodedRecipient || !/^[0-9a-f]{64}$/i.test(signature ?? "")) return null;
   let recipient;
   try {
     recipient = normalizeEmail(Buffer.from(String(encodedRecipient), "base64url").toString("utf8"));
@@ -49,7 +53,7 @@ export function verifyUnsubscribe({ secret, emailId, encodedRecipient, signature
     return null;
   }
   if (!recipient.includes("@")) return null;
-  const expected = Buffer.from(unsubscribeSignature({ secret, emailId, recipient }), "hex");
+  const expected = Buffer.from(unsubscribeSignature({ secret, emailId, listId, recipient }), "hex");
   const given = Buffer.from(String(signature).toLowerCase(), "hex");
   return given.length === expected.length && crypto.timingSafeEqual(given, expected) ? recipient : null;
 }

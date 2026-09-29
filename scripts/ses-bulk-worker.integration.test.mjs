@@ -123,24 +123,36 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(result.stdout).not.toContain("@example.test");
   });
 
-  it("signs a one-click List-Unsubscribe link per recipient and reuses one stored key", async () => {
+  it("signs a one-click List-Unsubscribe link per recipient, scoped to the row's list", async () => {
     const email = seedCampaign({ recipients: 3 });
+    const listId = crypto.randomUUID();
+    const rows = rowsFor(email.id);
+    rows[0].list_id = listId;
+    rows[1].list_id = listId;
+    // rows[2] has no list (a typed-in recipient): mailto only.
     const result = await runWorker();
     expect(result.code, result.stderr).toBe(0);
     const request = backend.ses.bulkRequests.find((entry) => !entry.dropped);
     expect(request.DefaultContent.Template.Headers).toBeUndefined();
     const stored = backend.tables.app_settings.find((row) => row.key === UNSUBSCRIBE_SETTINGS_KEY).value.key;
-    for (const entry of request.BulkEmailEntries) {
-      const headers = Object.fromEntries(entry.ReplacementHeaders.map((header) => [header.Name, header.Value]));
+    const byRecipient = Object.fromEntries(request.BulkEmailEntries.map((entry) => [
+      entry.Destination.ToAddresses[0],
+      Object.fromEntries(entry.ReplacementHeaders.map((header) => [header.Name, header.Value])),
+    ]));
+    for (const recipient of ["person0@example.test", "person1@example.test"]) {
+      const headers = byRecipient[recipient];
       expect(headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
       const [https, mailto] = headers["List-Unsubscribe"].split(", ");
       expect(mailto).toBe("<mailto:reply@example.test?subject=Unsubscribe>");
       const url = new URL(https.slice(1, -1));
       expect(url.origin + url.pathname).toBe("https://mailer.test/api/unsubscribe");
       expect(url.searchParams.get("c")).toBe(email.id);
-      expect(verifyUnsubscribe({ secret: stored, emailId: email.id, encodedRecipient: url.searchParams.get("r"), signature: url.searchParams.get("s") }))
-        .toBe(entry.Destination.ToAddresses[0]);
+      expect(url.searchParams.get("l")).toBe(listId);
+      const link = { secret: stored, emailId: email.id, encodedRecipient: url.searchParams.get("r"), signature: url.searchParams.get("s") };
+      expect(verifyUnsubscribe({ ...link, listId })).toBe(recipient);
+      expect(verifyUnsubscribe({ ...link, listId: crypto.randomUUID() })).toBeNull();
     }
+    expect(byRecipient["person2@example.test"]).toEqual({ "List-Unsubscribe": "<mailto:reply@example.test?subject=Unsubscribe>" });
     seedCampaign({ recipients: 1 });
     expect((await runWorker()).code).toBe(0);
     expect(backend.tables.app_settings.filter((row) => row.key === UNSUBSCRIBE_SETTINGS_KEY)).toHaveLength(1);

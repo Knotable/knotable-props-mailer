@@ -616,16 +616,20 @@ async function loadUnsubscribeKey() {
   return unsubscribeKeyCache;
 }
 
-// Per-recipient List-Unsubscribe (signed HTTPS one-click + mailto fallback),
-// or the campaign-wide mailto header when no signing key is available.
-function recipientHeaders(email, recipient, unsubscribeKey) {
-  const url = unsubscribeKey ? unsubscribeUrl({ baseUrl: appBaseUrl, secret: unsubscribeKey, emailId: email.id, recipient }) : null;
+// Per-recipient List-Unsubscribe: a signed HTTPS one-click link that removes
+// the address from the list this row was queued from, plus the mailto
+// fallback. Rows with no list (typed-in recipients, the sender copy) and runs
+// without a signing key get the mailto header only.
+function recipientHeaders(email, recipient, listId, unsubscribeKey) {
+  const url = unsubscribeKey && listId
+    ? unsubscribeUrl({ baseUrl: appBaseUrl, secret: unsubscribeKey, emailId: email.id, listId, recipient })
+    : null;
   return listUnsubscribeHeaders({ url, replyTo: email.reply_to });
 }
 
 async function sendGroup(email, entries, pacer, unsubscribeKey) {
   const first = entries[0].compiled;
-  const defaultHeaders = unsubscribeKey ? undefined : recipientHeaders(email, null, null);
+  const defaultHeaders = unsubscribeKey ? undefined : recipientHeaders(email, null, null, null);
   const command = new SendBulkEmailCommand({
     FromEmailAddress: email.from_address,
     ReplyToAddresses: email.reply_to ? [email.reply_to] : undefined,
@@ -634,7 +638,7 @@ async function sendGroup(email, entries, pacer, unsubscribeKey) {
     BulkEmailEntries: entries.map(({ item, payload, compiled, data }) => ({
       Destination: { ToAddresses: [payload.to] },
       ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(compiled.replacementData(data)) } },
-      ...(unsubscribeKey ? { ReplacementHeaders: recipientHeaders(email, payload.to, unsubscribeKey) } : {}),
+      ...(unsubscribeKey ? { ReplacementHeaders: recipientHeaders(email, payload.to, item.list_id, unsubscribeKey) } : {}),
       ReplacementTags: [
         { Name: "queue_id", Value: item.id },
         { Name: "campaign_id", Value: email.id },
