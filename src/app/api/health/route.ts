@@ -16,6 +16,7 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { AUTOPILOT_KEY_PREFIX, isActiveAutopilot, type AutopilotRecord } from "@/lib/sendAutopilot";
+import { configuredSnsTopics, isAllowedSnsTopic } from "@/lib/snsTopic";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -190,7 +191,9 @@ export async function GET() {
       val.includes("your-project") ||
       val.includes("placeholder") ||
       val === "undefined";
-    const ok = !!val && !isPlaceholder;
+    // A topic setting that parses to no valid ARN would let any topic through.
+    const unreadableTopic = def.key === "AWS_SES_SNS_TOPIC_ARN" && !!val && !isPlaceholder && configuredSnsTopics().length === 0;
+    const ok = !!val && !isPlaceholder && !unreadableTopic;
     checks.push({
       id: `env_${def.key}`,
       label: `Env: ${def.label}`,
@@ -198,6 +201,8 @@ export async function GET() {
       ok,
       message: ok
         ? `${def.label} is set`
+        : unreadableTopic
+        ? `${def.label} is set but is not an SNS topic ARN (arn:aws:sns:<region>:<account>:<topic>), so it is ignored`
         : isPlaceholder && val
         ? `${def.label} is set to a placeholder value ("${val}")`
         : `${def.label} (${def.key}) is missing`,
@@ -457,8 +462,20 @@ export async function GET() {
       typeof latestFailurePayload?.reason === "string"
         ? ` (${latestFailurePayload.reason})`
         : "";
+    // "Unexpected SNS topic": name both ARNs so the fix is one env-var edit.
+    const topicPayload = (latestFailurePayload ?? {}) as { topicArn?: unknown; expectedTopicArn?: unknown; expectedTopicArns?: unknown };
+    const rejectedTopic = latestFailure?.message === "Unexpected SNS topic" && typeof topicPayload.topicArn === "string"
+      ? topicPayload.topicArn
+      : null;
+    const allowedTopics = configuredSnsTopics();
+    const topicNowAllowed = rejectedTopic ? isAllowedSnsTopic(rejectedTopic, allowedTopics) : false;
+    const topicDetail = rejectedTopic
+      ? topicNowAllowed
+        ? ` SES published from ${rejectedTopic}, which the current AWS_SES_SNS_TOPIC_ARN now accepts; the warning clears when the next event arrives.`
+        : ` SES is publishing from ${rejectedTopic}, but AWS_SES_SNS_TOPIC_ARN allows ${allowedTopics.length ? allowedTopics.join(", ") : "no valid ARN"}.`
+      : "";
     const latestFailureSummary = latestFailure
-      ? ` Latest webhook failure: ${latestFailure.message ?? "unknown"}${latestFailureReason} at ${latestFailure.created_at ?? "unknown"}.`
+      ? ` Latest webhook failure: ${latestFailure.message ?? "unknown"}${latestFailureReason} at ${latestFailure.created_at ?? "unknown"}.${topicDetail}`
       : "";
     const hasSns = (snsCount ?? 0) > 0;
     const hasRecentSns = (recentSnsCount ?? 0) > 0;
@@ -474,6 +491,13 @@ export async function GET() {
           : `No SNS events received yet. Opens, clicks, and bounces will show '—' in Analytics.${latestFailureSummary}`,
       fix: hasRecentSns
         ? undefined
+        : rejectedTopic && !topicNowAllowed
+          ? [
+              "SES events are reaching the webhook but are rejected because their SNS topic isn't on the allowlist.",
+              `1. AWS Console → SES → Configuration sets → ${process.env.AWS_SES_CONFIGURATION_SET?.trim() || "your configuration set"} → Event destinations: confirm the SNS destination is ${rejectedTopic}.`,
+              `2. Vercel → Settings → Environment Variables → set AWS_SES_SNS_TOPIC_ARN to ${rejectedTopic} (use the topic ARN, not the subscription ARN; several ARNs may be comma-separated), then redeploy.`,
+              "3. Send a test email; this warning clears when its first event arrives.",
+            ].join("\n")
         : [
             "AWS Console — one-time setup:",
             "1. SES → Configuration Sets → Create set, name it e.g. \"knotable-tracking\"",

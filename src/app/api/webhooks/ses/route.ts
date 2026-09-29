@@ -21,6 +21,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { logError } from "@/lib/logger";
 import { checkRateLimitSync } from "@/lib/rateLimit";
+import { configuredSnsTopics, isAllowedSnsTopic } from "@/lib/snsTopic";
 
 // ── SNS message signature verification ────────────────────────────────────────
 // Cache signing certs in memory so we don't fetch the same PEM on every event.
@@ -94,15 +95,6 @@ async function verifySnsSignature(body: Record<string, unknown>): Promise<{ vali
   }
 }
 
-function expectedSnsTopicArn(): string | null {
-  return process.env.AWS_SES_SNS_TOPIC_ARN?.trim() || null;
-}
-
-function isExpectedTopic(body: Record<string, unknown>): boolean {
-  const expected = expectedSnsTopicArn();
-  if (!expected) return true;
-  return body["TopicArn"] === expected;
-}
 
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
@@ -210,12 +202,13 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
-  if (!isExpectedTopic(body)) {
+  if (!isAllowedSnsTopic(body["TopicArn"])) {
     console.warn("[ses-webhook] unexpected SNS topic", body["TopicArn"]);
     await logWebhookFailure("Unexpected SNS topic", {
       messageType,
       topicArn: body["TopicArn"],
-      expectedTopicArn: expectedSnsTopicArn(),
+      expectedTopicArns: configuredSnsTopics(),
+      rawSetting: process.env.AWS_SES_SNS_TOPIC_ARN ?? null,
     });
     return NextResponse.json({ error: "Unexpected topic" }, { status: 403 });
   }
