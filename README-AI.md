@@ -14,6 +14,10 @@ For Next.js behavior, read the version-matched bundled documentation under `node
 
 ---
 
+## AGENT FRONT DOOR — `/ai` (2026-09-29)
+
+A second, chrome-free interface for AI agents and browser-automation tools. Start at **`/ai`** (public catalog; also advertised by `/llms.txt` and a `ai-agent-interface` meta tag). Every page is script-free, server-rendered HTML with stable ids (`#result[data-ok]`, `#unsent[data-value]`, `#form-<action>`, `#<action>-<field>`, `#submit-<action>`, `dd[data-key=…]`), and the same page as JSON with `?format=json` or `Accept: application/json` (including the actions valid right now and their fields). Actions are form POSTs to `/ai/do/<action>` that call the **same server actions** as the human UI (so exact-count approval, content digest, and deliverability guards are identical); they 303 back with `?result=…&ok=1|0`, or return JSON when `format=json`. Cross-origin POSTs are rejected; sessions are the normal Supabase or bypass cookies (`/ai/login`). Pages: `/ai/status`, `/ai/campaigns[?status&q&limit]`, `/ai/campaigns/new`, `/ai/campaigns/{id}` (+`/log`, `/analytics`), `/ai/lists`, `/ai/lists/{id}[?q&status&page]`. Actions: login_password, login_bypass, logout, save_draft, duplicate, test_to_me, test_send, queue, send, pause, unqueue, edit, mark_sent, retry_failed, delete, list_upsert, list_import, member_suppress. User/permission admin stays human-only. Code: `src/app/ai/`, `src/lib/ai/`. A full sign-in → draft → queue → send → pause run takes ~3 s against `npm run dev:fake`.
+
 ## HOW SENDING WORKS NOW — CLOUD AUTOPILOT (2026-09-28)
 
 **One click, no browser, no manual GitHub dispatch.** The operator prepares a campaign in the Composer (Queue), then on the **Queue** page presses **Send to N** and confirms. That is the whole job; the tab can be closed.

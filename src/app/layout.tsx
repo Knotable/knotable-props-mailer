@@ -15,6 +15,8 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Knotable Props Mailer",
   description: "Compose, schedule, and track Knotable Props email campaigns",
+  // Points browser-driving agents at the chrome-free interface.
+  other: { "ai-agent-interface": "/ai" },
 };
 
 export default function RootLayout({

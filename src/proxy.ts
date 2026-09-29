@@ -55,6 +55,7 @@ export async function proxy(request: NextRequest) {
 // API routes handle their own auth (cron secret, webhooks, etc.).
 export const config = {
   matcher: [
-    "/((?!login|signup|reset-password|loginWithToken|api|_next/static|_next/image|favicon.ico).*)",
+    // /ai (agent interface) authenticates inside its own route handlers.
+    "/((?!login|signup|reset-password|loginWithToken|api|ai/|ai$|llms\\.txt|_next/static|_next/image|favicon.ico).*)",
   ],
 };
