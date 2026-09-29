@@ -428,7 +428,7 @@ export async function bypassLogin(formData: FormData) {
     redirect(`/login/bypass?trace=${encodeURIComponent(correlationId)}&error=missing-bypass-password`);
   }
 
-  if (!verifyBypassPassword(password)) {
+  if (!(await verifyBypassPassword(password))) {
     await logAuthTrace(correlationId, "Bypass login attempt failed", { ip, userAgent });
     redirect(`/login/bypass?trace=${encodeURIComponent(correlationId)}&error=bypass-failed`);
   }

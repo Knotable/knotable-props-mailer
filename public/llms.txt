@@ -1,0 +1,13 @@
+# Props Mailer
+
+> Email campaign console (compose, lists, queue, cloud-sent via Amazon SES).
+
+Automated agents and browser-driving tools: use the agent interface at /ai instead of the human UI.
+
+- [/ai](/ai): catalog of every page and action (HTML; add ?format=json for JSON)
+- [/ai/login](/ai/login): sign in (password or bypass)
+- [/ai/campaigns](/ai/campaigns): campaigns; each campaign page lists the actions valid for its state
+- [/ai/lists](/ai/lists): mailing lists and members
+- [/ai/status](/ai/status): SES quota and the autopilot send queue
+
+Actions are form POSTs to /ai/do/{action}. Nothing is emailed to a list until the `send` action approves the exact unsent count.

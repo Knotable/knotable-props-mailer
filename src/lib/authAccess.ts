@@ -4,28 +4,13 @@ import { cookies } from "next/headers";
 import { createServerClient } from "@supabase/ssr";
 import type { NextRequest } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { getBypassSecrets } from "@/lib/bypassSecrets";
 
 export const ALLOWED_EMAIL = process.env.ALLOWED_EMAIL ?? "a@sarva.co";
 export const BYPASS_COOKIE_NAME = "props-mailer-bypass";
 
 const BYPASS_DURATION_MS = 12 * 60 * 60 * 1000;
-const HEX_256 = /^[0-9a-f]{64}$/i;
-
-const bypassPasswordSha256 = () => {
-  const value = process.env.BYPASS_PASSWORD_SHA256?.trim();
-  return value && HEX_256.test(value) ? value.toLowerCase() : null;
-};
-
-const bypassCookieHmacKey = () => {
-  const value = process.env.BYPASS_COOKIE_HMAC_KEY?.trim();
-  return value && HEX_256.test(value) ? value.toLowerCase() : null;
-};
-
-export const isBypassConfigured = () => {
-  const passwordHash = bypassPasswordSha256();
-  const hmacKey = bypassCookieHmacKey();
-  return Boolean(passwordHash && hmacKey && passwordHash !== hmacKey);
-};
+export const isBypassConfigured = async () => Boolean(await getBypassSecrets());
 
 export type ServerAuthContext = {
   userId: string;
@@ -51,35 +36,32 @@ const secureCompareHex = (left: string, right: string) => {
   return leftBuf.length === rightBuf.length && timingSafeEqual(leftBuf, rightBuf);
 };
 
-const signBypassExpiry = (expiresAtMs: number) => {
-  const key = bypassCookieHmacKey();
-  if (!key) throw new Error("Bypass login is disabled: missing valid BYPASS_COOKIE_HMAC_KEY.");
-  return createHmac("sha256", Buffer.from(key, "hex"))
-    .update(String(expiresAtMs))
-    .digest("hex");
+const signBypassExpiry = (expiresAtMs: number, keyHex: string) =>
+  createHmac("sha256", Buffer.from(keyHex, "hex")).update(String(expiresAtMs)).digest("hex");
+
+export const verifyBypassPassword = async (candidate: string) => {
+  const secrets = await getBypassSecrets();
+  return Boolean(secrets && secureCompareHex(sha256Hex(candidate), secrets.passwordSha256));
 };
 
-export const verifyBypassPassword = (candidate: string) => {
-  const expected = bypassPasswordSha256();
-  return Boolean(isBypassConfigured() && expected && secureCompareHex(sha256Hex(candidate), expected));
+export const createBypassCookieValue = async (expiresAtMs = Date.now() + BYPASS_DURATION_MS) => {
+  const secrets = await getBypassSecrets();
+  if (!secrets) throw new Error("Bypass login is disabled: no bypass password is configured.");
+  return `${expiresAtMs}.${signBypassExpiry(expiresAtMs, secrets.cookieHmacKey)}`;
 };
 
-export const createBypassCookieValue = (expiresAtMs = Date.now() + BYPASS_DURATION_MS) => {
-  if (!isBypassConfigured()) throw new Error("Bypass login is disabled: configure distinct valid server-side secrets.");
-  const signature = signBypassExpiry(expiresAtMs);
-  return `${expiresAtMs}.${signature}`;
-};
-
-export const isValidBypassCookieValue = (rawValue: string | undefined) => {
-  if (!rawValue || !isBypassConfigured()) return false;
+export const isValidBypassCookieValue = async (rawValue: string | undefined) => {
+  if (!rawValue) return false;
+  const secrets = await getBypassSecrets();
+  if (!secrets) return false;
   const [expiresAtRaw, signature] = rawValue.split(".");
   const expiresAtMs = Number(expiresAtRaw);
-  if (!Number.isFinite(expiresAtMs) || !signature) return false;
+  if (!Number.isFinite(expiresAtMs) || !signature || !/^[0-9a-f]{64}$/i.test(signature)) return false;
   if (Date.now() >= expiresAtMs) return false;
-  return secureCompareHex(signature, signBypassExpiry(expiresAtMs));
+  return secureCompareHex(signature, signBypassExpiry(expiresAtMs, secrets.cookieHmacKey));
 };
 
-export const requestHasBypassAccess = (request: NextRequest) =>
+export const requestHasBypassAccess = async (request: NextRequest) =>
   isValidBypassCookieValue(request.cookies.get(BYPASS_COOKIE_NAME)?.value);
 
 const normalizeEmail = (email: string | null | undefined) => String(email ?? "").trim().toLowerCase();
@@ -199,7 +181,7 @@ export async function setBypassSessionCookie() {
   const cookieStore = await cookies();
   cookieStore.set({
     name: BYPASS_COOKIE_NAME,
-    value: createBypassCookieValue(),
+    value: await createBypassCookieValue(),
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
@@ -264,7 +246,7 @@ async function resolveAllowedProfile(): Promise<ProfileAccess> {
 
 export async function createServerAppClient() {
   const cookieStore = await cookies();
-  if (isValidBypassCookieValue(cookieStore.get(BYPASS_COOKIE_NAME)?.value)) {
+  if (await isValidBypassCookieValue(cookieStore.get(BYPASS_COOKIE_NAME)?.value)) {
     return getSupabaseAdmin();
   }
 
@@ -306,7 +288,7 @@ export const getServerAuthContext = cache(getServerAuthContextUncached);
 
 async function getServerAuthContextUncached(): Promise<ServerAuthContext> {
   const cookieStore = await cookies();
-  if (isValidBypassCookieValue(cookieStore.get(BYPASS_COOKIE_NAME)?.value)) {
+  if (await isValidBypassCookieValue(cookieStore.get(BYPASS_COOKIE_NAME)?.value)) {
     const profile = await resolveAllowedProfile();
     return toAuthContext(profile, true);
   }

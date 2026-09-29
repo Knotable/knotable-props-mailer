@@ -41,6 +41,10 @@ function matches(row, column, expression) {
       const pattern = new RegExp(`^${raw.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/[%*]/g, ".*")}$`);
       return pattern.test(String(value ?? ""));
     }
+    case "ilike": {
+      const pattern = new RegExp(`^${raw.replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/[%*]/g, ".*")}$`, "i");
+      return pattern.test(String(value ?? ""));
+    }
     default: throw new Error(`unsupported filter ${op}`);
   }
 }

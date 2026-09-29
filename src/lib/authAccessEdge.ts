@@ -1,20 +1,8 @@
 import type { NextRequest } from "next/server";
+import { getBypassSecrets } from "@/lib/bypassSecrets";
 
 export const ALLOWED_EMAIL = process.env.ALLOWED_EMAIL ?? "a@sarva.co";
 export const BYPASS_COOKIE_NAME = "props-mailer-bypass";
-
-const HEX_256 = /^[0-9a-f]{64}$/i;
-
-const bypassCookieHmacKey = () => {
-  const value = process.env.BYPASS_COOKIE_HMAC_KEY?.trim();
-  return value && HEX_256.test(value) ? value.toLowerCase() : null;
-};
-
-const bypassSecretsConfigured = () => {
-  const passwordHash = process.env.BYPASS_PASSWORD_SHA256?.trim().toLowerCase();
-  const hmacKey = bypassCookieHmacKey();
-  return Boolean(passwordHash && HEX_256.test(passwordHash) && hmacKey && passwordHash !== hmacKey);
-};
 
 const hexToBytes = (hex: string) => {
   if (hex.length % 2 !== 0) return null;
@@ -48,9 +36,8 @@ const secureCompareHex = (left: string, right: string) => {
   return mismatch === 0;
 };
 
-const signBypassExpiry = async (expiresAtMs: number) => {
-  const keyHex = bypassCookieHmacKey();
-  const keyBytes = keyHex ? hexToBytes(keyHex) : null;
+const signBypassExpiry = async (expiresAtMs: number, keyHex: string) => {
+  const keyBytes = hexToBytes(keyHex);
   if (!keyBytes) {
     throw new Error("Invalid bypass HMAC key");
   }
@@ -73,7 +60,9 @@ const signBypassExpiry = async (expiresAtMs: number) => {
 };
 
 export const isValidBypassCookieValue = async (rawValue: string | undefined) => {
-  if (!rawValue || !bypassSecretsConfigured()) return false;
+  if (!rawValue) return false;
+  const secrets = await getBypassSecrets();
+  if (!secrets) return false;
 
   const [expiresAtRaw, signature] = rawValue.split(".");
   const expiresAtMs = Number(expiresAtRaw);
@@ -81,7 +70,7 @@ export const isValidBypassCookieValue = async (rawValue: string | undefined) => 
   if (!Number.isFinite(expiresAtMs) || !signature) return false;
   if (Date.now() >= expiresAtMs) return false;
 
-  const expectedSignature = await signBypassExpiry(expiresAtMs);
+  const expectedSignature = await signBypassExpiry(expiresAtMs, secrets.cookieHmacKey);
   return secureCompareHex(signature, expectedSignature);
 };
 
