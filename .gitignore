@@ -37,3 +37,6 @@ patch_autopush.py
 # Legacy directories deleted in git history
 webapp
 conf
+
+# Private per-machine AI-mode notes with credentials (template: AI-LOCAL.example.md)
+/AI-LOCAL.md
