@@ -19,6 +19,7 @@ beforeEach(() => {
   delete process.env.NEXT_PUBLIC_SUPABASE_URL;
   delete process.env.SUPABASE_URL;
   delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+  delete process.env.BYPASS_PASSWORD;
 });
 
 afterEach(() => {
@@ -69,5 +70,17 @@ describe("bypass authentication configuration", () => {
     expect(await isValidOnEdge(cookie)).toBe(true);
     expect(String(fetchMock.mock.calls[0][0])).toContain("app_settings?key=eq.bypass_auth");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("accepts a plain BYPASS_PASSWORD env var (Vercel) with a service-key-derived cookie key", async () => {
+    process.env.BYPASS_PASSWORD = "short pw";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "service-role";
+    expect(await verifyBypassPassword("short pw")).toBe(true);
+    expect(await verifyBypassPassword("other")).toBe(false);
+    const cookie = await createBypassCookieValue(Date.now() + 60_000);
+    expect(await isValidOnEdge(cookie)).toBe(true);
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "a-different-service-role";
+    clearBypassSecretsCache();
+    expect(await isValidBypassCookieValue(cookie)).toBe(false);
   });
 });

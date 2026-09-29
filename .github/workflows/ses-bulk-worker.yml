@@ -46,6 +46,13 @@ jobs:
       - uses: actions/checkout@v6
         with:
           sparse-checkout: scripts
+      # Mirrors the BYPASS_PASSWORD repository secret into the app (hash only).
+      - name: Sync bypass password
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          BYPASS_PASSWORD: ${{ secrets.BYPASS_PASSWORD }}
+        run: node scripts/sync-bypass-password.mjs
       - id: probe
         if: github.event_name == 'schedule'
         env:

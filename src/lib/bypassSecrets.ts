@@ -1,7 +1,8 @@
-// Emergency-bypass secrets. Vercel env vars win; otherwise they are read from
-// the service-role-only app_settings row "bypass_auth" (RLS enabled, no
-// policies), which the "Reset bypass password" workflow or the Account page
-// writes. Uses plain fetch so it runs in both Node and the edge proxy.
+// Emergency-bypass secrets. Vercel env vars win (BYPASS_PASSWORD, or the
+// hash/key pair); otherwise they are read from the service-role-only
+// app_settings row "bypass_auth" (RLS enabled, no policies), which the SES
+// Autopilot workflow keeps in sync with the BYPASS_PASSWORD GitHub secret.
+// Uses fetch and Web Crypto so it runs in both Node and the edge proxy.
 
 export const BYPASS_SETTINGS_KEY = "bypass_auth";
 const HEX_256 = /^[0-9a-f]{64}$/i;
@@ -37,8 +38,24 @@ async function loadFromDatabase(): Promise<BypassSecrets | null> {
   }
 }
 
+const hex = (buffer: ArrayBuffer) => Array.from(new Uint8Array(buffer), (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+// A plain BYPASS_PASSWORD env var (e.g. set in Vercel) also works. Its cookie
+// key is derived with the service-role key so it is not guessable from the
+// password alone.
+async function fromPlainPassword(): Promise<BypassSecrets | null> {
+  const password = process.env.BYPASS_PASSWORD;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!password || !serviceKey) return null;
+  const encoder = new TextEncoder();
+  const passwordSha256 = hex(await crypto.subtle.digest("SHA-256", encoder.encode(password)));
+  const key = await crypto.subtle.importKey("raw", encoder.encode(serviceKey), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const cookieHmacKey = hex(await crypto.subtle.sign("HMAC", key, encoder.encode(`props-mailer-bypass-cookie:${passwordSha256}`)));
+  return normalize(passwordSha256, cookieHmacKey, "env");
+}
+
 export async function getBypassSecrets(): Promise<BypassSecrets | null> {
-  const fromEnv = normalize(process.env.BYPASS_PASSWORD_SHA256, process.env.BYPASS_COOKIE_HMAC_KEY, "env");
+  const fromEnv = normalize(process.env.BYPASS_PASSWORD_SHA256, process.env.BYPASS_COOKIE_HMAC_KEY, "env") ?? (await fromPlainPassword());
   if (fromEnv) return fromEnv;
   if (cached && Date.now() - cached.at < CACHE_MS) return cached.value;
   const value = await loadFromDatabase();
