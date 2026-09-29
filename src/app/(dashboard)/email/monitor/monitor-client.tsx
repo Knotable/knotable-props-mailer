@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useState, useTransition } from "react";
 import { ProgressStatus } from "@/components/progress-status";
 import { DataFreshness } from "@/components/data-freshness";
+import type { AutopilotRecord, AutopilotView } from "@/lib/sendAutopilot";
+import { pauseQueuedEmailAction } from "../actions";
 
 type RecipientLogRow = {
   recipientEmail: string | null;
@@ -49,10 +51,20 @@ type QueueSnapshot = {
   dead: number;
   canceled: number;
   recipientLog?: RecipientLogRow[];
+  autopilot?: AutopilotRecord | null;
+  autopilotView?: AutopilotView | null;
+  autopilotQueue?: {
+    emailId: string;
+    subject: string | null;
+    state: string;
+    view: AutopilotView | null;
+    progress: AutopilotRecord["progress"] | null;
+  }[];
 };
 
 type Props = {
   emailId?: string;
+  notice?: string;
 };
 
 const POLL_MS = 15_000;
@@ -82,7 +94,7 @@ function formatError(error: unknown, fallback: string) {
   }
 }
 
-export function MonitorClient({ emailId }: Props) {
+export function MonitorClient({ emailId, notice }: Props) {
   const scopedEmailId = emailId && UUID_RE.test(emailId) ? emailId : undefined;
   const [snapshot, setSnapshot] = useState<QueueSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -161,14 +173,51 @@ export function MonitorClient({ emailId }: Props) {
             {snapshot?.subject ?? "Outbound Queue"}
           </h2>
           <p className="text-sm text-slate-500">
-            Status refreshes here; closing this page does not start, stop, or sustain a campaign worker.
+            Sending runs in the cloud. This page only watches — close it any time.
           </p>
         </div>
       </header>
 
+      {notice && (
+        <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{notice}</div>
+      )}
+
+      {snapshot?.autopilot && snapshot.autopilotView && (
+        <AutopilotPanel
+          record={snapshot.autopilot}
+          view={snapshot.autopilotView}
+          onPause={async () => {
+            const fd = new FormData();
+            fd.set("id", snapshot.autopilot!.emailId);
+            const res = await pauseQueuedEmailAction(fd);
+            if (res.error) throw new Error(res.error);
+            await refresh();
+          }}
+        />
+      )}
+
+      {!scopedEmailId && (snapshot?.autopilotQueue?.length ?? 0) > 0 && (
+        <div className="rounded-lg border border-slate-200">
+          <p className="border-b border-slate-200 px-4 py-3 text-sm font-semibold text-slate-900">Autopilot queue (sent one at a time, oldest approval first)</p>
+          <ul className="divide-y divide-slate-100">
+            {snapshot?.autopilotQueue?.map((item) => (
+              <li key={item.emailId} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
+                <a href={`/email/monitor?emailId=${item.emailId}`} className="font-medium text-blue-700 hover:underline">
+                  {item.subject ?? item.emailId}
+                </a>
+                <span className="text-slate-600">
+                  {item.view?.label ?? item.state}
+                  {item.progress?.etaSeconds ? ` · ~${formatEta(item.progress.etaSeconds)} left` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {!scopedEmailId && (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          This is a read-only global view. It never drains queue rows.
+          Account-wide view. Open a campaign for its live progress.
         </div>
       )}
       {error && (
@@ -197,20 +246,16 @@ export function MonitorClient({ emailId }: Props) {
         <div className="h-3 overflow-hidden rounded-full bg-slate-100">
           <div className="h-full bg-green-600 transition-all" style={{ width: `${pct}%` }} />
         </div>
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 grid-cols-2 sm:grid-cols-4">
           <Metric
-            label={isCampaignScoped ? "Campaign accepted" : "Sent last 7 days"}
+            label={isCampaignScoped ? "Accepted by SES" : "Sent last 7 days"}
             value={isCampaignScoped ? snapshot?.succeeded ?? 0 : snapshot?.sentLast7Days ?? 0}
             tone="green"
           />
-          <Metric label="Pending now" value={snapshot?.pendingDue ?? 0} tone="amber" />
-          <Metric label="Held" value={snapshot?.pendingHeld ?? 0} tone="slate" />
-          {isCampaignScoped && (
-            <Metric label="Accepted last 7 days" value={snapshot?.sentLast7Days ?? 0} tone="green" />
-          )}
-          <Metric label="Processing" value={snapshot?.processing ?? 0} tone="blue" />
-          <Metric label="Failed rows" value={snapshot?.failed ?? 0} tone="red" />
-          <Metric label="Permanent failures" value={snapshot?.dead ?? 0} tone="red" />
+          <Metric label="Unsent" value={snapshot?.pending ?? 0} tone="amber" />
+          <Metric label="In flight" value={snapshot?.processing ?? 0} tone="blue" />
+          <Metric label="Permanent failures" value={(snapshot?.dead ?? 0) + (snapshot?.failed ?? 0)} tone="red" />
+          {(snapshot?.canceled ?? 0) > 0 && <Metric label="Canceled" value={snapshot?.canceled ?? 0} tone="slate" />}
         </div>
       </div>
 
@@ -257,6 +302,10 @@ export function MonitorClient({ emailId }: Props) {
             </span>
           </p>
           <p>
+            Account accepted last 7 days:{" "}
+            <span className="font-medium text-slate-900">{(snapshot?.sentLast7Days ?? 0).toLocaleString()}</span>
+          </p>
+          <p>
             Accepted today UTC:{" "}
             <span className="font-medium text-slate-900">
               {(snapshot?.acceptedTodayUtc ?? snapshot?.sentToday ?? 0).toLocaleString()}
@@ -283,7 +332,7 @@ export function MonitorClient({ emailId }: Props) {
         <div className="rounded-lg border border-slate-200">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <p className="text-sm font-semibold text-slate-900">Recipient send log (latest first)</p>
-            <p className="text-xs text-slate-500">Showing up to 250 rows for audit visibility.</p>
+            <p className="text-xs text-slate-500">Latest 50 status changes.</p>
           </div>
           <div className="max-h-[420px] overflow-auto">
             <table className="min-w-full divide-y divide-slate-200 text-sm">
@@ -321,6 +370,138 @@ export function MonitorClient({ emailId }: Props) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function formatPercent(part: number, whole: number, digits = 1) {
+  return whole > 0 ? `${((part / whole) * 100).toFixed(digits)}%` : "—";
+}
+
+function formatEta(seconds: number) {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m`;
+  return `${total}s`;
+}
+
+function secondsAgo(value: string | null | undefined) {
+  const at = Date.parse(value ?? "");
+  if (!Number.isFinite(at)) return null;
+  const seconds = Math.max(0, Math.round((Date.now() - at) / 1000));
+  return seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)}m ago`;
+}
+
+function AutopilotPanel({ record, view, onPause }: { record: AutopilotRecord; view: AutopilotView; onPause: () => Promise<void> }) {
+  const [pausing, setPausing] = useState(false);
+  const [pauseError, setPauseError] = useState<string | null>(null);
+  const pausable = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"].includes(record.state);
+  const tones: Record<AutopilotView["tone"], string> = {
+    green: "border-green-200 bg-green-50 text-green-900",
+    blue: "border-blue-200 bg-blue-50 text-blue-900",
+    amber: "border-amber-200 bg-amber-50 text-amber-900",
+    red: "border-red-200 bg-red-50 text-red-900",
+    slate: "border-slate-200 bg-slate-50 text-slate-800",
+  };
+  const terminal = ["complete", "canceled", "paused", "blocked"].includes(record.state);
+  const progress = terminal ? undefined : record.progress;
+  const quota = terminal ? undefined : record.quota;
+  const heartbeat = terminal ? null : secondsAgo(record.heartbeatAt);
+  return (
+    <div className={`space-y-2 rounded-lg border px-4 py-3 text-sm ${tones[view.tone]}`}>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="font-semibold">Cloud autopilot: {view.label}</p>
+        {view.live && <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-current" aria-label="worker live" />}
+        {heartbeat && <span className="text-xs opacity-75">worker heartbeat {heartbeat}</span>}
+        {record.run?.url && (
+          <a href={record.run.url} target="_blank" rel="noreferrer" className="text-xs underline">
+            worker run
+          </a>
+        )}
+        {pausable && (
+          <button
+            type="button"
+            disabled={pausing}
+            onClick={async () => {
+              if (!confirm("Pause this send? Unsent recipients are kept; press Send on the Queue page to resume.")) return;
+              setPausing(true);
+              setPauseError(null);
+              try {
+                await onPause();
+              } catch (error) {
+                setPauseError(error instanceof Error ? error.message : "Pause failed.");
+              } finally {
+                setPausing(false);
+              }
+            }}
+            className="ml-auto rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+          >
+            {pausing ? "Pausing..." : "Pause send"}
+          </button>
+        )}
+        {record.state === "paused" && (
+          <a href="/email/schedule" className="ml-auto text-xs font-semibold underline">
+            Resume from Queue
+          </a>
+        )}
+      </div>
+      {pauseError && <p className="text-xs text-red-700">{pauseError}</p>}
+      {view.detail && <p>{view.detail}</p>}
+      <div className="grid gap-1 text-xs sm:grid-cols-2">
+        <p>
+          Approved {record.approvedRecipients?.toLocaleString() ?? "?"} recipients
+          {record.approvedBy ? ` by ${record.approvedBy}` : ""} · {record.approvedAt?.replace("T", " ").slice(0, 16)} UTC
+        </p>
+        {progress && (
+          <p>
+            This run: {progress.acceptedThisRun?.toLocaleString() ?? 0} accepted at {progress.ratePerSecond ?? 0}/s
+            {progress.etaSeconds ? ` · ~${formatEta(progress.etaSeconds)} left` : ""}
+            {progress.backoffMs ? ` · easing off database ${Math.round(progress.backoffMs / 1000)}s` : ""}
+          </p>
+        )}
+        {quota?.max24HourSend ? (
+          <p>
+            SES rolling 24h: {quota.sentLast24Hours?.toLocaleString()} / {quota.max24HourSend.toLocaleString()} used
+            {typeof quota.available === "number" ? ` · ${quota.available.toLocaleString()} available` : ""}
+          </p>
+        ) : null}
+        {record.canary && !terminal && (
+          <p>
+            Canary: {record.canary.sent.toLocaleString()} of first {record.canary.recipients.toLocaleString()} sent; full speed after a bounce/complaint check.
+          </p>
+        )}
+        {record.deliverability?.blind && (
+          <p className="font-semibold text-red-700 sm:col-span-2">
+            No SES delivery events have arrived since approval — bounce/complaint protection is blind. Check /api/health and the SNS subscription.
+          </p>
+        )}
+        {record.sendWindow && <p>Send window: {record.sendWindow.replace("-", "–").replace(/_/g, " ")}</p>}
+        {record.deliverability && (
+          <p>
+            Since approval: hard bounces {formatPercent(record.deliverability.hardBounces, record.deliverability.accepted)} · complaints{" "}
+            {formatPercent(record.deliverability.complaints, record.deliverability.accepted, 2)} (auto-stop above{" "}
+            {(record.deliverability.maxHardBounceRate * 100).toFixed(0)}% / {(record.deliverability.maxComplaintRate * 100).toFixed(1)}%)
+          </p>
+        )}
+        {!terminal && record.nextCheckAt && <p>Next automatic check: {record.nextCheckAt.replace("T", " ").slice(0, 16)} UTC</p>}
+        {record.state === "complete" && record.completedAt && (
+          <p>
+            Finished {record.completedAt.replace("T", " ").slice(0, 16)} UTC
+            {record.report ? "" : " · results report emails ~24h after finishing"}
+          </p>
+        )}
+        {record.report && (
+          <p className="sm:col-span-2">
+            24h results: delivered {formatPercent(record.report.delivered, record.report.accepted)} · bounced{" "}
+            {formatPercent(record.report.bounced, record.report.accepted)} · complaints {formatPercent(record.report.complained, record.report.accepted, 2)} ·
+            opened {formatPercent(record.report.opened, record.report.delivered || record.report.accepted)} · clicked{" "}
+            {formatPercent(record.report.clicked, record.report.delivered || record.report.accepted)}
+          </p>
+        )}
+        {record.state === "blocked" && <p>Fix the reason above, then press Send on the Queue page to re-approve.</p>}
+      </div>
     </div>
   );
 }

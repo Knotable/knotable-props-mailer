@@ -4,6 +4,7 @@ import {
   classifySesResult,
   compileTemplate,
   recipientData,
+  sesEntrySignal,
 } from "./ses-bulk-worker-core.mjs";
 
 describe("SES bulk worker core", () => {
@@ -36,6 +37,16 @@ describe("SES bulk worker core", () => {
 
   it("maps accepted and exhausted SES results to durable outcomes", () => {
     expect(classifySesResult({ Status: "SUCCESS", MessageId: "ses-1" }, { id: "q1", attempts: 0, max_attempts: 5 })).toMatchObject({ outcome: "succeeded" });
-    expect(classifySesResult({ Status: "ACCOUNT_THROTTLED", Error: "slow" }, { id: "q2", attempts: 4, max_attempts: 5 })).toMatchObject({ outcome: "dead" });
+    expect(classifySesResult({ Status: "TRANSIENT_FAILURE", Error: "blip" }, { id: "q2", attempts: 4, max_attempts: 5 })).toMatchObject({ outcome: "dead" });
+    expect(classifySesResult({ Status: "MESSAGE_REJECTED" }, { id: "q3", attempts: 0, max_attempts: 5 })).toMatchObject({ outcome: "dead" });
+  });
+
+  it("never burns recipient attempts on account-level SES throttling or quota", () => {
+    for (const Status of ["ACCOUNT_THROTTLED", "ACCOUNT_DAILY_QUOTA_EXCEEDED", "ACCOUNT_SENDING_PAUSED"]) {
+      expect(classifySesResult({ Status }, { id: "q4", attempts: 4, max_attempts: 5 })).toMatchObject({ outcome: "retry" });
+    }
+    expect(sesEntrySignal({ Status: "ACCOUNT_DAILY_QUOTA_EXCEEDED" })).toBe("quota");
+    expect(sesEntrySignal({ Status: "ACCOUNT_THROTTLED" })).toBe("throttle");
+    expect(sesEntrySignal({ Status: "SUCCESS" })).toBeNull();
   });
 });

@@ -170,6 +170,8 @@ const formatBuildDate = (value: string | null) => {
       hour: "numeric",
       minute: "2-digit",
       timeZoneName: "short",
+      // Pinned so server and browser render identical text (no hydration mismatch).
+      timeZone: "UTC",
     }).format(new Date(value));
   } catch {
     return "unknown";

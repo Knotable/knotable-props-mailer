@@ -308,12 +308,16 @@ export async function POST(request: Request) {
     queueId = taggedQueueIds[0];
     const { data: taggedQueueRow } = await supabase
       .from("mail_queue")
-      .select("email_id, status")
+      .select("email_id, status, last_error")
       .eq("id", queueId)
       .maybeSingle();
     emailId = emailId ?? taggedQueueRow?.email_id ?? null;
 
-    if (messageId && taggedQueueRow?.status === "processing" && sesEventType === "Send") {
+    // Rows the autopilot parked as ambiguous (worker died or SES never answered)
+    // were never retried; SES's own Send event proves they did go out.
+    const parkedAsAmbiguous =
+      taggedQueueRow?.status === "dead" && String(taggedQueueRow.last_error ?? "").startsWith("ambiguous_claim:");
+    if (messageId && (taggedQueueRow?.status === "processing" || parkedAsAmbiguous) && sesEventType === "Send") {
       const now = new Date();
       await supabase
         .from("mail_queue")
@@ -326,7 +330,7 @@ export async function POST(request: Request) {
           updated_at: now.toISOString(),
         })
         .eq("id", queueId)
-        .eq("status", "processing");
+        .eq("status", parkedAsAmbiguous ? "dead" : "processing");
     }
   }
 

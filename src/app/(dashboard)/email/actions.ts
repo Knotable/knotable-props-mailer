@@ -1,6 +1,6 @@
 'use server';
 
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
@@ -14,25 +14,24 @@ import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
 import { assertSendReadySubject } from "@/lib/subjectReadiness";
+import {
+  campaignContentDigest,
+  dispatchAutopilotWorker,
+  formatUtc,
+  parseFutureSendAt,
+  parseSendWindowInput,
+  getAutopilotRecord,
+  isActiveAutopilot,
+  setAutopilotState,
+  writeAutopilotRecord,
+} from "@/lib/sendAutopilot";
 import type { Json } from "@/supabase/types";
-
-/**
- * Stable deduplication hash for a queue row.
- * SHA-256(emailId:recipientEmail) — fits in a text column, unique per
- * (campaign, recipient) pair. The DB enforces uniqueness with
- * mail_queue_dedupe_hash_unique_idx, so queue creation can be safely retried.
- */
-function makeDedupeHash(emailId: string, recipientEmail: string): string {
-  return createHash("sha256")
-    .update(`${emailId}:${recipientEmail.toLowerCase().trim()}`)
-    .digest("hex");
-}
-
-function makeSenderCopyDedupeHash(emailId: string, senderEmail: string): string {
-  return createHash("sha256")
-    .update(`${emailId}:sender-copy:${senderEmail.toLowerCase().trim()}`)
-    .digest("hex");
-}
+import {
+  QUEUE_HOLD_AT,
+  buildMemberQueueRow,
+  buildSenderCopyQueueRow,
+  extractEmailAddress,
+} from "../../../../scripts/lib/queue-rows.mjs";
 
 const SaveDraftSchema = z.object({
   id: z.string().uuid().optional().nullable(),
@@ -118,7 +117,6 @@ type DraftPayload = {
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const QUEUE_HOLD_AT = "2999-12-31T23:59:59.000Z";
 
 const parseRecipients = (input: string) =>
   input
@@ -312,14 +310,6 @@ export type QueueCampaignResult = QueueCampaignOk | QueueCampaignConfirm | Queue
 const normalizeEmailAddress = (value: string | null | undefined) =>
   value?.trim().toLowerCase() ?? "";
 
-function extractEmailAddress(value: string | null | undefined) {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed) return null;
-
-  const angleMatch = trimmed.match(/<([^<>@\s]+@[^<>@\s]+\.[^<>@\s]+)>/);
-  const candidate = (angleMatch?.[1] ?? trimmed).trim().toLowerCase();
-  return EMAIL_RE.test(candidate) ? candidate : null;
-}
 
 type WarningAccumulator = {
   key: string;
@@ -361,55 +351,6 @@ async function loadActiveListMemberPage(
 
   if (error) throw error;
   return data ?? [];
-}
-
-function listMemberToName(metadata: Json | null | undefined) {
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return undefined;
-
-  const record = metadata as Record<string, unknown>;
-  for (const key of ["toName", "display_name", "displayName", "full_name", "fullName"]) {
-    const value = record[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-
-  const name = typeof record.name === "string" ? record.name.trim() : "";
-  const rank =
-    typeof record.rank === "number" || typeof record.rank === "string"
-      ? String(record.rank).trim()
-      : "";
-
-  if (name && rank) return `${name} #${rank}`;
-  return name || undefined;
-}
-
-function jsonRecord(value: Json | null | undefined): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return value as Record<string, unknown>;
-}
-
-function listMemberToMergeData(metadata: Json | null | undefined): Record<string, string> {
-  const record = jsonRecord(metadata);
-  const directMerge = jsonRecord(record.merge as Json | null | undefined);
-  const mergeData = jsonRecord(record.merge_data as Json | null | undefined);
-  const source = Object.keys(directMerge).length > 0 ? directMerge : mergeData;
-  const entries = Object.entries(source).flatMap(([key, value]) => {
-    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") return [];
-    const text = String(value).trim();
-    if (!key.trim() || !text) return [];
-    return [[key, text]];
-  });
-
-  const name = listMemberToName(metadata);
-  if (name && !entries.some(([key]) => key === "name")) entries.push(["name", name]);
-
-  const firstName = typeof record.first_name === "string"
-    ? record.first_name.trim()
-    : typeof record.firstName === "string"
-      ? record.firstName.trim()
-      : "";
-  if (firstName && !entries.some(([key]) => key === "first_name")) entries.push(["first_name", firstName]);
-
-  return Object.fromEntries(entries);
 }
 
 export async function importOneTimeAudienceAction(formData: FormData) {
@@ -801,56 +742,26 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
 
   // Prebuild the queue, but keep everything on hold until the operator hits
   // "Send Now" for this email.
-  const queueRows: {
-    email_id: string;
-    list_id: string | null;
-    payload: Json;
-    status: "pending";
-    available_at: string;
-    send_date: string | null;
-    campaign_label: string;
-    dedupe_hash: string;
-  }[] = [];
+  const queueRows: Array<ReturnType<typeof buildMemberQueueRow> | ReturnType<typeof buildSenderCopyQueueRow>> = [];
 
   for (const member of membersToQueue) {
-    queueRows.push({
-      email_id: emailId,
-      list_id: listId,
-      payload: {
-        to: member.email,
-        toName: listMemberToName(member.metadata),
-        merge: listMemberToMergeData(member.metadata),
-        tags: email.tags ?? [],
-        campaigns: email.campaigns ?? [],
-      },
-      status: "pending",
-      available_at: QUEUE_HOLD_AT,
-      send_date: null,
-      campaign_label: campaignLabel,
-      dedupe_hash: makeDedupeHash(emailId, member.email),
-    });
+    queueRows.push(buildMemberQueueRow({ emailId, listId, email, member, campaignLabel }));
   }
 
   if (offset === 0) {
     const senderEmail = extractEmailAddress(email.from_address);
     if (senderEmail && !isBlockedRecipientEmail(senderEmail)) {
-      queueRows.push({
-        email_id: emailId,
-        list_id: null,
-        payload: {
-          to: senderEmail,
-          subject: `[SENDER COPY] ${email.subject}`,
-          tags: email.tags ?? [],
-          campaigns: [...(email.campaigns ?? []), "sender-copy"],
-        },
-        status: "pending",
-        available_at: QUEUE_HOLD_AT,
-        send_date: null,
-        campaign_label: campaignLabel,
-        dedupe_hash: makeSenderCopyDedupeHash(emailId, senderEmail),
-      });
+      queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
     }
   }
+
+  const { data: canceledSample } = await supabase
+    .from("mail_queue")
+    .select("id")
+    .eq("email_id", emailId)
+    .eq("status", "canceled")
+    .limit(1);
+  const hasCanceledRows = Boolean(canceledSample?.length);
 
   // Upsert in batches of 500 to stay within Supabase payload limits.
   const CHUNK = 500;
@@ -862,6 +773,30 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
         ignoreDuplicates: true,
       });
     if (error) throw error;
+
+    // Re-queueing after Edit/Unqueue: those recipients still have canceled rows
+    // holding the same dedupe hash, which the upsert above silently skips.
+    // Revive them; succeeded and dead rows are never touched, so nobody who
+    // already received this email gets it twice.
+    // Hashes travel in the URL, so revive in slices that stay well under
+    // proxy URL limits.
+    const hashes = hasCanceledRows ? queueRows.slice(i, i + CHUNK).map((row) => row.dedupe_hash) : [];
+    for (let j = 0; j < hashes.length; j += 100) {
+      const { error: reviveError } = await supabase
+        .from("mail_queue")
+        .update({
+          status: "pending",
+          available_at: QUEUE_HOLD_AT,
+          locked_at: null,
+          last_error: null,
+          attempts: 0,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("email_id", emailId)
+        .eq("status", "canceled")
+        .in("dedupe_hash", hashes.slice(j, j + 100));
+      if (reviveError) throw reviveError;
+    }
   }
 
   await supabase
@@ -1001,8 +936,9 @@ export async function sendTestAction(formData: FormData): Promise<{ sent: number
       };
     }
 
-    // All succeeded — mark the draft as sent.
-    if (id) {
+    // A direct send (no list) completes the email; a test send must leave the
+    // draft in place so it can still be queued.
+    if (id && formData.get("mode") !== "test") {
       const supabase = getSupabaseAdmin();
       await supabase.from("emails").update({ status: "sent" }).eq("id", id);
       revalidatePath("/email/sends");
@@ -1020,19 +956,6 @@ export async function sendTestAction(formData: FormData): Promise<{ sent: number
   } catch (err) {
     return { sent: 0, error: toActionErrorMessage(err, "Test send failed.") };
   }
-}
-
-// ── Manually trigger the queue worker ───────────────────────────────────────
-export async function triggerQueueAction(emailId: string): Promise<{ processed: number; succeeded: number; failed: number; message: string }> {
-  await requireCanSendAuthContext();
-  const parsed = EmailIdSchema.safeParse({ id: emailId });
-  if (!parsed.success) throw new Error("Invalid email id");
-  return {
-    processed: 0,
-    succeeded: 0,
-    failed: 0,
-    message: "Browser queue workers are disabled. Use the durable GitHub Actions worker after reconciliation.",
-  };
 }
 
 export async function getQueueSnapshotAction(emailId?: string) {
@@ -1183,19 +1106,21 @@ export async function getRecipientSendLogAction(emailId: string, limit = 200) {
   }));
 }
 
-export async function sendQueuedEmailAction(formData: FormData): Promise<{
-  released?: number;
-  dueNow?: number;
-  scheduledFuture?: number;
-  pendingDueBefore?: number;
-  pendingHeldBefore?: number;
-  processingBefore?: number;
-  processed?: number;
-  succeeded?: number;
-  failed?: number;
-  remainingQueued?: number;
+export type SendQueuedEmailResult = {
   error?: string;
-}> {
+  recipients?: number;
+  dispatched?: boolean;
+  detail?: string;
+  alreadyActive?: boolean;
+};
+
+/**
+ * Approve a queued campaign for the cloud autopilot. The approval binds the
+ * exact unsent recipient count and a SHA-256 of sender/subject/body; the
+ * worker refuses to send if either drifts. Nothing here depends on the
+ * browser staying open.
+ */
+export async function sendQueuedEmailAction(formData: FormData): Promise<SendQueuedEmailResult> {
   try {
     const auth = await requireCanSendAuthContext();
 
@@ -1205,25 +1130,21 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
     const { id } = parsed.data;
     const supabase = getSupabaseAdmin();
 
-    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
-      return { error: "Email not found" };
-    }
-    const userId = auth.userId;
-
-    const nowIso = new Date().toISOString();
-    const [{ data: emailRow, error: emailError }, { data: summaryRows, error: summaryError }] = await Promise.all([
-      supabase.from("emails").select("status, subject").eq("id", id).maybeSingle(),
+    const [{ data: emailRow, error: emailError }, { data: summaryRows, error: summaryError }, existing] = await Promise.all([
+      supabase.from("emails").select("status, subject, from_address, reply_to, html, text").eq("id", id).maybeSingle(),
       supabase.rpc("get_queue_campaign_summaries", {
         p_email_ids: [id],
-        p_now: nowIso,
+        p_now: new Date().toISOString(),
       }),
+      getAutopilotRecord(id),
     ]);
 
     if (emailError) return { error: emailError.message };
     if (summaryError) return { error: summaryError.message };
+    if (!emailRow) return { error: "Email not found" };
 
-    if (emailRow?.status !== "queued" && emailRow?.status !== "sending") {
-      return { error: "Only queued or sending emails can be released." };
+    if (emailRow.status !== "queued" && emailRow.status !== "sending") {
+      return { error: "Only queued or sending emails can be sent." };
     }
     try {
       assertSendReadySubject(emailRow.subject ?? "");
@@ -1239,72 +1160,191 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<{
       }),
       { pendingDue: 0, pendingHeld: 0, processing: 0 },
     );
-
-    if (preflight.pendingDue + preflight.pendingHeld + preflight.processing === 0) {
-      return { error: "No queued recipients are ready for this email." };
+    const unsent = preflight.pendingDue + preflight.pendingHeld;
+    if (existing?.state === "preparing") {
+      return { error: "Recipients are still being prepared in the cloud. Send becomes available when preparation finishes." };
     }
-
-    // A row reaches processing before SES acceptance is durably checkpointed.
-    // A second worker here could therefore create duplicate deliveries. Never
-    // make a campaign look newly released while such a claim is unresolved.
-    if (preflight.processing > 0) {
-      return {
-        error: `${preflight.processing} processing recipient${preflight.processing === 1 ? " is" : "s are"} unresolved. Reconcile SES acceptance before releasing another worker.`,
-      };
+    if (existing?.audience && existing.approvedRecipients === undefined && existing.state !== "complete") {
+      return { error: "Cloud preparation stopped before the recipient list was complete. Queue it again from the Composer to finish, then Send." };
     }
+    if (unsent === 0) return { error: "No unsent recipients remain for this email." };
 
     if (!isQueueReleaseConfirmed(id, formData.get("releaseConfirmation"))) {
-      return {
-        error: `Release confirmation required for ${describeQueueReleasePreflight(preflight)}.`,
-      };
+      return { error: `Send confirmation required for ${describeQueueReleasePreflight(preflight)}.` };
     }
 
-    const quota = await getQuotaUsageSnapshot();
-    if (quota.remainingRolling24h === 0) {
-      return { error: `SES rolling 24-hour cap of ${quota.dailyCap.toLocaleString()} reached. Nothing can be sent right now.` };
+    const expectedRaw = formData.get("expectedRecipients");
+    if (typeof expectedRaw === "string" && expectedRaw.trim()) {
+      const expected = Number.parseInt(expectedRaw, 10);
+      if (expected !== unsent) {
+        return {
+          error: `The queue changed since you looked: ${unsent.toLocaleString()} unsent recipients now (you confirmed ${Number.isFinite(expected) ? expected.toLocaleString() : "an unknown count"}). Review and confirm again.`,
+        };
+      }
     }
+
+    const schedule = parseFutureSendAt(formData.get("sendAt"));
+    if (schedule.error) return { error: schedule.error };
+    const windowInput = parseSendWindowInput(formData.get("sendWindow"));
+    if (windowInput.error) return { error: windowInput.error };
+
+    const contentSha256 = campaignContentDigest(emailRow);
+    if (!schedule.startAt && !windowInput.sendWindow && existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
+      const dispatch = await dispatchAutopilotWorker(id);
+      return { recipients: unsent, alreadyActive: true, dispatched: dispatch.dispatched, detail: `Already approved and sending. ${dispatch.detail}` };
+    }
+
+    await writeAutopilotRecord({
+      emailId: id,
+      approvalId: randomUUID(),
+      approvedAt: new Date().toISOString(),
+      approvedBy: auth.email,
+      approvedRecipients: unsent,
+      contentSha256,
+      subject: emailRow.subject,
+      source: "app",
+      state: "approved",
+      message: schedule.startAt
+        ? `Approved for ${unsent.toLocaleString()} recipients, scheduled for ${formatUtc(schedule.startAt)}.`
+        : `Approved for ${unsent.toLocaleString()} recipients. Waiting for a cloud worker.`,
+      heartbeatAt: null,
+      nextCheckAt: schedule.startAt,
+      startAt: schedule.startAt,
+      sendWindow: windowInput.sendWindow,
+    });
 
     const { error: resumeError } = await supabase
       .from("emails")
       .update({ status: "sending" })
       .eq("id", id);
     if (resumeError) return { error: resumeError.message };
-    const remainingQueued = preflight.pendingDue + preflight.pendingHeld;
+
+    const dispatch = schedule.startAt
+      ? { dispatched: false, detail: `It sends automatically at ${formatUtc(schedule.startAt)}.` }
+      : await dispatchAutopilotWorker(id);
 
     logAudit({
-      userId,
-      action: "campaign.send_now",
+      userId: auth.userId,
+      action: "campaign.autopilot_approved",
       entity: "emails",
       entityId: id,
       payload: {
-        released: 0,
-        dueNow: preflight.pendingDue,
-        scheduledFuture: preflight.pendingHeld,
-        pendingDueBefore: preflight.pendingDue,
-        pendingHeldBefore: preflight.pendingHeld,
-        processingBefore: preflight.processing,
-        processed: 0,
-        succeeded: 0,
-        failed: 0,
-        remainingQueued,
-        mode: "incremental_background_resume",
+        approvedRecipients: unsent,
+        pendingDue: preflight.pendingDue,
+        pendingHeld: preflight.pendingHeld,
+        processing: preflight.processing,
+        contentSha256,
+        startAt: schedule.startAt,
+        dispatched: dispatch.dispatched,
       },
     }).catch(console.error);
 
     revalidatePath("/email/schedule");
     revalidatePath("/email/sends");
+    revalidatePath("/email/monitor");
 
-    return {
-      released: 0,
-      dueNow: preflight.pendingDue,
-      scheduledFuture: preflight.pendingHeld,
-      processed: 0,
-      succeeded: 0,
-      failed: 0,
-      remainingQueued,
-    };
+    return { recipients: unsent, dispatched: dispatch.dispatched, detail: dispatch.detail };
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to send email" };
+  }
+}
+
+const CloudPrepareSchema = z.object({
+  emailId: z.string().uuid(),
+  listIds: z.array(z.string().uuid()).min(1).max(25),
+  excludeRecipients: z.array(z.string().max(320)).max(5_000).default([]),
+  sendAfterPrepare: z.boolean(),
+});
+
+export type CloudPrepareResult = {
+  error?: string;
+  maxRecipients?: number;
+  dispatched?: boolean;
+  detail?: string;
+};
+
+/**
+ * Hand queue preparation for large lists to the cloud worker instead of
+ * paging through them from the browser. The approval caps the result at the
+ * current active member count (+1 sender copy); the worker blocks if the
+ * prepared queue exceeds it. With sendAfterPrepare the worker sends
+ * immediately afterward, otherwise it stops at "prepared" for review.
+ */
+export async function prepareInCloudAction(formData: FormData): Promise<CloudPrepareResult> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parseJson = (key: string) => {
+      const raw = formData.get(key);
+      if (typeof raw !== "string" || !raw) return undefined;
+      try {
+        return JSON.parse(raw) as unknown;
+      } catch {
+        return undefined;
+      }
+    };
+    const parsed = CloudPrepareSchema.safeParse({
+      emailId: formData.get("emailId"),
+      listIds: parseJson("listIds"),
+      excludeRecipients: parseJson("excludeRecipients") ?? [],
+      sendAfterPrepare: formData.get("sendAfterPrepare") === "true",
+    });
+    if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+    const { emailId, sendAfterPrepare } = parsed.data;
+    const listIds = [...new Set(parsed.data.listIds)];
+    const supabase = getSupabaseAdmin();
+
+    const [{ data: email, error: emailError }, existing] = await Promise.all([
+      supabase.from("emails").select("status, subject, from_address, reply_to, html, text").eq("id", emailId).maybeSingle(),
+      getAutopilotRecord(emailId),
+    ]);
+    if (emailError) return { error: emailError.message };
+    if (!email) return { error: "Email not found" };
+    if (!["draft", "queued"].includes(email.status)) return { error: `Email is ${email.status}; only drafts or queued emails can be prepared.` };
+    if (existing && isActiveAutopilot(existing) && existing.state !== "preparing") {
+      return { error: "This email is already approved for sending. Pause it first." };
+    }
+    try {
+      assertSendReadySubject(email.subject ?? "");
+    } catch (error) {
+      return { error: toActionErrorMessage(error, "Subject is not send-ready.") };
+    }
+
+    const counts = await Promise.all(listIds.map((listId) => countActiveListMembers(supabase, listId)));
+    const maxRecipients = counts.reduce((sum, value) => sum + value, 0) + 1;
+
+    await writeAutopilotRecord({
+      emailId,
+      approvalId: randomUUID(),
+      approvedAt: new Date().toISOString(),
+      approvedBy: auth.email,
+      approvedMaxRecipients: maxRecipients,
+      audience: { listIds, excludeRecipients: parsed.data.excludeRecipients },
+      sendAfterPrepare,
+      contentSha256: campaignContentDigest(email),
+      subject: email.subject,
+      source: "app-cloud-prepare",
+      state: "preparing",
+      message: `Preparing up to ${maxRecipients.toLocaleString()} recipients in the cloud${sendAfterPrepare ? ", then sending" : ""}.`,
+      heartbeatAt: null,
+      nextCheckAt: null,
+    });
+    const { error: statusError } = await supabase.from("emails").update({ status: "queued" }).eq("id", emailId);
+    if (statusError) return { error: statusError.message };
+
+    const dispatch = await dispatchAutopilotWorker(emailId);
+    logAudit({
+      userId: auth.userId,
+      action: sendAfterPrepare ? "campaign.cloud_prepare_and_send" : "campaign.cloud_prepare",
+      entity: "emails",
+      entityId: emailId,
+      payload: { listIds, maxRecipients, excluded: parsed.data.excludeRecipients.length, dispatched: dispatch.dispatched },
+    }).catch(console.error);
+
+    revalidatePath("/email/schedule");
+    revalidatePath("/email/monitor");
+    return { maxRecipients, dispatched: dispatch.dispatched, detail: dispatch.detail };
+  } catch (err) {
+    return { error: toActionErrorMessage(err, "Unable to start cloud preparation.") };
   }
 }
 
@@ -1319,7 +1359,7 @@ export async function sendQueuedEmailAndRedirectAction(formData: FormData): Prom
     redirect(`/email/schedule?sendError=${encodeURIComponent(result.error)}`);
   }
 
-  redirect(`/email/monitor?emailId=${parsed.data.id}`);
+  redirect(`/email/monitor?emailId=${parsed.data.id}&notice=${encodeURIComponent(`Approved ${result.recipients?.toLocaleString() ?? ""} recipients. ${result.detail ?? ""} You can close this tab.`)}`);
 }
 
 // Pause a campaign without canceling or rewriting its queue rows. Completed
@@ -1347,6 +1387,7 @@ export async function pauseQueuedEmailAction(
       .update({ status: "queued" })
       .eq("id", id);
     if (emailError) return { paused: 0, processing: 0, error: emailError.message };
+    await setAutopilotState(id, "paused", `Paused by ${auth.email}. Press Send on the Queue page to resume.`);
 
     const { data: summaryRows, error: summaryError } = await supabase.rpc(
       "get_queue_campaign_summaries",
@@ -1399,15 +1440,16 @@ export async function editQueuedEmailAction(
     const userId = auth.userId;
 
     // Soft-cancel unsent rows so we preserve a record of who wasn't sent to.
-    // 'processing' rows are also canceled here — the stuck-lock reclaim won't
-    // touch canceled rows, so they won't resurface after the edit.
     const nowIso = new Date().toISOString();
+    // Only unsent rows: rows a live worker already claimed are finalized by
+    // that worker, so the send history stays truthful.
     await supabase
       .from("mail_queue")
       .update({ status: "canceled", locked_at: null, updated_at: nowIso })
       .eq("email_id", id)
-      .in("status", ["pending", "processing"]);
+      .eq("status", "pending");
 
+    await setAutopilotState(id, "canceled", "Unsent recipients were canceled so the draft could be edited.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
@@ -1441,14 +1483,17 @@ export async function requeueDeadAction(formData: FormData) {
 
   const supabase = getSupabaseAdmin();
 
+  // Rows parked as ambiguous_claim may already have been delivered (SES never
+  // confirmed either way); retrying them risks duplicate email.
   const { data: dead } = await supabase
     .from("mail_queue")
     .select("id")
     .eq("email_id", emailId)
     .eq("status", "dead")
+    .not("last_error", "like", "ambiguous_claim:%")
     .limit(500);
 
-  if (!dead || dead.length === 0) throw new Error("No dead items found for this email");
+  if (!dead || dead.length === 0) throw new Error("No retryable failed recipients for this email (ambiguous sends are never retried).");
 
   const ids = dead.map((r) => r.id);
   const { error } = await supabase
@@ -1464,6 +1509,9 @@ export async function requeueDeadAction(formData: FormData) {
     .in("id", ids);
 
   if (error) throw error;
+
+  // Surface the retry on the Queue page, where Send hands it to autopilot.
+  await supabase.from("emails").update({ status: "queued" }).eq("id", emailId).in("status", ["sent", "failed", "queued"]);
 
   logAudit({
     userId,
@@ -1498,12 +1546,15 @@ export async function cancelEmailAction(formData: FormData): Promise<{ error?: s
     // A subsequent re-queue can use mail_queue WHERE status='canceled' to find
     // exactly who needs to be retried.
     const nowIso = new Date().toISOString();
+    // Only unsent rows: rows a live worker already claimed are finalized by
+    // that worker, so the send history stays truthful.
     await supabase
       .from("mail_queue")
       .update({ status: "canceled", locked_at: null, updated_at: nowIso })
       .eq("email_id", id)
-      .in("status", ["pending", "processing"]);
+      .eq("status", "pending");
 
+    await setAutopilotState(id, "canceled", "Unqueued; unsent recipients were canceled.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
@@ -1540,6 +1591,7 @@ export async function deleteEmailAction(formData: FormData): Promise<{ error?: s
     }
     const userId = auth.userId;
 
+    await setAutopilotState(id, "canceled", "Email deleted.");
     await supabase.from("mail_queue").delete().eq("email_id", id);
     await supabase.from("email_recipients").delete().eq("email_id", id);
 
@@ -1557,5 +1609,87 @@ export async function deleteEmailAction(formData: FormData): Promise<{ error?: s
     return {};
   } catch (err) {
     return { error: err instanceof Error ? err.message : "Failed to delete email" };
+  }
+}
+
+// Legacy campaigns can sit in queued/sending with nothing left to send (the
+// old workers never finalized them). Close them out explicitly.
+export async function markCampaignSentAction(formData: FormData): Promise<{ error?: string }> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
+    const { data: summaryRows, error: summaryError } = await supabase.rpc("get_queue_campaign_summaries", {
+      p_email_ids: [id],
+      p_now: new Date().toISOString(),
+    });
+    if (summaryError) return { error: summaryError.message };
+    const active = (summaryRows ?? []).reduce(
+      (total, row) => total + Number(row.pending_due ?? 0) + Number(row.pending_held ?? 0) + Number(row.processing ?? 0),
+      0,
+    );
+    if (active > 0) return { error: `${active.toLocaleString()} recipients are still unsent or in flight; pause or cancel them first.` };
+    const { error } = await supabase
+      .from("emails")
+      .update({ status: "sent", sent_at: new Date().toISOString() })
+      .eq("id", id)
+      .in("status", ["queued", "sending"]);
+    if (error) return { error: error.message };
+    await setAutopilotState(id, "canceled", "Marked sent from the Queue page.");
+    logAudit({ userId: auth.userId, action: "campaign.marked_sent", entity: "emails", entityId: id }).catch(console.error);
+    revalidatePath("/email/schedule");
+    revalidatePath("/email/sends");
+    return {};
+  } catch (err) {
+    return { error: toActionErrorMessage(err, "Unable to mark this campaign sent.") };
+  }
+}
+
+// Sends the queued campaign's exact content to the signed-in operator,
+// personalized with the first unsent recipient's merge data, so the approval
+// is based on what recipients will actually see.
+export async function sendQueuedTestAction(formData: FormData): Promise<{ error?: string; sentTo?: string; personalizedAs?: string | null }> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { error: "Invalid email id" };
+    const supabase = getSupabaseAdmin();
+    const { data: email, error: emailError } = await supabase
+      .from("emails")
+      .select("from_address, reply_to, subject, html, text, tags, campaigns")
+      .eq("id", parsed.data.id)
+      .maybeSingle();
+    if (emailError) return { error: emailError.message };
+    if (!email) return { error: "Email not found" };
+    const { data: firstRecipient } = await supabase
+      .from("mail_queue")
+      .select("payload")
+      .eq("email_id", parsed.data.id)
+      .eq("status", "pending")
+      .not("list_id", "is", null)
+      .limit(1)
+      .maybeSingle();
+    const payload = (firstRecipient?.payload ?? {}) as { to?: string; toName?: string; merge?: Record<string, string> };
+    const personalized = personalizeEmailContent(
+      { subject: email.subject, html: email.html, text: email.text ?? undefined },
+      buildRecipientPersonalization({ email: payload.to ?? auth.email, displayName: payload.toName, mergeData: payload.merge }),
+    );
+    await sendEmail({
+      from: email.from_address,
+      replyTo: email.reply_to ?? undefined,
+      to: [auth.email],
+      subject: `[TEST] ${personalized.subject}`,
+      html: personalized.html,
+      text: personalized.text,
+      tags: email.tags ?? undefined,
+      campaigns: email.campaigns ?? undefined,
+      testMode: true,
+    });
+    logAudit({ userId: auth.userId, action: "campaign.queued_test_sent", entity: "emails", entityId: parsed.data.id, payload: { personalizedAs: payload.to ?? null } }).catch(console.error);
+    return { sentTo: auth.email, personalizedAs: payload.to ?? null };
+  } catch (err) {
+    return { error: toActionErrorMessage(err, "Test send failed.") };
   }
 }
