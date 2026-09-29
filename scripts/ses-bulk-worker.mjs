@@ -52,6 +52,13 @@ import {
   runUrlFromEnv,
 } from "./lib/autopilot-core.mjs";
 import { buildMemberQueueRow, buildSenderCopyQueueRow, extractEmailAddress } from "./lib/queue-rows.mjs";
+import {
+  UNSUBSCRIBE_SETTINGS_KEY,
+  generateUnsubscribeKey,
+  listUnsubscribeHeaders,
+  normalizeUnsubscribeKey,
+  unsubscribeUrl,
+} from "./lib/one-click-unsubscribe.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -562,7 +569,7 @@ function buildDeliverable(email, compiled, items) {
     try {
       if (!payload.to || typeof payload.to !== "string") throw new Error("Missing recipient address");
       if (isBlockedRecipient(payload.to)) {
-        invalid.push({ id: item.id, outcome: "canceled", ses_message_id: null, last_error: "Canceled by global Block List domain rule." });
+        invalid.push({ id: item.id, outcome: "canceled", ses_message_id: null, last_error: "Canceled by global Block List rule (blocked domain or automated sender)." });
         continue;
       }
       const subject = payload.subject?.startsWith("[SENDER COPY]") ? `[SENDER COPY] ${email.subject}` : payload.subject ?? email.subject;
@@ -578,16 +585,56 @@ function buildDeliverable(email, compiled, items) {
   return { invalid, deliverable };
 }
 
-async function sendGroup(email, entries, pacer, headers) {
+// ── One-click unsubscribe signing key ──
+// UNSUBSCRIBE_HMAC_KEY wins; otherwise the service-role-only app_settings row
+// that /api/unsubscribe also reads. The first worker to need it creates it.
+let unsubscribeKeyCache;
+async function loadUnsubscribeKey() {
+  if (unsubscribeKeyCache !== undefined) return unsubscribeKeyCache;
+  const fromEnv = normalizeUnsubscribeKey(process.env.UNSUBSCRIBE_HMAC_KEY);
+  if (fromEnv) return (unsubscribeKeyCache = fromEnv);
+  const read = async () => {
+    const { data, error } = await supabase.from("app_settings").select("value").eq("key", UNSUBSCRIBE_SETTINGS_KEY).maybeSingle();
+    if (error) throw error;
+    return normalizeUnsubscribeKey(data?.value?.key);
+  };
+  try {
+    let key = await read();
+    if (!key) {
+      const createdAt = nowIso();
+      const { error } = await supabase.from("app_settings").insert({ key: UNSUBSCRIBE_SETTINGS_KEY, value: { key: generateUnsubscribeKey(), createdAt }, updated_at: createdAt });
+      if (error && error.code !== "23505") throw error;
+      key = await read();
+    }
+    unsubscribeKeyCache = key;
+  } catch (error) {
+    // Sending continues with the reply-to mailto header only; do not cache so
+    // the next campaign tries again.
+    console.warn(`One-click unsubscribe unavailable (${conciseError(error)}); sending with mailto List-Unsubscribe only.`);
+    return null;
+  }
+  return unsubscribeKeyCache;
+}
+
+// Per-recipient List-Unsubscribe (signed HTTPS one-click + mailto fallback),
+// or the campaign-wide mailto header when no signing key is available.
+function recipientHeaders(email, recipient, unsubscribeKey) {
+  const url = unsubscribeKey ? unsubscribeUrl({ baseUrl: appBaseUrl, secret: unsubscribeKey, emailId: email.id, recipient }) : null;
+  return listUnsubscribeHeaders({ url, replyTo: email.reply_to });
+}
+
+async function sendGroup(email, entries, pacer, unsubscribeKey) {
   const first = entries[0].compiled;
+  const defaultHeaders = unsubscribeKey ? undefined : recipientHeaders(email, null, null);
   const command = new SendBulkEmailCommand({
     FromEmailAddress: email.from_address,
     ReplyToAddresses: email.reply_to ? [email.reply_to] : undefined,
     ConfigurationSetName: configurationSet,
-    DefaultContent: { Template: { TemplateContent: first.content, TemplateData: "{}", Headers: headers } },
+    DefaultContent: { Template: { TemplateContent: first.content, TemplateData: "{}", Headers: defaultHeaders?.length ? defaultHeaders : undefined } },
     BulkEmailEntries: entries.map(({ item, payload, compiled, data }) => ({
       Destination: { ToAddresses: [payload.to] },
       ReplacementEmailContent: { ReplacementTemplate: { ReplacementTemplateData: JSON.stringify(compiled.replacementData(data)) } },
+      ...(unsubscribeKey ? { ReplacementHeaders: recipientHeaders(email, payload.to, unsubscribeKey) } : {}),
       ReplacementTags: [
         { Name: "queue_id", Value: item.id },
         { Name: "campaign_id", Value: email.id },
@@ -876,7 +923,7 @@ async function runCampaign(record) {
   const requestSize = Math.max(1, Math.min(50, Math.floor(rate)));
   const pacer = createPacer(rate);
   const backoff = createBackoff();
-  const headers = email.reply_to ? [{ Name: "List-Unsubscribe", Value: `<mailto:${email.reply_to}?subject=Unsubscribe>` }] : [];
+  const unsubscribeKey = await loadUnsubscribeKey();
   const runStartedAt = Date.now();
   let accepted = 0;
   let failed = 0;
@@ -1058,7 +1105,7 @@ async function runCampaign(record) {
           results.push(...entries.map(({ item }) => ({ id: item.id, outcome: "retry", ses_message_id: null, last_error: `Deferred: SES ${signal}` })));
           continue;
         }
-        const sent = await sendGroup(email, entries, pacer, headers);
+        const sent = await sendGroup(email, entries, pacer, unsubscribeKey);
         results.push(...sent.results);
         if (sent.ambiguous) ambiguous += entries.length;
         if (sent.signal) signal = sent.signal;

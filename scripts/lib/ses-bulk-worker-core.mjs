@@ -1,6 +1,8 @@
+import { BLOCKED_EMAIL_DOMAINS as BLOCKED_DOMAIN_LIST, recipientBlockReason } from "./recipient-rules.mjs";
+
 const MERGE_TAG_RE = /\{\{\s*([a-zA-Z0-9_.-]+)(?:\s*\|\s*([^{}]*?))?\s*\}\}/g;
 
-export const BLOCKED_EMAIL_DOMAINS = new Set(["followupthen.com", "fut.io"]);
+export const BLOCKED_EMAIL_DOMAINS = new Set(BLOCKED_DOMAIN_LIST);
 
 export function subjectPlaceholderTerms(subject) {
   const patterns = [
@@ -52,9 +54,7 @@ export function recipientData(payload, queueId) {
 }
 
 export function isBlockedRecipient(email) {
-  const normalized = normalize(email).toLowerCase();
-  const at = normalized.lastIndexOf("@");
-  return at >= 0 && BLOCKED_EMAIL_DOMAINS.has(normalized.slice(at + 1));
+  return recipientBlockReason(normalize(email)) !== null;
 }
 
 function resolve(rawKey, rawFallback, data) {

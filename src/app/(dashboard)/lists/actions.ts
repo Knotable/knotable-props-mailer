@@ -261,7 +261,7 @@ export async function importMembersAction(formData: FormData) {
           status: blocked ? "blocked" : "active",
           source: blocked ? "block_list" : "manual",
           unsubscribed_at: blocked ? new Date().toISOString() : null,
-          metadata: blocked ? blockedMemberMetadata(member.metadata) : member.metadata,
+          metadata: blocked ? blockedMemberMetadata(member.metadata, member.email) : member.metadata,
         };
       });
     const { error } = await supabase

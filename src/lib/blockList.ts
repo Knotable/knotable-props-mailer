@@ -1,6 +1,10 @@
 import type { Json } from "@/supabase/types";
+import {
+  BLOCKED_EMAIL_DOMAINS as SHARED_BLOCKED_EMAIL_DOMAINS,
+  recipientBlockReason,
+} from "../../scripts/lib/recipient-rules.mjs";
 
-export const BLOCKED_EMAIL_DOMAINS = ["followupthen.com", "fut.io"] as const;
+export const BLOCKED_EMAIL_DOMAINS: readonly string[] = SHARED_BLOCKED_EMAIL_DOMAINS;
 
 export function normalizeEmailForBlockList(value: string | null | undefined) {
   return String(value ?? "").trim().toLowerCase();
@@ -13,12 +17,13 @@ export function emailDomain(value: string | null | undefined) {
   return normalized.slice(at + 1);
 }
 
+// Blocked domains (reminder services) and automated senders such as
+// noreply@, invoice@ or anything@mail.<company>.com. See recipient-rules.mjs.
 export function isBlockedRecipientEmail(value: string | null | undefined) {
-  const domain = emailDomain(value);
-  return domain ? BLOCKED_EMAIL_DOMAINS.includes(domain as (typeof BLOCKED_EMAIL_DOMAINS)[number]) : false;
+  return recipientBlockReason(value) !== null;
 }
 
-export function blockedMemberMetadata(existing?: Json | null): Json {
+export function blockedMemberMetadata(existing?: Json | null, email?: string | null): Json {
   const base =
     existing && typeof existing === "object" && !Array.isArray(existing)
       ? { ...(existing as Record<string, Json>) }
@@ -26,7 +31,7 @@ export function blockedMemberMetadata(existing?: Json | null): Json {
 
   return {
     ...base,
-    blocked_by: "domain_block_list",
+    blocked_by: recipientBlockReason(email) ?? "domain_block_list",
     blocked_domains: [...BLOCKED_EMAIL_DOMAINS],
   } as Json;
 }

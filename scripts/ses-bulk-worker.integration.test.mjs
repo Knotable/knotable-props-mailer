@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createFakeBackend } from "./lib/test-support/fake-backend.mjs";
 import { AMBIGUOUS_CLAIM_PREFIX, autopilotKey, campaignContentDigest, WORKER_LEASE_KEY } from "./lib/autopilot-core.mjs";
+import { UNSUBSCRIBE_SETTINGS_KEY, verifyUnsubscribe } from "./lib/one-click-unsubscribe.mjs";
 
 const WORKER = fileURLToPath(new URL("./ses-bulk-worker.mjs", import.meta.url));
 const HOLD = "2999-12-31T23:59:59.000Z";
@@ -120,6 +121,44 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(backend.ses.notices[0].Destination.ToAddresses).toEqual(["ops@example.test"]);
     expect(backend.tables.app_settings.find((row) => row.key === WORKER_LEASE_KEY).value.token).toBeNull();
     expect(result.stdout).not.toContain("@example.test");
+  });
+
+  it("signs a one-click List-Unsubscribe link per recipient and reuses one stored key", async () => {
+    const email = seedCampaign({ recipients: 3 });
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    const request = backend.ses.bulkRequests.find((entry) => !entry.dropped);
+    expect(request.DefaultContent.Template.Headers).toBeUndefined();
+    const stored = backend.tables.app_settings.find((row) => row.key === UNSUBSCRIBE_SETTINGS_KEY).value.key;
+    for (const entry of request.BulkEmailEntries) {
+      const headers = Object.fromEntries(entry.ReplacementHeaders.map((header) => [header.Name, header.Value]));
+      expect(headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+      const [https, mailto] = headers["List-Unsubscribe"].split(", ");
+      expect(mailto).toBe("<mailto:reply@example.test?subject=Unsubscribe>");
+      const url = new URL(https.slice(1, -1));
+      expect(url.origin + url.pathname).toBe("https://mailer.test/api/unsubscribe");
+      expect(url.searchParams.get("c")).toBe(email.id);
+      expect(verifyUnsubscribe({ secret: stored, emailId: email.id, encodedRecipient: url.searchParams.get("r"), signature: url.searchParams.get("s") }))
+        .toBe(entry.Destination.ToAddresses[0]);
+    }
+    seedCampaign({ recipients: 1 });
+    expect((await runWorker()).code).toBe(0);
+    expect(backend.tables.app_settings.filter((row) => row.key === UNSUBSCRIBE_SETTINGS_KEY)).toHaveLength(1);
+  });
+
+  it("never mails automated senders left in the queue", async () => {
+    const email = seedCampaign({
+      recipients: 2,
+      extraRows: [
+        { id: crypto.randomUUID(), payload: { to: "donotreply@icicibank.com" }, status: "pending", available_at: HOLD, created_at: "2026-09-01T00:00:01Z", updated_at: "2026-09-01T00:00:01Z" },
+        { id: crypto.randomUUID(), payload: { to: "events@mail.stubhub.com" }, status: "pending", available_at: HOLD, created_at: "2026-09-01T00:00:02Z", updated_at: "2026-09-01T00:00:02Z" },
+      ],
+    });
+    backend.tables.app_settings.find((row) => row.key === autopilotKey(email.id)).value.approvedRecipients = 4;
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(sentDestinations()).toEqual(["person0@example.test", "person1@example.test"]);
+    expect(count(rowsFor(email.id), "canceled")).toBe(2);
   });
 
   it("never sends a campaign that is 'sending' but has no app approval", async () => {

@@ -28,7 +28,7 @@ export default async function ListsPage() {
           <div>
             <p className="text-sm font-semibold text-emerald-900">Automatic suppression is active</p>
             <p className="text-sm text-emerald-800">
-              Addresses at {BLOCKED_EMAIL_DOMAINS.map((domain) => `@${domain}`).join(" and ")} are automatically blocked during import, queueing, and sending.
+              Addresses at {BLOCKED_EMAIL_DOMAINS.map((domain) => `@${domain}`).join(" and ")}, and automated senders such as noreply@, invoice@ or anything@mail.company.com, are automatically blocked during import, queueing, and sending.
             </p>
           </div>
         </div>
