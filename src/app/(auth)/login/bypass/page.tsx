@@ -20,7 +20,7 @@ export default async function BypassPage({ searchParams }: BypassPageProps) {
   const params = (await searchParams) ?? {};
   const error = pickParam(params.error);
   const trace = pickParam(params.trace);
-  const configured = isBypassConfigured();
+  const configured = await isBypassConfigured();
   const rateLimitMatch = error.match(/^rate:(\d+)$/);
 
   const errorMessage =

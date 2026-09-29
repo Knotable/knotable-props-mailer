@@ -14,7 +14,8 @@
     "worker:ses-native": "node scripts/ses-native-worker.mjs",
     "campaign:snapshot": "node scripts/build-ses-native-campaign.mjs",
     "dev:fake": "node scripts/dev-fake-stack.mjs",
-    "worker:autopilot": "node scripts/ses-bulk-worker.mjs --mode autopilot"
+    "worker:autopilot": "node scripts/ses-bulk-worker.mjs --mode autopilot",
+    "bypass:set": "node scripts/set-bypass-password.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "3.1126.0",
