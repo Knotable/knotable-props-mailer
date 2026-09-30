@@ -36,6 +36,11 @@ export const dashboardNav: NavItem[] = [
     description: "Delivery health",
   },
   {
+    label: "Storage",
+    href: "/email/storage",
+    description: "Database size",
+  },
+  {
     label: "Lists",
     href: "/lists",
     description: "Members and imports",
