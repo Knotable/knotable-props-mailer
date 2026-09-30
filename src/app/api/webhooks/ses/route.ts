@@ -21,6 +21,7 @@ import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { logError } from "@/lib/logger";
 import { checkRateLimitSync } from "@/lib/rateLimit";
+import { slimSesEvent } from "@/lib/sesEventSlim";
 
 // ── SNS message signature verification ────────────────────────────────────────
 // Cache signing certs in memory so we don't fetch the same PEM on every event.
@@ -287,17 +288,8 @@ export async function POST(request: Request) {
 
   const supabase = getSupabaseAdmin();
 
-  // ── Look up email_id via ses_message_id ────────────────────────────────────
   let emailId: string | null = null;
   let queueId: string | null = null;
-  if (messageId) {
-    const { data: queueRow } = await supabase
-      .from("mail_queue")
-      .select("email_id")
-      .eq("ses_message_id", messageId)
-      .maybeSingle();
-    emailId = queueRow?.email_id ?? null;
-  }
 
   // The bulk worker tags each destination with its durable queue id. This is
   // the recovery path for the narrow crash window where SES accepted a batch
@@ -334,6 +326,24 @@ export async function POST(request: Request) {
     }
   }
 
+  // Untagged sends (test sends, SMTP path): fall back to the stored message id.
+  if (!emailId && messageId) {
+    const { data: queueRow } = await supabase
+      .from("mail_queue")
+      .select("email_id")
+      .eq("ses_message_id", messageId)
+      .maybeSingle();
+    emailId = queueRow?.email_id ?? null;
+  }
+
+  // A Send event only says SES accepted the message, which the worker already
+  // recorded (and which the recovery above uses). Nothing reads stored Send
+  // rows, and at one per recipient they are the bulk of a large campaign's
+  // event volume, so they are not persisted.
+  if (sesEventType === "Send") {
+    return NextResponse.json({ ok: true, action: "send_not_stored" });
+  }
+
   if (!emailId) {
     const commonHeaders = mail?.["commonHeaders"] as Record<string, unknown> | undefined;
     const subject = commonHeaders?.["subject"];
@@ -360,7 +370,7 @@ export async function POST(request: Request) {
     message_id: messageId,
     recipient,
     email_id: emailId,
-    payload: sesEvent as import("@/supabase/types").Json,
+    payload: slimSesEvent(sesEvent) as import("@/supabase/types").Json,
   });
 
   if (error?.code === "23505") {

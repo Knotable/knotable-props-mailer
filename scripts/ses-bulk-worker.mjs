@@ -98,7 +98,7 @@ const config = {
   breakerCheckMs: Math.max(1, numberEnv("SES_BREAKER_CHECK_SECONDS", 120)) * 1_000,
   breaker: {
     minSample: Math.max(1, numberEnv("SES_BREAKER_MIN_SAMPLE", 300)),
-    maxHardBounceRate: numberEnv("SES_BREAKER_MAX_HARD_BOUNCE_RATE", 0.08),
+    maxHardBounceRate: numberEnv("SES_BREAKER_MAX_HARD_BOUNCE_RATE", 0.05),
     maxComplaintRate: numberEnv("SES_BREAKER_MAX_COMPLAINT_RATE", 0.003),
   },
   sendWindow: parseSendWindow(process.env.SES_SEND_WINDOW),
