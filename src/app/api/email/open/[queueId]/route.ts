@@ -1,4 +1,5 @@
 import { parseUuid } from "@/lib/ids";
+import { recordDeliveryEvent } from "@/lib/deliveryLedger";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import type { Json } from "@/supabase/types";
 
@@ -57,14 +58,20 @@ export async function GET(
         user_agent: userAgent,
       };
 
-      await supabase.from("provider_events").insert({
-        provider: "props",
-        event_type: "opened",
-        message_id: row.ses_message_id ?? row.id,
-        recipient: payloadToRecipient(row.payload),
-        email_id: row.email_id,
-        payload: payload as Json,
-      });
+      const recipient = payloadToRecipient(row.payload);
+      // Opens are flagged on the campaign's delivery ledger rather than stored as
+      // one row per hit; a row is only written when the ledger cannot take it.
+      const ledger = await recordDeliveryEvent(supabase, { emailId: row.email_id, recipient, eventType: "opened" });
+      if (ledger === "row") {
+        await supabase.from("provider_events").insert({
+          provider: "props",
+          event_type: "opened",
+          message_id: row.ses_message_id ?? row.id,
+          recipient,
+          email_id: row.email_id,
+          payload: payload as Json,
+        });
+      }
     }
   } catch (error) {
     console.warn("[open tracking] failed to record open event", error);

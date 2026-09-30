@@ -464,4 +464,91 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     const order = backend.ses.bulkRequests.map((request) => request.BulkEmailEntries[0].ReplacementTags.find((tag) => tag.Name === "campaign_id").Value);
     expect(order[0]).toBe(second.id);
   });
+
+  it("records every recipient's outcome on the delivery ledger at checkpoint time", async () => {
+    const email = seedCampaign({ recipients: 60 });
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    const ledger = backend.tables.email_deliveries.filter((row) => row.email_id === email.id);
+    expect(ledger).toHaveLength(60);
+    expect(ledger.every((row) => row.outcome === 1)).toBe(true);
+    expect(new Set(ledger.map((row) => row.recipient_hash)).size).toBe(60);
+  });
+
+  it("flags deliveries on the ledger instead of storing event rows, and the blind alarm stays quiet", async () => {
+    backend.ses.flagDeliveries = true;
+    const email = seedCampaign({ recipients: 1_200 });
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "0", SES_BREAKER_CHECK_SECONDS: "1", SES_BULK_MAX_RECIPIENTS_PER_SECOND: "200" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.notices.map((notice) => notice.Content.Simple.Subject.Data)).toEqual(["[Props Mailer] Sent: Autumn update"]);
+    expect(backend.tables.provider_events.filter((row) => row.event_type === "delivered")).toHaveLength(0);
+    const flagged = backend.tables.email_deliveries.filter((row) => row.email_id === email.id && (row.flags & 1));
+    expect(flagged.length).toBeGreaterThan(0);
+  });
+
+  it("compacts a finished, reported campaign into the ledger archive and deletes its queue rows", async () => {
+    const email = seedCampaign({ recipients: 60 });
+    expect((await runWorker()).code).toBe(0);
+    // Not compacted before its report has gone out.
+    expect(rowsFor(email.id)).toHaveLength(60);
+    recordFor(email.id).reportSentAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(rowsFor(email.id)).toHaveLength(0);
+    expect(backend.tables.email_deliveries.filter((row) => row.email_id === email.id)).toHaveLength(0);
+    expect(backend.tables.email_delivery_archive.find((row) => row.email_id === email.id)).toMatchObject({ recipients: 60 });
+    expect(backend.tables.email_history_rollups.find((row) => row.email_id === email.id)).toMatchObject({ succeeded: 60 });
+    expect(recordFor(email.id)).toMatchObject({ state: "complete", compaction: { status: "compacted", queueRowsDeleted: 60, archivedRecipients: 60 } });
+    expect(recordFor(email.id).compactedAt).toBeTruthy();
+    expect(result.stdout).not.toContain("@example.test");
+    // Idempotent: a later run does nothing more.
+    const again = await runWorker();
+    expect(again.code, again.stderr).toBe(0);
+    expect(backend.tables.email_delivery_archive).toHaveLength(1);
+  });
+
+  it("does not compact while SES has not been reported on, or when compaction is switched off", async () => {
+    const email = seedCampaign({ recipients: 20 });
+    expect((await runWorker()).code).toBe(0);
+    recordFor(email.id).reportSentAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    expect((await runWorker(["--mode", "autopilot"], { SES_COMPACT_HISTORY: "off" })).code).toBe(0);
+    expect(rowsFor(email.id)).toHaveLength(20);
+    expect(recordFor(email.id).compactedAt).toBeUndefined();
+  });
+
+  it("never re-sends to recipients a compacted campaign already reached when it is queued again", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: true });
+    expect((await runWorker()).code).toBe(0);
+    const firstWave = sentDestinations().length;
+    expect(firstWave).toBe(1_521);
+    recordFor(email.id).reportSentAt = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    expect((await runWorker()).code).toBe(0);
+    expect(rowsFor(email.id)).toHaveLength(0);
+    expect(backend.tables.email_delivery_archive[0].recipients).toBe(1_521);
+
+    // Operator queues the same campaign again after adding three people to a list.
+    const approval = backend.tables.app_settings.find((row) => row.key === autopilotKey(email.id));
+    const audience = { ...approval.value.audience };
+    const listId = audience.listIds[0];
+    for (const address of ["late1@example.test", "late2@example.test", "late3@example.test"]) {
+      backend.tables.list_members.push({ id: crypto.randomUUID(), list_id: listId, email: address, status: "active", metadata: {} });
+    }
+    backend.tables.emails.find((row) => row.id === email.id).status = "queued";
+    approval.value = {
+      emailId: email.id,
+      approvalId: crypto.randomUUID(),
+      approvedAt: new Date().toISOString(),
+      approvedMaxRecipients: 50,
+      audience,
+      sendAfterPrepare: true,
+      contentSha256: campaignContentDigest(email),
+      subject: email.subject,
+      state: "preparing",
+    };
+    const second = await runWorker();
+    expect(second.code, second.stderr).toBe(0);
+    const secondWave = sentDestinations().slice(firstWave);
+    expect(secondWave.sort()).toEqual(["late1@example.test", "late2@example.test", "late3@example.test"]);
+    expect(recordFor(email.id).state).toBe("complete");
+  });
 });

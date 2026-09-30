@@ -54,6 +54,10 @@ export type AutopilotRecord = {
   totals?: Record<string, number>;
   canaryPassed?: boolean;
   reportSentAt?: string;
+  // Set once the finished campaign's queue rows were folded into the delivery
+  // ledger and rollup (compact_campaign_history).
+  compactedAt?: string;
+  compaction?: { status: string; reason: string | null; queueRowsDeleted: number; archivedRecipients: number };
   report?: { accepted: number; delivered: number; bounced: number; complained: number; opened: number; clicked: number; at?: string };
   canary?: { recipients: number; sent: number } | null;
   deliverability?: {

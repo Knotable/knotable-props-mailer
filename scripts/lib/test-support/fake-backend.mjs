@@ -52,7 +52,16 @@ function matches(row, column, expression) {
 const RESERVED = new Set(["select", "order", "limit", "on_conflict", "columns", "offset"]);
 
 export function createFakeBackend({ now = () => Date.now(), lenient = false } = {}) {
-  const tables = { app_settings: [], emails: [], mail_queue: [], list_members: [], provider_events: [] };
+  const tables = {
+    app_settings: [], emails: [], mail_queue: [], list_members: [], provider_events: [],
+    // Delivery ledger (supabase/migrations/20260930_delivery_ledger.sql). The fake
+    // keys recipients by their normalized address instead of a 64-bit hash.
+    email_deliveries: [], email_delivery_archive: [], email_history_rollups: [],
+  };
+  const ledgerKey = (address) => String(address ?? "").trim().toLowerCase();
+  const FLAG_BITS = { delivered: 1, opened: 2, clicked: 4, bounced: 8, complained: 16 };
+  const OUTCOME_CODES = { succeeded: 1, dead: 2, canceled: 3 };
+  const TERMINAL = ["succeeded", "failed", "dead", "canceled"];
   // Extra RPCs for running the Next.js app against this fake (lenient mode).
   const rpcHandlers = {
     get_email_queue_analytics_metric: ({ p_email_id }) => [{
@@ -60,7 +69,51 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     }],
     get_email_provider_analytics_metric: ({ p_email_id, p_event_type }) => {
       const events = tables.provider_events.filter((row) => row.email_id === p_email_id && row.event_type === p_event_type);
-      return [{ unique_recipients: new Set(events.map((row) => row.recipient ?? row.message_id)).size, event_count: events.length }];
+      const unique = new Set(events.map((row) => row.recipient ?? row.message_id));
+      const flag = FLAG_BITS[p_event_type];
+      const compacted = tables.email_history_rollups.some((row) => row.email_id === p_email_id);
+      if (flag && ["delivered", "opened"].includes(p_event_type) && !compacted) {
+        for (const row of tables.email_deliveries) {
+          if (row.email_id === p_email_id && (row.flags & flag)) unique.add(ledgerKey(row.recipient_hash));
+        }
+      }
+      return [{ unique_recipients: unique.size, event_count: Math.max(events.length, unique.size) }];
+    },
+    delivery_accepted_among: ({ p_email_id, p_recipients }) => {
+      const archive = tables.email_delivery_archive.find((row) => row.email_id === p_email_id);
+      return (p_recipients ?? []).filter((address) => {
+        const key = ledgerKey(address);
+        const hot = tables.email_deliveries.find((row) => row.email_id === p_email_id && row.recipient_hash === key);
+        if (hot) return hot.outcome === 1;
+        const position = archive ? archive.hashes.indexOf(key) : -1;
+        return position >= 0 && (archive.states[position] & 7) === 1;
+      });
+    },
+    compact_campaign_history: ({ p_email_id }) => {
+      if (tables.email_history_rollups.some((row) => row.email_id === p_email_id)) return { status: "skipped", reason: "already compacted" };
+      const ledger = tables.email_deliveries.filter((row) => row.email_id === p_email_id);
+      if (!ledger.length) return { status: "skipped", reason: "no delivery ledger" };
+      const queue = tables.mail_queue.filter((row) => row.email_id === p_email_id);
+      if (queue.some((row) => ["pending", "processing"].includes(row.status))) return { status: "skipped", reason: "campaign still has unsent rows" };
+      const terminal = queue.filter((row) => TERMINAL.includes(row.status) && ledgerKey(row.payload?.to));
+      if (terminal.length > ledger.length) return { status: "skipped", reason: "ledger incomplete" };
+      const count = (status) => queue.filter((row) => row.status === status).length;
+      tables.email_history_rollups.push({
+        email_id: p_email_id, total_queued: queue.length, succeeded: count("succeeded"), failed: count("failed"), dead: count("dead"), canceled: count("canceled"),
+        delivered_unique: ledger.filter((row) => row.flags & 1).length, opened_unique: ledger.filter((row) => row.flags & 2).length,
+        archived_through: new Date(now()).toISOString(),
+      });
+      const sorted = [...ledger].sort((a, b) => (a.recipient_hash < b.recipient_hash ? -1 : 1));
+      tables.email_delivery_archive.push({
+        email_id: p_email_id, recipients: sorted.length,
+        hashes: sorted.map((row) => row.recipient_hash), states: sorted.map((row) => row.outcome | (row.flags << 3)),
+      });
+      tables.email_deliveries = tables.email_deliveries.filter((row) => row.email_id !== p_email_id);
+      const queueRows = queue.filter((row) => TERMINAL.includes(row.status)).length;
+      tables.mail_queue = tables.mail_queue.filter((row) => !(row.email_id === p_email_id && TERMINAL.includes(row.status)));
+      const eventRows = tables.provider_events.filter((row) => row.email_id === p_email_id && ["delivered", "opened", "sent"].includes(row.event_type)).length;
+      tables.provider_events = tables.provider_events.filter((row) => !(row.email_id === p_email_id && ["delivered", "opened", "sent"].includes(row.event_type)));
+      return { status: "compacted", archived_recipients: sorted.length, queue_rows_deleted: queueRows, event_rows_deleted: eventRows };
     },
     get_mailer_runtime_limits: () => {
       const dayMs = 24 * 3_600_000;
@@ -87,6 +140,7 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     entryStatus: null,
     bounceEvery: 0,
     emitDeliveries: false,
+    flagDeliveries: false,
     acceptedCount: 0,
   };
   const failures = { finalizeNext: 0 };
@@ -149,6 +203,13 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
         row.last_error = result.last_error || null;
         row.updated_at = p_now;
         applied += 1;
+        const recipient = ledgerKey(row.payload?.to);
+        if (recipient && OUTCOME_CODES[result.outcome]) {
+          const outcome = result.outcome === "dead" && String(result.last_error ?? "").startsWith("ambiguous_claim:") ? 4 : OUTCOME_CODES[result.outcome];
+          const existing = tables.email_deliveries.find((entry) => entry.email_id === p_email_id && entry.recipient_hash === recipient);
+          if (existing) existing.outcome = outcome;
+          else tables.email_deliveries.push({ email_id: p_email_id, recipient_hash: recipient, outcome, flags: 0 });
+        }
       } else if (result.outcome === "succeeded" && row.status === "succeeded" && row.ses_message_id === result.ses_message_id) {
         applied += 1;
       }
@@ -277,6 +338,7 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
         return send(response, 400, { message: "Maximum sending rate exceeded." }, { "x-amzn-errortype": "TooManyRequestsException" });
       }
       ses.bulkRequests.push(payload);
+      const pendingFlags = [];
       const results = payload.BulkEmailEntries.map((entry) => {
         if (ses.entryStatus) return { Status: ses.entryStatus };
         ses.quota.SentLast24Hours += 1;
@@ -293,6 +355,11 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
             received_at: new Date(now()).toISOString(),
           });
         }
+        if (ses.flagDeliveries) {
+          // Simulated webhook with the ledger: the delivered flag replaces the event row.
+          const campaign = entry.ReplacementTags?.find((tag) => tag.Name === "campaign_id")?.Value ?? null;
+          pendingFlags.push({ campaign, address: ledgerKey(entry.Destination.ToAddresses[0]) });
+        }
         if (ses.emitDeliveries) {
           tables.provider_events.push({
             id: crypto.randomUUID(),
@@ -305,6 +372,16 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
         }
         return { Status: "SUCCESS", MessageId: messageId };
       });
+      if (pendingFlags.length) {
+        // SNS events arrive after the worker's checkpoint, never before it.
+        setTimeout(() => {
+          for (const { campaign, address } of pendingFlags) {
+            const ledgerRow = tables.email_deliveries.find((row) => row.email_id === campaign && row.recipient_hash === address);
+            if (ledgerRow) ledgerRow.flags |= FLAG_BITS.delivered;
+            else tables.provider_events.push({ id: crypto.randomUUID(), email_id: campaign, event_type: "delivered", recipient: address, payload: {}, received_at: new Date(now()).toISOString() });
+          }
+        }, 150);
+      }
       return send(response, 200, { BulkEmailEntryResults: results });
     }
     if (request.method === "POST" && url.pathname === "/v2/email/outbound-emails") {

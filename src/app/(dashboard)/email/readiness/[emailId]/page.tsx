@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { getFlaggedEventActivity, laterOf } from "@/lib/eventActivity";
 import { notFound } from "next/navigation";
 import { requireServerAuthContext } from "@/lib/authAccess";
 import { getMailerRuntimeLimits } from "@/lib/dailyQuota";
@@ -145,7 +146,8 @@ export default async function SendReadinessPage({ params }: Props) {
   const missingAltImages = [...email.html.matchAll(/<img\b[^>]*>/gi)].filter((match) => !/\balt\s*=\s*["'][^"']*["']/i.test(match[0])).length;
   const mergeTags = unresolvedTags(`${email.subject}\n${email.html}\n${email.text ?? ""}`);
   const placeholderSubjectTerms = subjectPlaceholderTerms(email.subject);
-  const latestEventAt = latestProviderEvent.data?.received_at ?? null;
+  const flaggedEvents = await getFlaggedEventActivity(supabase, new Date(now.getTime() - 7 * 24 * 3_600_000).toISOString());
+  const latestEventAt = laterOf(latestProviderEvent.data?.received_at, flaggedEvents.latestAt);
   const eventAgeHours = latestEventAt ? (now.getTime() - new Date(latestEventAt).getTime()) / 3_600_000 : null;
   const hasConfigurationSet = Boolean(process.env.AWS_SES_CONFIGURATION_SET?.trim());
   const hasSnsTopic = Boolean(process.env.AWS_SES_SNS_TOPIC_ARN?.trim());
@@ -199,7 +201,7 @@ export default async function SendReadinessPage({ params }: Props) {
     {
       label: "Provider-event freshness",
       detail: latestEventAt
-        ? `Latest ${latestProviderEvent.data?.event_type ?? "provider"} event: ${formatDate(latestEventAt)}${eventAgeHours !== null ? ` (${Math.round(eventAgeHours)}h ago)` : ""}.`
+        ? `Latest ${latestProviderEvent.data?.received_at === latestEventAt ? (latestProviderEvent.data?.event_type ?? "provider") : "delivery/open"} event: ${formatDate(latestEventAt)}${eventAgeHours !== null ? ` (${Math.round(eventAgeHours)}h ago)` : ""}.`
         : "No provider event has been recorded.",
       tone: eventAgeHours === null ? "red" : eventAgeHours <= 48 ? "green" : "amber",
     },
