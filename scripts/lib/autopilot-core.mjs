@@ -140,7 +140,10 @@ export function runUrlFromEnv(env = process.env) {
 
 // Deliverability circuit breaker. Rates are measured on events since this
 // approval's baseline, so an operator's deliberate re-approval starts clean.
-export const BREAKER_DEFAULTS = { minSample: 300, maxHardBounceRate: 0.08, maxComplaintRate: 0.003 };
+// 5% hard bounces is where SES places an account under review (10% can pause
+// it), and on a large send this campaign dominates the account's rate — so
+// stop at the review line rather than above it.
+export const BREAKER_DEFAULTS = { minSample: 300, maxHardBounceRate: 0.05, maxComplaintRate: 0.003 };
 
 export function evaluateDeliverability({ accepted, hardBounces, complaints }, thresholds = BREAKER_DEFAULTS) {
   const { minSample, maxHardBounceRate, maxComplaintRate } = { ...BREAKER_DEFAULTS, ...thresholds };

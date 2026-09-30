@@ -104,6 +104,8 @@ describe("deliverability guards", () => {
     expect(evaluateDeliverability({ accepted: 100, hardBounces: 50, complaints: 5 }).trip).toBe(false);
     expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 20, complaints: 1 }).trip).toBe(false);
     expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 90, complaints: 0 })).toMatchObject({ trip: true, reason: expect.stringMatching(/Hard-bounce/) });
+    expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 60, complaints: 0 }).trip).toBe(true);
+    expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 45, complaints: 0 }).trip).toBe(false);
     expect(evaluateDeliverability({ accepted: 1_000, hardBounces: 0, complaints: 4 })).toMatchObject({ trip: true, reason: expect.stringMatching(/Complaint/) });
   });
 
