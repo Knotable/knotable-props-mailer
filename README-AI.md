@@ -73,6 +73,8 @@ Updated 2026-09-30. The autopilot branch is merged (PR #39, #40) and the schedul
 8. **Leftover `sending` campaigns:** glance at the Queue page. Anything `sending` without an approval shows as "Not sending — press Send" and is never picked up automatically.
 9. **Previously parked, still open:** `supabase/migrations/20260810_free_tier_load_reduction.sql` application status is unverified. The AWS-native plane (OIDC role, HMAC unsubscribe Lambda, S3/DynamoDB) remains unapproved and is optional hardening. SQS buffering of SES events is now unnecessary unless Supabase still struggles after the Pro upgrade.
 
+**Storage page (2026-09-30):** `/email/storage` shows database size vs the plan limit, per-table and per-index sizes with dead-row counts, never-used indexes, and a "what if I send to N" peak projection (measured per-row costs once the tables have ≥1,000 rows). It needs `supabase/migrations/20260930_database_storage_stats.sql` applied once (read-only, service-role-only function); until then the page shows the equivalent SQL. Set `SUPABASE_DB_LIMIT_MB` if the plan changes.
+
 **Done in code 2026-09-30:** (a) the SES webhook stores a slim event payload (message id, timestamp, destination, custom tags and the event detail; not the ~2–3 KB of repeated headers) and no longer stores `Send` events, which nothing read. Stored event volume for a large send drops by more than 80%, and each event costs one fewer database query. (b) The hard-bounce circuit-breaker default is 5%. (c) A weekly `keepalive` job re-enables the SES Autopilot workflow, so GitHub's 60-day inactivity rule for public repositories cannot silently stop sends.
 
 ---
