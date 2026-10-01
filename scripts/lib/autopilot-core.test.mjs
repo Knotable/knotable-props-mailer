@@ -160,6 +160,17 @@ describe("results report", () => {
     expect(isReportDue({ state: "blocked", completedAt }, Date.parse("2026-09-29T10:00:00Z"))).toBe(false);
   });
 
+  it("compacts a finished campaign once, a grace period after its report", async () => {
+    const { isCompactionDue } = await import("./autopilot-core.mjs");
+    const base = { state: "complete", completedAt: "2026-09-27T10:00:00Z", reportSentAt: "2026-09-28T10:00:00Z" };
+    expect(isCompactionDue(base, Date.parse("2026-09-28T10:30:00Z"))).toBe(false);
+    expect(isCompactionDue(base, Date.parse("2026-09-28T11:00:00Z"))).toBe(true);
+    expect(isCompactionDue(base, Date.parse("2026-09-28T10:00:00Z"), 0)).toBe(true);
+    expect(isCompactionDue({ ...base, compactedAt: "x" }, Date.parse("2026-09-30T10:00:00Z"))).toBe(false);
+    expect(isCompactionDue({ ...base, reportSentAt: undefined }, Date.parse("2026-09-30T10:00:00Z"))).toBe(false);
+    expect(isCompactionDue({ ...base, state: "blocked" }, Date.parse("2026-09-30T10:00:00Z"))).toBe(false);
+  });
+
   it("formats rates against sensible denominators", async () => {
     const { formatResultsReport } = await import("./autopilot-core.mjs");
     const lines = formatResultsReport({ accepted: 1_000, delivered: 980, bounced: 20, complained: 1, opened: 490, clicked: 98 });

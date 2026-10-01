@@ -11,9 +11,11 @@
  *       https://<your-domain>/api/webhooks/ses
  *  3. SNS sends a SubscriptionConfirmation first — this handler auto-confirms it.
  *
- * Event deduplication: before inserting into provider_events we check for an
- * existing row with the same (message_id, event_type).  SNS delivers at-least-
- * once, so retries after a 500 would otherwise create duplicate rows.
+ * Event deduplication: SNS delivers at-least-once, so retries after a 500 would
+ * otherwise create duplicate rows; the partial unique index
+ * provider_events_message_event_unique_idx rejects repeats. Delivered/opened
+ * events are flagged on the campaign's delivery ledger instead of stored as rows
+ * (see src/lib/deliveryLedger.ts).
  */
 
 import { createVerify } from "crypto";
@@ -22,6 +24,7 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { logError } from "@/lib/logger";
 import { checkRateLimitSync } from "@/lib/rateLimit";
 import { slimSesEvent } from "@/lib/sesEventSlim";
+import { firstTagUuid, markDeliveryAccepted, recordDeliveryEvent } from "@/lib/deliveryLedger";
 
 // ── SNS message signature verification ────────────────────────────────────────
 // Cache signing certs in memory so we don't fetch the same PEM on every event.
@@ -288,30 +291,34 @@ export async function POST(request: Request) {
 
   const supabase = getSupabaseAdmin();
 
-  let emailId: string | null = null;
-  let queueId: string | null = null;
-
-  // The bulk worker tags each destination with its durable queue id. This is
-  // the recovery path for the narrow crash window where SES accepted a batch
-  // but the worker exited before it checkpointed the returned message ids.
+  // The bulk worker tags every message with its campaign and durable queue id.
+  // The campaign tag attributes the event without reading mail_queue, which
+  // matters twice: it saves a query per event, and after a finished campaign is
+  // compacted its queue rows no longer exist but late opens/clicks still arrive.
   const mailTags = mail?.["tags"] as Record<string, unknown> | undefined;
-  const taggedQueueIds = toStringArray(mailTags?.["queue_id"]);
-  if (taggedQueueIds[0] && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(taggedQueueIds[0])) {
-    queueId = taggedQueueIds[0];
-    const { data: taggedQueueRow } = await supabase
+  let emailId: string | null = firstTagUuid(mailTags, "campaign_id");
+  const queueId: string | null = firstTagUuid(mailTags, "queue_id");
+
+  // Recovery path for the narrow crash window where SES accepted a batch but the
+  // worker exited before it checkpointed. Rows the autopilot parked as ambiguous
+  // (worker died or SES never answered) were never retried; SES's own Send event
+  // proves they did go out. Only Send events need the queue row.
+  if (queueId && (sesEventType === "Send" || !emailId)) {
+    // The generated Supabase types for mail_queue are stale (resolve to never).
+    type QueueRowFacts = { email_id: string | null; status: string | null; last_error: string | null };
+    const { data: taggedData } = await supabase
       .from("mail_queue")
       .select("email_id, status, last_error")
       .eq("id", queueId)
       .maybeSingle();
+    const taggedQueueRow = taggedData as QueueRowFacts | null;
     emailId = emailId ?? taggedQueueRow?.email_id ?? null;
 
-    // Rows the autopilot parked as ambiguous (worker died or SES never answered)
-    // were never retried; SES's own Send event proves they did go out.
     const parkedAsAmbiguous =
       taggedQueueRow?.status === "dead" && String(taggedQueueRow.last_error ?? "").startsWith("ambiguous_claim:");
     if (messageId && (taggedQueueRow?.status === "processing" || parkedAsAmbiguous) && sesEventType === "Send") {
       const now = new Date();
-      await supabase
+      const { data: flipped } = await supabase
         .from("mail_queue")
         .update({
           status: "succeeded",
@@ -322,7 +329,11 @@ export async function POST(request: Request) {
           updated_at: now.toISOString(),
         })
         .eq("id", queueId)
-        .eq("status", parkedAsAmbiguous ? "dead" : "processing");
+        .eq("status", parkedAsAmbiguous ? "dead" : "processing")
+        .select("id");
+      if (flipped?.length && taggedQueueRow?.email_id) {
+        await markDeliveryAccepted(supabase, taggedQueueRow.email_id, recipient);
+      }
     }
   }
 
@@ -355,6 +366,16 @@ export async function POST(request: Request) {
         .limit(2);
       if (matches?.length === 1) emailId = matches[0].id;
     }
+  }
+
+  // Delivered/opened events are the two every recipient produces. They are
+  // folded into the campaign's delivery ledger (one tiny row per recipient)
+  // instead of becoming ~500-byte rows each; bounces, complaints and clicks keep
+  // their rows because they carry evidence and link detail. The ledger call also
+  // sets the flag for those, and answers 'row' whenever a row should be stored.
+  const ledger = await recordDeliveryEvent(supabase, { emailId, recipient, eventType });
+  if (ledger === "flagged") {
+    return NextResponse.json({ ok: true, event_type: eventType, stored: "ledger" });
   }
 
   // ── Insert event ───────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
 } from "@/lib/appSettings";
 import { isoDaysAgo } from "@/lib/dateWindows";
 import { DataFreshness } from "@/components/data-freshness";
+import { getFlaggedEventActivity } from "@/lib/eventActivity";
 import {
   CampaignAnalyticsList,
   type CampaignAnalyticsSeed,
@@ -131,13 +132,16 @@ export default async function AnalyticsPage() {
       .eq("provider", "ses"),
   ]);
 
-  const recentOpens = opensLast7Days ?? 0;
+  // Opens are flagged on each campaign's delivery ledger rather than stored as
+  // rows; the per-day counter table keeps the account-wide totals.
+  const flagged = await getFlaggedEventActivity(supabase, last7Timestamp);
+  const recentOpens = (opensLast7Days ?? 0) + (flagged.recentByType.opened ?? 0);
   const recentClicks = clicksLast7Days ?? 0;
   const recentBounces = bouncesLast7Days ?? 0;
-  const allTimeOpens = opensAllTime ?? 0;
+  const allTimeOpens = (opensAllTime ?? 0) + (flagged.totalByType.opened ?? 0);
   const allTimeClicks = clicksAllTime ?? 0;
   const allTimeBounces = bouncesAllTime ?? 0;
-  const hasSnsEvents = (sesEventsAllTime ?? 0) > 0;
+  const hasSnsEvents = (sesEventsAllTime ?? 0) + flagged.total > 0;
 
   // Campaign identities render immediately. A client-side queue refreshes one
   // campaign metric at a time and reuses timestamped browser-cached results.

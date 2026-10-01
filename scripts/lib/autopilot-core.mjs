@@ -217,6 +217,14 @@ export function isReportDue(record, nowMs, delayMs = 24 * 3_600_000) {
   return Number.isFinite(completed) && nowMs - completed >= delayMs;
 }
 
+// A completed, reported campaign is compacted (queue rows folded into the
+// delivery ledger/rollup) once, a little after its results report went out.
+export function isCompactionDue(record, nowMs, graceMs = 3_600_000) {
+  if (record?.state !== "complete" || !record.reportSentAt || record.compactedAt) return false;
+  const reported = Date.parse(record.reportSentAt);
+  return Number.isFinite(reported) && nowMs - reported >= graceMs;
+}
+
 const pct = (part, whole, digits = 1) => (whole > 0 ? `${((part / whole) * 100).toFixed(digits)}%` : "—");
 
 export function formatResultsReport({ accepted, delivered, bounced, complained, opened, clicked }) {

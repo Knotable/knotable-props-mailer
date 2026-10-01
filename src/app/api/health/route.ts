@@ -13,6 +13,7 @@
  *   fix       – what to do if not ok (copy-paste-able instructions)
  */
 
+import { getFlaggedEventActivity, laterOf } from "@/lib/eventActivity";
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { AUTOPILOT_KEY_PREFIX, isActiveAutopilot, type AutopilotRecord } from "@/lib/sendAutopilot";
@@ -435,7 +436,10 @@ export async function GET() {
         .maybeSingle(),
     ]);
 
-    const latestSnsReceivedAt = (latestSnsEvent as { received_at?: string } | null)?.received_at;
+    // Delivered/opened events are flagged on the delivery ledger, not stored as
+    // rows; the per-day counter table keeps them visible here.
+    const flagged = await getFlaggedEventActivity(db, new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString());
+    const latestSnsReceivedAt = laterOf((latestSnsEvent as { received_at?: string } | null)?.received_at, flagged.latestAt) ?? undefined;
     const latestFailure = latestWebhookFailure as {
       message?: string;
       created_at?: string;
@@ -460,17 +464,19 @@ export async function GET() {
     const latestFailureSummary = latestFailure
       ? ` Latest webhook failure: ${latestFailure.message ?? "unknown"}${latestFailureReason} at ${latestFailure.created_at ?? "unknown"}.`
       : "";
-    const hasSns = (snsCount ?? 0) > 0;
-    const hasRecentSns = (recentSnsCount ?? 0) > 0;
+    const totalSnsEvents = (snsCount ?? 0) + flagged.total;
+    const recentSnsEvents = (recentSnsCount ?? 0) + flagged.recent;
+    const hasSns = totalSnsEvents > 0;
+    const hasRecentSns = recentSnsEvents > 0;
     checks.push({
       id: "sns_events",
       label: "SES → SNS webhook",
       severity: "warning",
       ok: hasRecentSns,
       message: hasRecentSns
-        ? `SNS webhook active — ${recentSnsCount} event(s) received in the last 7 days`
+        ? `SNS webhook active — ${recentSnsEvents} event(s) received in the last 7 days`
         : hasSns
-          ? `SNS webhook stale — ${snsCount} total event(s), latest at ${latestSnsReceivedAt ?? "unknown"}.${latestFailureSummary}`
+          ? `SNS webhook stale — ${totalSnsEvents} total event(s), latest at ${latestSnsReceivedAt ?? "unknown"}.${latestFailureSummary}`
           : `No SNS events received yet. Opens, clicks, and bounces will show '—' in Analytics.${latestFailureSummary}`,
       fix: hasRecentSns
         ? undefined

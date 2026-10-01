@@ -46,8 +46,8 @@ const levelStyles = {
 
 const levelText = {
   ok: "Fits with room to spare.",
-  tight: "Fits, but with little margin. Archive old campaigns or trim indexes before sending.",
-  over: "Would exceed the limit while in flight. Do not send until space is freed.",
+  tight: "Fits, but with little margin.",
+  over: "Would exceed the limit.",
 } as const;
 
 export default async function StoragePage({ searchParams }: StoragePageProps) {
@@ -115,7 +115,7 @@ function StorageDetails({ stats, limit, recipients }: { stats: StorageStats; lim
         </div>
       </section>
 
-      <section className={`space-y-3 rounded-lg border p-4 ${levelStyles[projection.level]}`}>
+      <section className={`space-y-3 rounded-lg border p-4 ${levelStyles[projection.levelVacuumed]}`}>
         <form method="get" className="flex flex-wrap items-end gap-3 text-sm">
           <label className="space-y-1">
             <span className="block text-xs uppercase tracking-wide opacity-70">What if I send to</span>
@@ -131,13 +131,28 @@ function StorageDetails({ stats, limit, recipients }: { stats: StorageStats; lim
           </button>
         </form>
         <p className="text-sm font-medium">
-          Peak while {recipients.toLocaleString()} recipients are in flight: {formatBytes(projection.peakBytes)} (
-          {projection.percentOfLimit.toFixed(0)}% of the limit). {levelText[projection.level]}
+          Peak while {recipients.toLocaleString()} recipients are in flight: {formatBytes(projection.peakBytesVacuumed)} (
+          {projection.percentOfLimitVacuumed.toFixed(0)}% of the limit) with the worker&apos;s in-send cleanup.{" "}
+          {levelText[projection.levelVacuumed]}
+        </p>
+        <p className={`rounded-md border px-3 py-2 text-xs ${levelStyles[projection.level]}`}>
+          Without that cleanup (the worker needs the <code>SUPABASE_DB_CONNECTION</code> secret to run it): {formatBytes(projection.peakBytes)} (
+          {projection.percentOfLimit.toFixed(0)}%). {levelText[projection.level]}
         </p>
         <p className="text-xs opacity-80">
-          Adds {formatBytes(projection.queueBytes)} for queue rows (counted twice: each row is rewritten about three times and vacuum
-          reclaims the old copies later) and {formatBytes(projection.eventBytes)} for delivered/opened events, on top of what is stored now.
-          Assumes the campaign&apos;s rows are still in the database, i.e. before archive-and-purge.
+          Each queue row is rewritten twice while it sends, and every rewrite leaves a dead copy behind until the database cleans up.
+          Measured on 200k recipients that grew the queue table from 145 MB to 417 MB uncleaned, versus 174 MB with cleanup every 5,000 sends.
+          {projection.ledger
+            ? " Delivered/opened events are recorded as flags on a small per-recipient ledger instead of event rows."
+            : " The delivery-ledger migration (20260930_delivery_ledger.sql) is not applied yet, so every recipient also produces about two event rows."}
+        </p>
+        <p className="text-sm">
+          <span className="font-medium">Kept afterwards: {formatBytes(projection.permanentBytes)}.</span>{" "}
+          <span className="text-xs opacity-80">
+            {projection.ledger
+              ? "A day after the results report, the finished campaign is folded into about 9 bytes per recipient and its queue rows are deleted."
+              : "Until the ledger migration is applied, finished campaigns stay in the database at full size."}
+          </span>
         </p>
       </section>
 

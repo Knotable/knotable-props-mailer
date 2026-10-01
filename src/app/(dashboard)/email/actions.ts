@@ -11,6 +11,7 @@ import { getQuotaUsageSnapshot, buildSendSchedule, todayUTC } from "@/lib/dailyQ
 import { logAudit } from "@/lib/logger";
 import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/queueReleaseGuard";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
+import { findAcceptedRecipients } from "@/lib/deliveryLedger";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
 import { assertSendReadySubject } from "@/lib/subjectReadiness";
@@ -744,14 +745,24 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   // "Send Now" for this email.
   const queueRows: Array<ReturnType<typeof buildMemberQueueRow> | ReturnType<typeof buildSenderCopyQueueRow>> = [];
 
+  // Recipients SES already accepted for this campaign are never queued again,
+  // even when the campaign was compacted and its queue rows are gone.
+  // (Stale generated types make list_members rows `never`; state the shape.)
+  const alreadyAccepted = await findAcceptedRecipients(
+    supabase,
+    emailId,
+    (membersToQueue as Array<{ email: string }>).map((member) => member.email),
+  );
   for (const member of membersToQueue) {
+    if (alreadyAccepted.has((member as { email: string }).email)) continue;
     queueRows.push(buildMemberQueueRow({ emailId, listId, email, member, campaignLabel }));
   }
 
   if (offset === 0) {
     const senderEmail = extractEmailAddress(email.from_address);
     if (senderEmail && !isBlockedRecipientEmail(senderEmail)) {
-      queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
+      const senderAccepted = await findAcceptedRecipients(supabase, emailId, [senderEmail]);
+      if (!senderAccepted.size) queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
     }
   }
 

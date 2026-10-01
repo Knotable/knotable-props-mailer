@@ -98,6 +98,11 @@ jobs:
       SES_BREAKER_MAX_HARD_BOUNCE_RATE: ${{ vars.SES_BREAKER_MAX_HARD_BOUNCE_RATE || '0.05' }}
       SES_BREAKER_MAX_COMPLAINT_RATE: ${{ vars.SES_BREAKER_MAX_COMPLAINT_RATE || '0.003' }}
       SES_SEND_WINDOW: ${{ vars.SES_SEND_WINDOW }}
+      # Reclaim dead queue rows every N accepted (needs SUPABASE_DB_CONNECTION; 0 = off).
+      SES_QUEUE_VACUUM_EVERY: ${{ vars.SES_QUEUE_VACUUM_EVERY || '5000' }}
+      # Fold finished, reported campaigns into the delivery ledger and delete their queue rows.
+      SES_COMPACT_HISTORY: ${{ vars.SES_COMPACT_HISTORY || 'on' }}
+      SES_COMPACT_AFTER_HOURS: ${{ vars.SES_COMPACT_AFTER_HOURS || '1' }}
       SES_REPORT_DELAY_HOURS: ${{ vars.SES_REPORT_DELAY_HOURS || '24' }}
       SES_WORKER_MAX_RUNTIME_MINUTES: "330"
       WORKER_MODE: ${{ inputs.mode || 'autopilot' }}

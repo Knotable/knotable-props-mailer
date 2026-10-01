@@ -57,13 +57,22 @@ States in the approval record: `approved` → `running` → (`waiting_quota` | `
 
 **Local testing without production.** `npm run dev:fake` serves an in-memory Supabase REST + SES stand-in with demo campaigns and prints the env for `next dev` (bypass login) and `npm run worker:autopilot`. `scripts/ses-bulk-worker.integration.test.mjs` runs the real worker against the same fake for 14 failure scenarios.
 
+**Storage model — what a send leaves in the database (2026-09-30).** A send used to keep a ~1 KB `mail_queue` row plus ~2 event rows per recipient forever (≈500 MB for 200k), and the queue table ballooned while sending. Measured on 200k recipients against Postgres 16 with this repo's schema: queue 145 MB after queueing → **417 MB** after the send (every row is rewritten twice, each rewrite leaves a dead copy + index entries) → **174 MB** with a `VACUUM` every 5,000 accepted. Now (migration `20260930_delivery_ledger.sql`, code falls back to the old behaviour until it is applied):
+- **Delivery ledger** `email_deliveries(email_id, recipient_hash, outcome, flags)`: one ~115-byte row per recipient, written in the same transaction as the queue checkpoint (`finalize_ses_bulk_queue_batch`). `outcome`: 1 accepted, 2 failed, 3 canceled, 4 ambiguous. `flags` bitmask: 1 delivered, 2 opened, 4 clicked, 8 bounced, 16 complained. The key is `recipient_hash(address)` (64-bit md5 prefix of the lowercased address).
+- **Webhook flags instead of rows.** Delivered/opened events set the ledger flag (`record_delivery_event`, HOT update) and a per-day counter in `ses_event_counters`; no `provider_events` row. Bounces, complaints and clicks still insert a row (evidence, link detail) and set the flag. Events are attributed by the `campaign_id` SES tag, not by the queue row, so late events still resolve after compaction. Account-wide totals and "last event" freshness (health, readiness, analytics tiles, `check:analytics`) add the counter table (`src/lib/eventActivity.ts`).
+- **Compaction** (`compact_campaign_history`, called by the scheduled worker an hour after the results report; `SES_COMPACT_HISTORY=off` disables): writes the campaign's `email_history_rollups` row, folds the ledger into `email_delivery_archive` (sorted hashes + one state byte each, **~9 bytes per recipient: 1.75 MB for 200k**), then deletes the terminal queue rows and the delivered/opened event rows. It refuses unless the campaign has no unsent rows, has a ledger, and the ledger covers every queue row (so a campaign that started sending before the migration is left for the manual archive script). Bounce/complaint/click rows stay. Lookups: `get_delivery_state(email_id, recipient)` and `delivery_accepted_among(email_id, recipients[])`.
+- **Never twice.** Because compaction deletes the queue rows (and their dedupe hashes), queue preparation (worker `prepareQueue` and the Composer's `queueCampaignAction`) first drops every recipient the ledger/archive says SES already accepted for that campaign. A lookup failure aborts the queue instead of risking a resend.
+- **In-send cleanup.** The worker runs `VACUUM public.mail_queue` every `SES_QUEUE_VACUUM_EVERY` (default 5,000) accepted. **It needs the `SUPABASE_DB_CONNECTION` secret**; without it the worker warns and relies on autovacuum.
+- `refresh_email_history_rollups` (used by `scripts/archive-database-history.mjs`) now skips compacted campaigns; it would otherwise have overwritten their rollup with near-zeros (verified).
+- `/email/storage` shows all of this: size vs limit, per-table/index sizes, never-used indexes, and a peak projection for N recipients with and without the in-send cleanup.
+
 ### PARKED — needs a human or new permissions
 
 Updated 2026-09-30. The autopilot branch is merged (PR #39, #40) and the scheduled probe is running cleanly on `master` with the production secrets (`{"leaseLive":false,"active":[],"due":[]}`), but **no real campaign has gone through autopilot yet**. Remove an item once verified.
 
 **Launch checklist for a very large send (e.g. `Amols202604`, ~185k), in priority order:**
 
-1. **Upgrade Supabase to Pro ($25/mo). Treat as a blocker for 100k+ sends.** The project is on the free tier (500 MB database, shared compute, disk-IO budget). It already went unresponsive on 2026-08-10, and the old worker exhausted free PostgREST capacity. A 185k send adds ~185k queue rows (~100 MB with indexes) plus ~2 SES events per recipient. Even with the 2026-09-30 slimming below, that leaves little headroom on top of the ~150 MB of existing data, and a free-tier database that hits its size limit goes read-only mid-send. Pro also removes the 7-day inactivity pause.
+1. **Apply the storage migrations in the Supabase SQL editor, between sends, in this order:** `20260930_database_storage_stats.sql` (if not already), `20260930_delivery_ledger.sql`, `20260930_drop_redundant_queue_indexes.sql` (drops three strictly redundant `mail_queue` indexes). All are idempotent and were tested against a local Postgres 16 built from `schema.sql` plus every migration. The app and worker work without them, but the savings need them. **Also confirm the GitHub secret `SUPABASE_DB_CONNECTION` (pooler URL) is set:** the in-send `VACUUM` depends on it. **Supabase Pro is not required** with these in place: for 185k recipients on a ~150 MB database the projected peak is ≈327 MB of 500 MB (65%) with the cleanup, ≈544 MB (109%, would not fit) without it, and ≈1.6 MB is kept per campaign afterwards. Check `/email/storage` ("What if I send to 185,000") before pressing Send; if it says tight or over, stop and look at it rather than sending.
 2. **Set `GITHUB_ACTIONS_DISPATCH_TOKEN` (+ `GITHUB_ACTIONS_REF=master`) in Vercel.** Scheduled ticks observed on 2026-09-30 land every 7–20 minutes rather than every 5. With the token, **Send** starts a worker within seconds. Use a fine-grained token for this repository only, with Actions: Read and write.
 3. **Verify the audience before the first send to a large list that hasn't been verified recently.** Only hard bounces trip the breaker, and old lists contain dead mailboxes. Run the list through a bulk verifier (NeverBounce, ZeroBounce, MillionVerifier; roughly $0.001–0.008/address), then suppress the invalid addresses with **Suppress** or `list_import`. This is the single biggest protection for the SES account. The breaker now trips at **5%** hard bounces, SES's review line (it was 8%).
 4. **Ask AWS again for more SES quota (free).** Request 200k/day and 30/s in the Service Quotas console or through an SES support case. Include the opt-in source, the unsubscribe mechanism, the recent bounce and complaint rates from the 24-hour reports, and the automatic breaker. At the current 65,400/24 h, a 185k send runs unattended over ~3 days (the worker waits for quota, then resumes on its own). A larger quota shortens that to hours. Do **not** buy a dedicated IP ($24.95/mo): it needs weeks of warm-up and does not raise the quota.
@@ -75,7 +84,7 @@ Updated 2026-09-30. The autopilot branch is merged (PR #39, #40) and the schedul
 
 **Storage page (2026-09-30):** `/email/storage` shows database size vs the plan limit, per-table and per-index sizes with dead-row counts, never-used indexes, and a "what if I send to N" peak projection (measured per-row costs once the tables have ≥1,000 rows). It needs `supabase/migrations/20260930_database_storage_stats.sql` applied once (read-only, service-role-only function); until then the page shows the equivalent SQL. Set `SUPABASE_DB_LIMIT_MB` if the plan changes.
 
-**Done in code 2026-09-30:** (a) the SES webhook stores a slim event payload (message id, timestamp, destination, custom tags and the event detail; not the ~2–3 KB of repeated headers) and no longer stores `Send` events, which nothing read. Stored event volume for a large send drops by more than 80%, and each event costs one fewer database query. (b) The hard-bounce circuit-breaker default is 5%. (c) A weekly `keepalive` job re-enables the SES Autopilot workflow, so GitHub's 60-day inactivity rule for public repositories cannot silently stop sends.
+**Done in code 2026-09-30 (storage):** see **Storage model** above. **Also done:** (a) the SES webhook stores a slim event payload (message id, timestamp, destination, custom tags and the event detail; not the ~2–3 KB of repeated headers) and no longer stores `Send` events, which nothing read. Stored event volume for a large send drops by more than 80%, and each event costs one fewer database query. (b) The hard-bounce circuit-breaker default is 5%. (c) A weekly `keepalive` job re-enables the SES Autopilot workflow, so GitHub's 60-day inactivity rule for public repositories cannot silently stop sends.
 
 ---
 
@@ -433,6 +442,9 @@ src/
     layout.tsx              # Root layout
   lib/
     emailProvider.ts        # nodemailer SMTP singleton (pooled, 5 connections)
+    deliveryLedger.ts       # Ledger helpers: record_delivery_event, already-accepted lookup, SES tag parsing
+    eventActivity.ts        # Account-wide delivered/opened counters + "latest event" freshness
+    databaseStorage.ts      # Storage page model: sizes, send-peak projection
     queueWorker.ts          # Core send logic: batches 200 items, 5 concurrent, ~14 msg/sec
     dailyQuota.ts           # Daily send cap enforcement (reads/writes mail_queue.send_date)
     featureFlags.ts         # Feature flag lookup from Supabase `feature_flags` table
@@ -504,6 +516,9 @@ All tables are in the `public` schema. Full DDL in `supabase/schema.sql`.
 | `lists` | Mailing lists |
 | `list_members` | List membership (unique on `list_id + email`) |
 | `provider_events` | SES/Mailgun webhook events (delivery, bounce, etc.) |
+| `email_deliveries` | Hot per-recipient delivery ledger (hash key, outcome, flags) while/after a campaign sends; folded into `email_delivery_archive` by compaction |
+| `email_delivery_archive` | One compact row per finished campaign: sorted recipient hashes + one state byte each (~9 B/recipient) |
+| `ses_event_counters` | Per-day counts of delivered/opened events that were flagged on the ledger instead of stored as rows |
 | `email_history_rollups` | Compact per-campaign queue and provider-event totals retained after verified row-level history is archived locally |
 | `profiles` | User profile + role (`admin` only for now) |
 | `feature_flags` | DB-backed feature flags; defaults to `true` if key missing |

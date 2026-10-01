@@ -66,20 +66,29 @@ for (const metric of metrics) {
   console.log(`PASS ${metric.padEnd(10)} ${value} (${elapsedMs} ms)`);
 }
 
+// Delivered/opened events are flagged on the delivery ledger instead of stored as
+// rows; the webhook keeps a per-day counter row whose updated_at is the latest one.
 const latestEvent = await db
   .from("provider_events")
   .select("received_at,event_type,provider")
   .order("received_at", { ascending: false })
   .limit(1);
-if (latestEvent.error) {
+const latestFlagged = await db
+  .from("ses_event_counters")
+  .select("updated_at,event_type")
+  .order("updated_at", { ascending: false })
+  .limit(1);
+const rowEvent = latestEvent.data?.[0] ? { at: latestEvent.data[0].received_at, label: `${latestEvent.data[0].provider}/${latestEvent.data[0].event_type}` } : null;
+const flaggedEvent = !latestFlagged.error && latestFlagged.data?.[0] ? { at: latestFlagged.data[0].updated_at, label: `ses/${latestFlagged.data[0].event_type} (ledger)` } : null;
+const newest = [rowEvent, flaggedEvent].filter(Boolean).sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0];
+if (latestEvent.error && !newest) {
   console.error(`WARN provider-event freshness: ${latestEvent.error.message}`);
-} else if (!latestEvent.data?.[0]) {
+} else if (!newest) {
   console.error("WARN provider-event freshness: no SES/provider events found.");
 } else {
-  const event = latestEvent.data[0];
-  const ageMinutes = Math.max(0, Math.round((Date.now() - new Date(event.received_at).getTime()) / 60_000));
+  const ageMinutes = Math.max(0, Math.round((Date.now() - new Date(newest.at).getTime()) / 60_000));
   const freshness = ageMinutes <= 24 * 60 ? "PASS" : "WARN";
-  console.log(`${freshness} provider-event freshness: latest ${event.provider}/${event.event_type} event is ${ageMinutes} minute(s) old.`);
+  console.log(`${freshness} provider-event freshness: latest ${newest.label} event is ${ageMinutes} minute(s) old.`);
 }
 
 console.log("No rows were changed and no email was sent.");

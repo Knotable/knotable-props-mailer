@@ -6,7 +6,6 @@ import { SendsClient } from "./sends-client";
 
 const PAGE_SIZE = 20;
 const QUERY_TIMEOUT_MS = 2_500;
-const OPEN_RECIPIENT_SCAN_LIMIT = 5_000;
 
 type StatRow = {
   email_id: string;
@@ -99,10 +98,6 @@ type QueueRecipientRow = {
   status: string | null;
   send_date: string | null;
   last_error: string | null;
-};
-
-type ProviderEventRecipientRow = {
-  recipient: string | null;
 };
 
 type HistoryRollupRow = {
@@ -355,50 +350,19 @@ async function loadRecipientSamplesForEmail(
   };
 }
 
+// Unique opens come from the bounded per-campaign metric, which counts the
+// delivery ledger's open flags (plus any stored open rows and, for archived
+// campaigns, the rollup) instead of scanning event rows.
 async function loadOpenStatsForEmail(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   emailId: string,
 ): Promise<OpenStats> {
-  const [result, rollupResult] = await Promise.all([
-    timedQuery<ProviderEventRecipientRow>(
-      supabase
-        .from("provider_events")
-        .select("recipient", { count: "exact" })
-        .eq("email_id", emailId)
-        .eq("event_type", "opened")
-        .not("recipient", "is", null)
-        .order("received_at", { ascending: false })
-        .limit(OPEN_RECIPIENT_SCAN_LIMIT),
-    ),
-    timedQuery<{ opened_unique: number | null }>(
-      supabase
-        .from("email_history_rollups")
-        .select("opened_unique")
-        .eq("email_id", emailId)
-        .limit(1),
-    ),
-  ]);
-
-  const archivedOpens = rollupResult.data?.[0]?.opened_unique ?? 0;
-
-  if (result.error) {
-    return { uniqueOpens: archivedOpens > 0 ? archivedOpens : null, opensStale: true };
-  }
-
-  const uniqueRecipients = new Set(
-    (result.data ?? [])
-      .map((row) => row.recipient?.trim().toLowerCase())
-      .filter((recipient): recipient is string => Boolean(recipient)),
+  const result = await timedQuery<{ unique_recipients: number | string | null }>(
+    supabase.rpc("get_email_provider_analytics_metric", { p_email_id: emailId, p_event_type: "opened" }),
   );
-  const scannedCount = result.data?.length ?? 0;
-  const opensStale =
-    (typeof result.count === "number" && scannedCount < result.count) ||
-    Boolean(rollupResult.error);
-
-  return {
-    uniqueOpens: uniqueRecipients.size + archivedOpens,
-    opensStale,
-  };
+  if (result.error) return { uniqueOpens: null, opensStale: true };
+  const value = result.data?.[0]?.unique_recipients;
+  return { uniqueOpens: value === null || value === undefined ? 0 : Number(value), opensStale: false };
 }
 
 async function loadPastSendsData(page: number): Promise<PastSendsData> {

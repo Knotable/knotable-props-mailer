@@ -44,6 +44,7 @@ import {
   evaluateDeliverability,
   formatDuration,
   formatResultsReport,
+  isCompactionDue,
   isReportDue,
   lateSuppressedIds,
   orderDueRecords,
@@ -104,6 +105,15 @@ const config = {
   sendWindow: parseSendWindow(process.env.SES_SEND_WINDOW),
   reportDelayMs: Math.max(0, numberEnv("SES_REPORT_DELAY_HOURS", 24)) * 3_600_000,
   blindAfterAccepted: 1_000,
+  // Queue rows are rewritten twice each (claim, then finalize) and every rewrite
+  // leaves a dead copy plus index entries. Measured on 200k recipients: the
+  // table grows 145 MB -> 417 MB without vacuuming and 145 MB -> 174 MB with a
+  // VACUUM every 5,000 accepted. Needs SUPABASE_DB_CONNECTION; 0 disables.
+  vacuumEvery: Math.max(0, numberEnv("SES_QUEUE_VACUUM_EVERY", 5_000)),
+  // A day-old finished campaign is folded into the delivery ledger/rollup and
+  // its queue rows are deleted (see compact_campaign_history). "off" disables.
+  compactEnabled: (process.env.SES_COMPACT_HISTORY ?? "on").toLowerCase() !== "off",
+  compactAfterMs: Math.max(0, numberEnv("SES_COMPACT_AFTER_HOURS", 1)) * 3_600_000,
   operatorEmail: process.env.SES_OPERATOR_EMAIL || "a@sarva.co",
   notifyFrom: process.env.SES_NOTIFY_FROM || "",
 };
@@ -526,12 +536,60 @@ async function deliverabilityCounts(emailId) {
     if (error) throw new Error(`deliverability count: ${error.message}`);
     return value ?? 0;
   };
+  // Delivered events are flagged on the delivery ledger rather than stored as
+  // rows, so the campaign metric (rows + flags) is the source of truth.
+  const deliveredCount = async () => {
+    const { data, error } = await supabase.rpc("get_email_provider_analytics_metric", { p_email_id: emailId, p_event_type: "delivered" });
+    if (error) return count((query) => query.eq("event_type", "delivered"));
+    return Number(data?.[0]?.unique_recipients ?? 0);
+  };
   const [hardBounces, complaints, delivered] = await Promise.all([
     count((query) => query.eq("event_type", "bounced").eq("payload->bounce->>bounceType", "Permanent")),
     count((query) => query.eq("event_type", "complained")),
-    count((query) => query.eq("event_type", "delivered")),
+    deliveredCount(),
   ]);
   return { hardBounces, complaints, delivered };
+}
+
+let vacuumWarned = false;
+async function vacuumQueue(reason) {
+  if (!dbPool) {
+    if (!vacuumWarned) {
+      vacuumWarned = true;
+      console.warn("queue VACUUM skipped: SUPABASE_DB_CONNECTION is not set, relying on autovacuum (the queue table can grow ~3x during a large send)");
+      summaryLine("- WARN queue VACUUM skipped (no SUPABASE_DB_CONNECTION); the queue table may grow ~3x during this send");
+    }
+    return;
+  }
+  const started = Date.now();
+  try {
+    await dbPool.query("vacuum public.mail_queue");
+    console.log(`queue vacuum (${reason}) took ${Date.now() - started}ms`);
+  } catch (error) {
+    console.warn(`queue vacuum failed (${conciseError(error)}); continuing`);
+  }
+}
+
+// Has this campaign ever recorded per-recipient outcomes (hot ledger or the
+// compact archive)? Tables are absent until the migration is applied.
+async function deliveryRecordExists(emailId) {
+  for (const table of ["email_deliveries", "email_delivery_archive"]) {
+    const { data, error } = await supabase.from(table).select("email_id").eq("email_id", emailId).limit(1);
+    if (!error && data?.length) return true;
+  }
+  return false;
+}
+
+// Of these addresses, the ones SES already accepted for this campaign. Rebuilding
+// a finished or compacted campaign's queue must never send anyone twice.
+async function acceptedAmong(emailId, addresses) {
+  if (!addresses.length) return new Set();
+  const data = await retry("accepted recipients lookup", () => unwrap("accepted recipients lookup")(
+    supabase.rpc("delivery_accepted_among", { p_email_id: emailId, p_recipients: addresses }),
+  ), 4);
+  // PostgREST returns a set of scalars as bare values or one-key objects.
+  const values = (Array.isArray(data) ? data : []).map((item) => (item && typeof item === "object" ? Object.values(item)[0] : item));
+  return new Set(values.filter((value) => typeof value === "string"));
 }
 
 // Honors unsubscribes, bounces, complaints, and blocks that happened after
@@ -679,6 +737,8 @@ async function prepareQueue(record, email) {
     supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "canceled").limit(1),
   );
   const reviveCanceled = Boolean(canceledSample?.length);
+  const checkAccepted = await deliveryRecordExists(emailId);
+  let skippedAccepted = 0;
   let prepared = 0;
   let lastBeat = 0;
 
@@ -711,9 +771,16 @@ async function prepareQueue(record, email) {
       const page = await retry("read list members", () => unwrap("read list members")(query), 6);
       if (!page?.length) break;
       lastEmail = page[page.length - 1].email;
-      const rows = page
+      let rows = page
         .filter((member) => !excluded.has(String(member.email).trim().toLowerCase()) && !isBlockedRecipient(member.email))
         .map((member) => buildMemberQueueRow({ emailId, listId, email, member, campaignLabel }));
+      if (checkAccepted && rows.length) {
+        const done = await acceptedAmong(emailId, rows.map((row) => row.payload.to));
+        if (done.size) {
+          skippedAccepted += done.size;
+          rows = rows.filter((row) => !done.has(row.payload.to));
+        }
+      }
       await upsertRows(rows);
       prepared += rows.length;
       if (Date.now() - lastBeat > 5_000) {
@@ -733,7 +800,13 @@ async function prepareQueue(record, email) {
 
   const senderEmail = extractEmailAddress(email.from_address);
   if (senderEmail && !isBlockedRecipient(senderEmail)) {
-    await upsertRows([buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel })]);
+    const copyDone = checkAccepted ? await acceptedAmong(emailId, [senderEmail]) : new Set();
+    if (copyDone.size) skippedAccepted += 1;
+    else await upsertRows([buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel })]);
+  }
+  if (skippedAccepted) {
+    console.log(`campaign ${emailId}: skipped ${skippedAccepted} recipients SES already accepted for this campaign`);
+    summaryLine(`- SKIPPED ${skippedAccepted.toLocaleString()} recipients already accepted for **${email.subject}**`);
   }
 
   const summary = await loadSummary(emailId);
@@ -884,6 +957,7 @@ async function runCampaign(record) {
   let lastHeartbeat = 0;
   let lastQuotaRefresh = Date.now();
   let nextRecoveryPauseAt = config.recoveryPauseEvery;
+  let lastVacuumAccepted = 0;
   let stopReason = null;
   let stopDetail = "";
   let racedClaims = 0;
@@ -1086,6 +1160,12 @@ async function runCampaign(record) {
       break;
     }
 
+    if (config.vacuumEvery > 0 && accepted - lastVacuumAccepted >= config.vacuumEvery) {
+      lastVacuumAccepted = accepted;
+      await vacuumQueue(`${accepted} accepted this run`);
+      pacer.reset();
+    }
+
     let pauseMs = backoff.observe({ latencyMs: Math.max(claim.latencyMs, saved.latencyMs), retried: claim.retried || saved.retried });
     if (signal === "throttle") pauseMs = Math.max(pauseMs, 5_000);
     if (config.recoveryPauseEvery > 0 && config.recoveryPauseMs > 0 && accepted >= nextRecoveryPauseAt) {
@@ -1270,6 +1350,77 @@ async function sendDueReports(records) {
   }
 }
 
+// Terminal records are outside patchRecord's active-state guard, like reports.
+async function markCompacted(record, patch) {
+  const current = await readRecord(record.emailId).catch(() => null);
+  if (!current || current.approvalId !== record.approvalId || current.state !== "complete" || current.compactedAt) return false;
+  const next = { ...current, ...patch, updatedAt: nowIso() };
+  const { data, error } = await supabase.from("app_settings").update({ value: next, updated_at: next.updatedAt })
+    .eq("key", autopilotKey(record.emailId)).eq("value->>approvalId", record.approvalId).eq("value->>state", "complete")
+    .select("key");
+  return !error && Boolean(data?.length);
+}
+
+// Deleting a six-figure campaign's rows is one long statement. The pooled RPC
+// path can be cut short by the API's statement timeout, so when a direct database
+// connection is configured compaction runs on its own connection with a generous
+// timeout; otherwise it falls back to the RPC.
+async function runCompaction(emailId) {
+  if (!process.env.SUPABASE_DB_CONNECTION) {
+    return supabase.rpc("compact_campaign_history", { p_email_id: emailId });
+  }
+  const client = new pg.Client({
+    connectionString: process.env.SUPABASE_DB_CONNECTION,
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: 30_000,
+    statement_timeout: 15 * 60_000,
+    query_timeout: 15 * 60_000,
+  });
+  try {
+    await client.connect();
+    const result = await client.query("select public.compact_campaign_history($1::uuid) as result", [emailId]);
+    return { data: result.rows[0]?.result ?? null, error: null };
+  } catch (error) {
+    return { data: null, error: { code: error?.code, message: conciseError(error) } };
+  } finally {
+    await client.end().catch(() => null);
+  }
+}
+
+const PERMANENT_COMPACTION_SKIPS = new Set(["already compacted", "no delivery ledger", "ledger incomplete"]);
+
+// Folds a finished, reported campaign into its delivery ledger and rollup and
+// deletes its queue rows, so a send leaves ~9 bytes per recipient behind instead
+// of a ~1 KB queue row plus event rows. The database function refuses unless
+// the ledger fully covers the queue, so nothing recipient-level can be lost.
+async function compactFinishedCampaigns(records) {
+  if (!config.compactEnabled) return;
+  const due = records.filter((record) => isCompactionDue(record, Date.now(), config.compactAfterMs)).slice(0, 3);
+  for (const record of due) {
+    try {
+      const { data, error } = await runCompaction(record.emailId);
+      if (error) {
+        if (error.code === "PGRST202" || error.code === "42883") {
+          console.log("history compaction unavailable: apply supabase/migrations/20260930_delivery_ledger.sql");
+          return;
+        }
+        throw new Error(error.message);
+      }
+      const status = data?.status ?? "unknown";
+      const reason = data?.reason ?? null;
+      console.log(`campaign ${record.emailId} compaction: ${status}${reason ? ` (${reason})` : ""}${data?.queue_rows_deleted !== undefined ? `, ${data.queue_rows_deleted} queue rows removed, ${data.archived_recipients ?? 0} recipients archived` : ""}`);
+      if (status === "compacted" || (status === "skipped" && PERMANENT_COMPACTION_SKIPS.has(reason))) {
+        await markCompacted(record, { compactedAt: nowIso(), compaction: { status, reason, queueRowsDeleted: data?.queue_rows_deleted ?? 0, archivedRecipients: data?.archived_recipients ?? 0 } });
+      }
+      if (status === "compacted") {
+        summaryLine(`- COMPACTED ${record.subject ?? record.emailId} — ${Number(data.queue_rows_deleted ?? 0).toLocaleString()} queue rows folded into ${Number(data.archived_recipients ?? 0).toLocaleString()} archived recipient records`);
+      }
+    } catch (error) {
+      console.warn(`compaction for ${record.emailId} failed (${conciseError(error)}); will retry next run`);
+    }
+  }
+}
+
 async function autopilot() {
   const processed = new Set();
   const outcomes = [];
@@ -1288,7 +1439,10 @@ async function autopilot() {
     // SES quota is account-wide: when one campaign waits, every campaign waits.
     if (outcome === "quota" || outcome === "deadline") break;
   }
-  if (!emailIdArg) await sendDueReports(await listRecords());
+  if (!emailIdArg) {
+    await sendDueReports(await listRecords());
+    await compactFinishedCampaigns(await listRecords());
+  }
   return outcomes;
 }
 

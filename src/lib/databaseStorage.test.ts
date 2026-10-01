@@ -29,26 +29,47 @@ function stats(overrides: Partial<StorageStats> = {}): StorageStats {
 }
 
 describe("projectSend", () => {
+  const ledgerTable = { name: "email_deliveries", total_bytes: 0, heap_bytes: 0, index_bytes: 0, live_rows: 0, dead_rows: 0, last_autovacuum: null };
+
   it("uses measured per-row sizes when the tables are big enough", () => {
     const projection = projectSend(stats(), 100_000, 500 * MB);
     expect(projection.measured).toBe(true);
     expect(projection.queueBytesPerRow).toBe(1_000);
     expect(projection.eventBytesPerRow).toBe(500);
-    // 100k * 1000 * 2 (peak factor) + 100k * 500 * 2 (events) + 150 MB existing
-    expect(projection.peakBytes).toBe(150 * MB + 200_000_000 + 100_000_000);
+    expect(projection.ledger).toBe(false);
+    // Without the ledger: 100k * 1000 * 2.9 (no vacuum) + 100k * 500 * 2 events + 150 MB existing.
+    expect(projection.peakBytes).toBe(150 * MB + 290_000_000 + 100_000_000);
+    expect(projection.peakBytesVacuumed).toBe(150 * MB + 120_000_000 + 100_000_000);
+    expect(projection.permanentBytes).toBe(100_000 * (1_000 + 2 * 500));
   });
 
-  it("falls back to defaults on small tables and says so", () => {
+  it("models the delivery ledger once its tables exist: tiny permanent cost, rare event rows", () => {
+    const withLedger = stats({ tables: [...stats().tables, ledgerTable] });
+    const projection = projectSend(withLedger, 100_000, 500 * MB);
+    expect(projection.ledger).toBe(true);
+    // 100k * 1000 * 1.2 (vacuumed) + 100k * 115 ledger + 100k * 500 * 0.03 event rows + 150 MB.
+    expect(projection.peakBytesVacuumed).toBe(150 * MB + 120_000_000 + 11_500_000 + 1_500_000);
+    expect(projection.permanentBytes).toBe(900_000);
+    expect(projection.peakBytesVacuumed).toBeLessThan(projectSend(stats(), 100_000, 500 * MB).peakBytesVacuumed);
+  });
+
+  it("trusts the explicit ledger_installed flag over the table list", () => {
+    expect(projectSend(stats({ ledger_installed: true }), 1_000).ledger).toBe(true);
+    expect(projectSend(stats({ tables: [...stats().tables, ledgerTable], ledger_installed: false }), 1_000).ledger).toBe(false);
+  });
+
+  it("falls back to measured defaults on small tables and says so", () => {
     const projection = projectSend(stats({ tables: [] }), 1_000, 500 * MB);
     expect(projection.measured).toBe(false);
-    expect(projection.queueBytesPerRow).toBe(1_000);
+    expect(projection.queueBytesPerRow).toBe(725);
   });
 
-  it("flags tight and over-limit sends", () => {
+  it("flags tight and over-limit sends, separately with and without vacuuming", () => {
     expect(projectSend(stats(), 1_000, 500 * MB).level).toBe("ok");
     expect(projectSend(stats(), 185_000, 500 * MB).level).toBe("over");
-    const tight = projectSend(stats({ database_bytes: 330 * MB }), 50_000, 500 * MB);
-    expect(tight.level).toBe("tight");
+    const tight = projectSend(stats({ database_bytes: 360 * MB }), 40_000, 500 * MB);
+    expect(tight.levelVacuumed).toBe("tight");
+    expect(tight.level).toBe("over");
   });
 
   it("clamps negative or fractional recipient counts", () => {
