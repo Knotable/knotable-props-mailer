@@ -14,15 +14,6 @@ import {
 import { buildQueueReleaseConfirmation } from "@/lib/queueReleaseGuard";
 import { ProgressStatus } from "@/components/progress-status";
 
-export function QueueSafetyNotice() {
-  return (
-    <div className="max-w-sm rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-      <span className="font-semibold">Sends run in the cloud.</span> Press Send, confirm the recipient count, and close the
-      tab — autopilot paces SES, waits out quota windows, and emails you when it finishes.
-    </div>
-  );
-}
-
 type RowProps = {
   id: string;
   subject: string;
