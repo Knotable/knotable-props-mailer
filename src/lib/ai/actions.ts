@@ -48,9 +48,11 @@ async function followRedirect(run: () => Promise<unknown>): Promise<string | nul
   }
 }
 
-async function queueToLists(emailId: string, listIds: string[], confirmRecent: boolean, excludeExact: boolean): Promise<ActionResult> {
-  let exclude: string[] = [];
-  let skip = confirmRecent || excludeExact;
+// Exact repeats are always excluded — the queue itself refuses to send one
+// recipient the same content twice, so there is nothing to tick here.
+async function queueToLists(emailId: string, listIds: string[], confirmRecent: boolean): Promise<ActionResult> {
+  const exclude: string[] = [];
+  const skip = confirmRecent;
   let queued = 0;
   let needsCloud = false;
   for (const listId of listIds) {
@@ -65,14 +67,9 @@ async function queueToLists(emailId: string, listIds: string[], confirmRecent: b
       }));
       if (!res.ok) {
         if (!res.requiresConfirmation) return { ok: false, message: res.error };
-        if (excludeExact) {
-          exclude = [...new Set(res.warningGroups.flatMap((group) => group.exactRecipientAddresses))];
-          skip = true;
-          continue;
-        }
         return {
           ok: false,
-          message: `Recent-contact check: ${res.duplicateCount} recipients already received this exact email and ${res.recentlySentCount} got another email to this list in the last 30 days. Resubmit with confirm_recent_contact=yes to queue anyway, or exclude_exact_duplicates=yes to skip exact repeats.`,
+          message: `Recent-contact check: ${res.duplicateCount} recipients already received this exact email and ${res.recentlySentCount} got another email to this list in the last 30 days. Exact repeats are skipped automatically; resubmit with confirm_recent_contact=yes to queue the rest anyway.`,
           data: { duplicateCount: res.duplicateCount, recentlySentCount: res.recentlySentCount, warningGroups: res.warningGroups.map((group) => ({ date: group.date, subject: group.subject, recipients: group.recipientAddresses.length })) },
         };
       }
@@ -144,12 +141,11 @@ export const ACTION_SPECS: ActionSpec[] = [
   {
     action: "queue",
     label: "Queue to lists",
-    description: "Build the held recipient queue from one or more lists (deduplicated across lists). Nothing sends until 'send'. Lists over 5,000 finish preparing in the cloud.",
+    description: "Build the held recipient queue from one or more lists. Each recipient is queued once across the selected lists, and anyone who received this exact content in the last 12 hours is skipped. Nothing sends until 'send'. Lists over 5,000 finish preparing in the cloud.",
     fields: [
       { name: "id", label: "Campaign id", type: "hidden" },
       { name: "list_id", label: "Lists", type: "checkbox", options: [] },
       { name: "confirm_recent_contact", label: "Queue even if recipients were contacted recently", type: "checkbox" },
-      { name: "exclude_exact_duplicates", label: "Skip recipients who already received this exact email", type: "checkbox" },
     ],
   },
   {
@@ -269,7 +265,7 @@ export const ACTION_HANDLERS: Record<string, Handler> = {
   async queue(input) {
     const listIds = input.getAll("list_id").map(String).filter(Boolean);
     if (!listIds.length) return { ok: false, message: "Select at least one list_id." };
-    return queueToLists(id(input), listIds, input.get("confirm_recent_contact") === "yes", input.get("exclude_exact_duplicates") === "yes");
+    return queueToLists(id(input), listIds, input.get("confirm_recent_contact") === "yes");
   },
   async send(input) {
     const emailId = id(input);

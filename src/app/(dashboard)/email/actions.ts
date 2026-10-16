@@ -32,6 +32,9 @@ import {
   buildMemberQueueRow,
   buildSenderCopyQueueRow,
   extractEmailAddress,
+  findRecentDuplicateRecipients,
+  findRecentTwinEmailIds,
+  recentDuplicateCutoffIso,
 } from "../../../../scripts/lib/queue-rows.mjs";
 
 const SaveDraftSchema = z.object({
@@ -753,8 +756,26 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     emailId,
     (membersToQueue as Array<{ email: string }>).map((member) => member.email),
   );
+
+  // Nobody gets the same content twice within 12 hours, even when a later
+  // batch is sent from a duplicated draft with a different email_id.
+  const duplicateCutoff = recentDuplicateCutoffIso();
+  const twinEmailIds = await findRecentTwinEmailIds(supabase, {
+    emailId,
+    subject: email.subject,
+    html: email.html,
+    sinceIso: duplicateCutoff,
+  });
+  const recentlyReceived = await findRecentDuplicateRecipients(supabase, {
+    twinEmailIds,
+    recipients: (membersToQueue as Array<{ email: string }>).map((member) =>
+      normalizeEmailAddress(member.email),
+    ),
+    sinceIso: duplicateCutoff,
+  });
   for (const member of membersToQueue) {
     if (alreadyAccepted.has((member as { email: string }).email)) continue;
+    if (recentlyReceived.has(normalizeEmailAddress((member as { email: string }).email))) continue;
     queueRows.push(buildMemberQueueRow({ emailId, listId, email, member, campaignLabel }));
   }
 
@@ -762,7 +783,9 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     const senderEmail = extractEmailAddress(email.from_address);
     if (senderEmail && !isBlockedRecipientEmail(senderEmail)) {
       const senderAccepted = await findAcceptedRecipients(supabase, emailId, [senderEmail]);
-      if (!senderAccepted.size) queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
+      if (!senderAccepted.size && !recentlyReceived.has(senderEmail)) {
+        queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
+      }
     }
   }
 

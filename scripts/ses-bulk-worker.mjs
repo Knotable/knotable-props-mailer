@@ -52,7 +52,14 @@ import {
   sendWindowStatus,
   runUrlFromEnv,
 } from "./lib/autopilot-core.mjs";
-import { buildMemberQueueRow, buildSenderCopyQueueRow, extractEmailAddress } from "./lib/queue-rows.mjs";
+import {
+  buildMemberQueueRow,
+  buildSenderCopyQueueRow,
+  extractEmailAddress,
+  findRecentDuplicateRecipients,
+  findRecentTwinEmailIds,
+  recentDuplicateCutoffIso,
+} from "./lib/queue-rows.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -738,6 +745,15 @@ async function prepareQueue(record, email) {
   );
   const reviveCanceled = Boolean(canceledSample?.length);
   const checkAccepted = await deliveryRecordExists(emailId);
+  // Same content, different draft, inside 12 hours: skip those recipients.
+  const duplicateCutoff = recentDuplicateCutoffIso();
+  const twinEmailIds = await findRecentTwinEmailIds(supabase, {
+    emailId,
+    subject: email.subject,
+    html: email.html,
+    sinceIso: duplicateCutoff,
+  });
+  let skippedRecentDuplicate = 0;
   let skippedAccepted = 0;
   let prepared = 0;
   let lastBeat = 0;
@@ -781,6 +797,17 @@ async function prepareQueue(record, email) {
           rows = rows.filter((row) => !done.has(row.payload.to));
         }
       }
+      if (twinEmailIds.length && rows.length) {
+        const recent = await findRecentDuplicateRecipients(supabase, {
+          twinEmailIds,
+          recipients: rows.map((row) => String(row.payload.to).trim().toLowerCase()),
+          sinceIso: duplicateCutoff,
+        });
+        if (recent.size) {
+          skippedRecentDuplicate += recent.size;
+          rows = rows.filter((row) => !recent.has(String(row.payload.to).trim().toLowerCase()));
+        }
+      }
       await upsertRows(rows);
       prepared += rows.length;
       if (Date.now() - lastBeat > 5_000) {
@@ -801,12 +828,20 @@ async function prepareQueue(record, email) {
   const senderEmail = extractEmailAddress(email.from_address);
   if (senderEmail && !isBlockedRecipient(senderEmail)) {
     const copyDone = checkAccepted ? await acceptedAmong(emailId, [senderEmail]) : new Set();
+    const copyRecent = twinEmailIds.length
+      ? await findRecentDuplicateRecipients(supabase, { twinEmailIds, recipients: [senderEmail], sinceIso: duplicateCutoff })
+      : new Set();
     if (copyDone.size) skippedAccepted += 1;
+    else if (copyRecent.size) skippedRecentDuplicate += 1;
     else await upsertRows([buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel })]);
   }
   if (skippedAccepted) {
     console.log(`campaign ${emailId}: skipped ${skippedAccepted} recipients SES already accepted for this campaign`);
     summaryLine(`- SKIPPED ${skippedAccepted.toLocaleString()} recipients already accepted for **${email.subject}**`);
+  }
+  if (skippedRecentDuplicate) {
+    console.log(`campaign ${emailId}: skipped ${skippedRecentDuplicate} recipients who received this exact content in the last 12 hours`);
+    summaryLine(`- SKIPPED ${skippedRecentDuplicate.toLocaleString()} recipients who already received this exact content within 12 hours`);
   }
 
   const summary = await loadSummary(emailId);
