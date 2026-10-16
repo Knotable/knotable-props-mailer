@@ -40,3 +40,8 @@ COLLABORATOR-HANDOFF.private.md
 # Legacy directories deleted in git history
 webapp
 conf
+
+# Local AI operating context; tracked pointers remain portable.
+/AI-README.md
+/README-AI.md
+/docs/api-interface.private.md
