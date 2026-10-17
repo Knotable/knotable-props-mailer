@@ -163,6 +163,9 @@ export const ACTION_SPECS: ActionSpec[] = [
       { name: "confirm_recipients", label: "Confirm unsent recipient count", type: "number", required: true },
       { name: "send_at", label: "Send at (optional ISO-8601, e.g. 2026-10-01T13:00:00Z)", type: "text" },
       { name: "send_window", label: "Send window (optional, e.g. 07:00-21:00 America/New_York)", type: "text" },
+      { name: "after_campaign_id", label: "Optional: send after this campaign completes", type: "text" },
+      { name: "after_approval_id", label: "Earlier campaign's exact approvalId (required with after_campaign_id)", type: "text" },
+      { name: "after_delay_minutes", label: "Delay after completion in minutes (0–86400)", type: "number" },
     ],
   },
   { action: "pause", label: "Pause", description: "Stop sending within ~15 seconds; unsent recipients are kept. Resume with send.", fields: [{ name: "id", label: "Campaign id", type: "hidden" }] },
@@ -280,6 +283,9 @@ export const ACTION_HANDLERS: Record<string, Handler> = {
       expectedRecipients: String(input.get("confirm_recipients") ?? ""),
       sendAt: String(input.get("send_at") ?? ""),
       sendWindow: String(input.get("send_window") ?? ""),
+      afterCampaignId: String(input.get("after_campaign_id") ?? ""),
+      afterApprovalId: String(input.get("after_approval_id") ?? ""),
+      afterDelayMinutes: String(input.get("after_delay_minutes") ?? "0"),
     }));
     return res.error
       ? { ok: false, message: res.error }

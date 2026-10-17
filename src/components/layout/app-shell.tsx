@@ -48,7 +48,7 @@ function NavLinkPendingState() {
       />
       <Loader2
         aria-hidden="true"
-        className={`relative size-3.5 shrink-0 animate-spin text-slate-900 transition-opacity ${
+        className={`absolute right-1 top-1 size-2.5 animate-spin text-slate-900 transition-opacity ${
           pending ? "animate-spin opacity-100" : "opacity-0"
         }`}
       />
@@ -77,7 +77,7 @@ const NavLink = ({
     <Link
       href={href}
       aria-current={isActive ? "page" : undefined}
-      className={`group relative flex min-h-11 snap-start items-center gap-2 overflow-hidden rounded-full border px-3 py-2 text-sm transition hover:border-slate-300 hover:bg-white active:scale-[0.98] ${
+      className={`group relative flex min-h-11 shrink-0 snap-start items-center gap-2 overflow-hidden whitespace-nowrap rounded-full border px-3 py-2 text-sm transition hover:border-slate-300 hover:bg-white active:scale-[0.98] ${
         isActive ? "border-slate-900 bg-white text-slate-900 shadow-sm" : "border-transparent text-slate-600"
       }`}
       title={description}
@@ -108,7 +108,7 @@ const MobileNavLink = ({
     <Link
       href={href}
       aria-current={isActive ? "page" : undefined}
-      className={`flex min-w-[4.25rem] flex-col items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
+      className={`flex min-w-[4.25rem] shrink-0 flex-col items-center justify-center gap-1 whitespace-nowrap rounded-lg px-2 py-1.5 text-[11px] font-medium transition ${
         isActive ? "bg-slate-900 text-white" : "text-slate-500 active:bg-slate-100"
       }`}
       title={description}

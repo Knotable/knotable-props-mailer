@@ -35,6 +35,7 @@ import {
   autopilotKey,
   availableQuota,
   campaignContentDigest,
+  campaignDependencyStatus,
   classifySendException,
   createBackoff,
   createPacer,
@@ -927,6 +928,14 @@ async function runCampaign(record) {
     await patchRecord(record, { state: "canceled", message: "Campaign no longer exists." });
     return "skipped";
   }
+  const dependency = record.afterCampaign
+    ? campaignDependencyStatus(record, new Map((await listRecords()).map((item) => [item.emailId, item])), Date.now())
+    : { status: "ready" };
+  if (dependency.status === "blocked") return block(email, record, dependency.reason);
+  if (dependency.status === "waiting") {
+    await patchRecord(record, { state: "waiting_campaign", nextCheckAt: dependency.nextCheckAt ?? null, message: "Waiting for the approved earlier campaign and its delay. No operator action is needed." });
+    return "dependency";
+  }
   if (record.state === "preparing") {
     if (!["draft", "queued", "sending"].includes(email.status)) {
       await patchRecord(record, { state: "paused", message: `Campaign status is ${email.status}; preparation stopped.` });
@@ -1517,10 +1526,10 @@ async function autopilot() {
   while (Date.now() < deadlineMs) {
     const records = await listRecords();
     const due = orderDueRecords(
-      records.filter((record) => !emailIdArg || record.emailId === emailIdArg),
+      records,
       Date.now(),
       config.heartbeatStaleMs,
-    ).filter((record) => !processed.has(record.emailId));
+    ).filter((record) => (!emailIdArg || record.emailId === emailIdArg) && !processed.has(record.emailId));
     const next = due[0];
     if (!next) break;
     processed.add(next.emailId);

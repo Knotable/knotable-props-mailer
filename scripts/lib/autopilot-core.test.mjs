@@ -179,3 +179,34 @@ describe("results report", () => {
     expect(lines.find((line) => line.startsWith("Clicked"))).toContain("10.0% of delivered; 20.0% of openers");
   });
 });
+
+describe("approved campaign sequences", () => {
+  it("waits for the exact earlier approval and its completion-relative delay", async () => {
+    const { campaignDependencyStatus: gate } = await import("./autopilot-core.mjs");
+    const parent = { emailId: "a", approvalId: "a1", state: "running" };
+    const child = { emailId: "b", state: "waiting_campaign", afterCampaign: { emailId: "a", approvalId: "a1", delayMinutes: 720 } };
+    const records = new Map([["a", parent], ["b", child]]);
+    expect(gate(child, records, NOW).status).toBe("waiting");
+    expect(orderDueRecords([...records.values()], NOW).map(r => r.emailId)).not.toContain("b");
+    Object.assign(parent, { state: "complete", completedAt: new Date(NOW).toISOString() });
+    expect(gate(child, records, NOW)).toEqual({ status: "waiting", nextCheckAt: new Date(NOW + 720 * 60_000).toISOString() });
+    expect(gate(child, records, NOW + 720 * 60_000).status).toBe("ready");
+    expect(orderDueRecords([...records.values()], NOW + 720 * 60_000).map(r => r.emailId)).toEqual(["b"]);
+  });
+
+  it("fails closed on canceled, replaced, missing, malformed and circular predecessors", async () => {
+    const { campaignDependencyStatus: gate } = await import("./autopilot-core.mjs");
+    const parent = { emailId: "a", approvalId: "a1", state: "approved" };
+    const child = { emailId: "b", state: "waiting_campaign", afterCampaign: { emailId: "a", approvalId: "a1", delayMinutes: 0 } };
+    for (const state of ["paused", "canceled", "blocked", "prepared"]) {
+      expect(gate(child, new Map([["a", { ...parent, state }]]), NOW).status).toBe("blocked");
+    }
+    expect(gate(child, new Map(), NOW).status).toBe("blocked");
+    expect(gate(child, new Map([["a", { ...parent, approvalId: "replacement" }]]), NOW).status).toBe("blocked");
+    expect(gate(child, new Map([["a", { ...parent, state: "complete" }]]), NOW).status).toBe("blocked");
+    expect(gate({ ...child, afterCampaign: { ...child.afterCampaign, delayMinutes: -1 } }, new Map([["a", parent]]), NOW).status).toBe("blocked");
+    expect(gate(child, new Map([["a", { ...parent, afterCampaign: { emailId: "b", approvalId: "b1", delayMinutes: 0 } }]]), NOW).status).toBe("blocked");
+    // Broken links are picked up once, so the worker blocks and notifies.
+    expect(orderDueRecords([child], NOW).map(r => r.emailId)).toEqual(["b"]);
+  });
+});

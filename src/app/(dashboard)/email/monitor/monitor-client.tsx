@@ -397,7 +397,7 @@ function secondsAgo(value: string | null | undefined) {
 function AutopilotPanel({ record, view, onPause }: { record: AutopilotRecord; view: AutopilotView; onPause: () => Promise<void> }) {
   const [pausing, setPausing] = useState(false);
   const [pauseError, setPauseError] = useState<string | null>(null);
-  const pausable = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"].includes(record.state);
+  const pausable = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry", "waiting_campaign"].includes(record.state);
   const tones: Record<AutopilotView["tone"], string> = {
     green: "border-green-200 bg-green-50 text-green-900",
     blue: "border-blue-200 bg-blue-50 text-blue-900",

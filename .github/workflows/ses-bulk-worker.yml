@@ -67,6 +67,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SES_REPORT_DELAY_HOURS: ${{ vars.SES_REPORT_DELAY_HOURS || '24' }}
+          SES_COMPACT_HISTORY: ${{ vars.SES_COMPACT_HISTORY || 'on' }}
+          SES_COMPACT_AFTER_HOURS: ${{ vars.SES_COMPACT_AFTER_HOURS || '1' }}
         run: node scripts/autopilot-probe.mjs
 
   drain:

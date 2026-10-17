@@ -20,7 +20,7 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { QUOTA_WINDOW_HOURS, getMailerRuntimeLimits, todayUTC } from "@/lib/dailyQuota";
 import { parseUuid } from "@/lib/ids";
 import { effectiveSesSendRate } from "@/lib/queueWorker";
-import { describeAutopilot, getAutopilotRecord, listActiveAutopilotRecords } from "@/lib/sendAutopilot";
+import { describeAutopilot, getAutopilotRecord, isActiveAutopilot, listActiveAutopilotRecords } from "@/lib/sendAutopilot";
 
 export const dynamic = "force-dynamic";
 
@@ -222,7 +222,7 @@ async function buildMonitorSnapshot(emailId?: string) {
     oldestProcessingLockedAt && new Date(oldestProcessingLockedAt).getTime() < now.getTime() - 15 * 60 * 1000,
   );
   const autopilotView = describeAutopilot(autopilot, now.getTime());
-  const autopilotActive = Boolean(autopilot && ["approved", "running", "waiting_quota", "waiting_reconcile", "waiting_retry"].includes(autopilot.state));
+  const autopilotActive = isActiveAutopilot(autopilot);
   const displayStatus =
     total === 0
       ? emailStatus ?? "No queue rows"

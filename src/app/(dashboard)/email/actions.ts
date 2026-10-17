@@ -32,7 +32,9 @@ import {
   isActiveAutopilot,
   setAutopilotState,
   writeAutopilotRecord,
+  type AutopilotRecord,
 } from "@/lib/sendAutopilot";
+import { campaignDependencyStatus } from "../../../../scripts/lib/autopilot-core.mjs";
 import type { Json } from "@/supabase/types";
 import {
   QUEUE_HOLD_AT,
@@ -1249,8 +1251,38 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
     const windowInput = parseSendWindowInput(formData.get("sendWindow"));
     if (windowInput.error) return { error: windowInput.error };
 
+    let afterCampaign: AutopilotRecord["afterCampaign"];
+    const predecessorId = String(formData.get("afterCampaignId") ?? "").trim();
+    if (predecessorId) {
+      const dependency = z.object({
+        emailId: z.string().uuid(),
+        approvalId: z.string().uuid(),
+        delayMinutes: z.coerce.number().int().min(0).max(86_400),
+      }).safeParse({
+        emailId: predecessorId,
+        approvalId: formData.get("afterApprovalId"),
+        delayMinutes: formData.get("afterDelayMinutes") ?? 0,
+      });
+      if (!dependency.success || predecessorId === id) return { error: "Choose a valid earlier campaign and a delay between 0 and 1,440 hours." };
+      const { data: settings, error: dependencyError } = await supabase.from("app_settings").select("key,value").like("key", "send_autopilot:%");
+      if (dependencyError) return { error: `Cannot verify the send sequence: ${dependencyError.message}` };
+      const records = ((settings ?? []) as { key: string; value: Json }[]).map((row) => row.value as unknown as AutopilotRecord);
+      const byId = new Map(records.map((record) => [record.emailId, record]));
+      const gate = campaignDependencyStatus({ emailId: id, afterCampaign: dependency.data }, byId, Date.now());
+      if (gate.status === "blocked") return { error: gate.reason };
+      const parent = byId.get(predecessorId)!;
+      const { data: parentEmail, error: parentError } = await supabase.from("emails").select("status").eq("id", predecessorId).maybeSingle();
+      if (parentError) return { error: parentError.message };
+      const parentStatus = (parentEmail as { status: string } | null)?.status;
+      if (!parentStatus || !["sending", "sent"].includes(parentStatus)) return { error: "Approve the earlier campaign first, then reload this page." };
+      afterCampaign = { ...dependency.data, subject: parent.subject };
+    }
+
     const contentSha256 = campaignContentDigest(emailRow);
     if (!schedule.startAt && !windowInput.sendWindow && existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
+      // An ordinary retry must not discard a dependency; changing an active
+      // approval requires Pause first, just as changing its content does.
+      if (afterCampaign && JSON.stringify(existing.afterCampaign) !== JSON.stringify(afterCampaign)) return { error: "Pause this campaign before changing its sequence." };
       const dispatch = await dispatchAutopilotWorker(id);
       return { recipients: unsent, alreadyActive: true, dispatched: dispatch.dispatched, detail: `Already approved and sending. ${dispatch.detail}` };
     }
@@ -1264,8 +1296,11 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
       contentSha256,
       subject: emailRow.subject,
       source: "app",
-      state: "approved",
-      message: schedule.startAt
+      state: afterCampaign ? "waiting_campaign" : "approved",
+      afterCampaign,
+      message: afterCampaign
+        ? `Approved for ${unsent.toLocaleString()} recipients. Sends automatically ${afterCampaign.delayMinutes ? `${afterCampaign.delayMinutes / 60} hours ` : ""}after ${afterCampaign.subject || afterCampaign.emailId} (${afterCampaign.emailId.slice(0, 8)}) completes. Pause stops this stage.`
+        : schedule.startAt
         ? `Approved for ${unsent.toLocaleString()} recipients, scheduled for ${formatUtc(schedule.startAt)}.`
         : `Approved for ${unsent.toLocaleString()} recipients. Waiting for a cloud worker.`,
       heartbeatAt: null,
@@ -1296,6 +1331,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
         processing: preflight.processing,
         contentSha256,
         startAt: schedule.startAt,
+        afterCampaign,
         dispatched: dispatch.dispatched,
       },
     }).catch(console.error);

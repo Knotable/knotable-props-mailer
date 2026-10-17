@@ -617,3 +617,57 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(recordFor(email.id).state).toBe("complete");
   });
 });
+
+describe("automatic audience sequencing", { timeout: 90_000 }, () => {
+  function link(child, parent, delayMinutes = 0) {
+    Object.assign(recordFor(child.id), { state: "waiting_campaign", afterCampaign: { emailId: parent.id, approvalId: recordFor(parent.id).approvalId, delayMinutes } });
+    // Distinct content avoids the independent same-subject duplicate guard.
+    child.subject = `Next stage ${child.id}`;
+    recordFor(child.id).contentSha256 = campaignContentDigest(child);
+  }
+
+  it("finishes three approved audiences in order in one run without another click", async () => {
+    const first = seedCampaign({ recipients: 2 });
+    const second = seedCampaign({ recipients: 2 });
+    const third = seedCampaign({ recipients: 2 });
+    link(second, first);
+    link(third, second);
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    for (const email of [first, second, third]) expect(recordFor(email.id).state).toBe("complete");
+    const campaignOrder = backend.ses.bulkRequests.map(request => request.BulkEmailEntries[0].ReplacementTags.find(tag => tag.Name === "campaign_id")?.Value);
+    expect(campaignOrder).toEqual([first.id, second.id, third.id]);
+  });
+
+  it("keeps the next audience held for 12 hours, then resumes automatically on a later worker", async () => {
+    const first = seedCampaign({ recipients: 2 });
+    const second = seedCampaign({ recipients: 2 });
+    link(second, first, 720);
+    expect((await runWorker()).code).toBe(0);
+    expect(recordFor(first.id).state).toBe("complete");
+    expect(recordFor(second.id).state).toBe("waiting_campaign");
+    expect(count(rowsFor(second.id), "pending")).toBe(2);
+    recordFor(first.id).completedAt = new Date(Date.now() - 721 * 60_000).toISOString();
+    // A campaign-scoped invocation must still load its predecessor's record.
+    const result = await runWorker(["--mode", "autopilot", "--email-id", second.id]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(recordFor(second.id).state).toBe("complete");
+  });
+
+  it.each(["paused", "canceled", "blocked", "replaced", "missing"])("does not send the next audience after an earlier approval is %s", async (failure) => {
+    const first = seedCampaign({ recipients: 2 });
+    const second = seedCampaign({ recipients: 2 });
+    link(second, first);
+    if (failure === "replaced") recordFor(first.id).approvalId = crypto.randomUUID();
+    else if (failure === "missing") backend.tables.app_settings = backend.tables.app_settings.filter(row => row.key !== autopilotKey(first.id));
+    else recordFor(first.id).state = failure;
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(recordFor(second.id).state).toBe("blocked");
+    expect(count(rowsFor(second.id), "pending")).toBe(2);
+    const childRequests = backend.ses.bulkRequests.filter(request =>
+      request.BulkEmailEntries.some(entry =>
+        entry.ReplacementTags.some(tag => tag.Name === "campaign_id" && tag.Value === second.id)));
+    expect(childRequests).toHaveLength(0);
+  });
+});

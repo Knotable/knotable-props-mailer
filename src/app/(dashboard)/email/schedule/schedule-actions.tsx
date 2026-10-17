@@ -19,6 +19,7 @@ export function QueueSafetyNotice() {
     <div className="max-w-sm rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
       <span className="font-semibold">Sends run in the cloud.</span> Press Send, confirm the recipient count, and close the
       tab — autopilot paces SES, waits out quota windows, and emails you when it finishes.
+      {" "}For multiple audiences, approve the first, then choose it under “Send after” on the next. Each stage starts automatically.
     </div>
   );
 }
@@ -32,9 +33,11 @@ type RowProps = {
   autopilotActive: boolean;
   preparing?: boolean;
   estimate?: string | null;
+  predecessors?: { id: string; approvalId: string; label: string }[];
+  afterCampaign?: { emailId: string; delayMinutes: number };
 };
 
-export function ScheduleActions({ id, subject, status, canSend, unsent, autopilotActive, preparing = false, estimate = null }: RowProps) {
+export function ScheduleActions({ id, subject, status, canSend, unsent, autopilotActive, preparing = false, estimate = null, predecessors = [], afterCampaign }: RowProps) {
   const router = useRouter();
   const [working, startWorking] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
@@ -42,6 +45,9 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
   const [sendConfirmationArmed, setSendConfirmationArmed] = useState(false);
   const [sendAtLocal, setSendAtLocal] = useState("");
   const [businessHours, setBusinessHours] = useState(false);
+  const [afterCampaignId, setAfterCampaignId] = useState(afterCampaign?.emailId ?? "");
+  const [afterDelayHours, setAfterDelayHours] = useState(String((afterCampaign?.delayMinutes ?? 0) / 60));
+  const predecessor = predecessors.find((item) => item.id === afterCampaignId);
   const localTimeZone = (() => {
     try {
       return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -203,13 +209,18 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
                 <input type="hidden" name="expectedRecipients" value={String(unsent)} />
                 <input type="hidden" name="sendAt" value={sendAtIso} />
                 <input type="hidden" name="sendWindow" value={sendWindow} />
-                <SendButton disabled={working} armed={sendConfirmationArmed} unsent={unsent} scheduled={Boolean(sendAtIso)} />
+                <input type="hidden" name="afterCampaignId" value={afterCampaignId} />
+                <input type="hidden" name="afterApprovalId" value={predecessor?.approvalId ?? ""} />
+                <input type="hidden" name="afterDelayMinutes" value={String(Number(afterDelayHours) * 60)} />
+                <SendButton disabled={working} armed={sendConfirmationArmed} unsent={unsent} scheduled={Boolean(sendAtIso || afterCampaignId)} />
                 {sendConfirmationArmed && (
                   <button
                     type="button"
                     onClick={() => {
                       setSendConfirmationArmed(false);
                       setSendAtLocal("");
+                      setAfterCampaignId("");
+                      setAfterDelayHours("0");
                     }}
                     className="rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
                   >
@@ -232,6 +243,27 @@ export function ScheduleActions({ id, subject, status, canSend, unsent, autopilo
       {sendConfirmationArmed && canStart && (
         <div className="w-full min-w-64 space-y-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
           {estimate && <p>Estimated send time: <span className="font-semibold">{estimate}</span></p>}
+          {(predecessors.length > 0 || afterCampaignId) && (
+            <>
+              <label className="flex flex-wrap items-center gap-2">
+                Send after:
+                <select value={afterCampaignId} onChange={(event) => setAfterCampaignId(event.target.value)} className="w-full max-w-sm rounded border border-slate-300 bg-white px-2 py-1">
+                  <option value="">No earlier campaign</option>
+                  {afterCampaignId && !predecessor && <option value={afterCampaignId} disabled>Earlier campaign unavailable — review sequence</option>}
+                  {predecessors.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
+                </select>
+              </label>
+              {afterCampaignId && (
+                <>
+                  <label className="flex flex-wrap items-center gap-2">
+                    Hours after it finishes:
+                    <input type="number" min="0" max="1440" step="1" value={afterDelayHours} onChange={(event) => setAfterDelayHours(event.target.value)} className="w-20 rounded border border-slate-300 bg-white px-2 py-1" />
+                  </label>
+                  <p>Approve now; this stage starts automatically after the earlier campaign finishes and the delay elapses. If that stage is paused, blocked, deleted or re-approved, this one stops for review.</p>
+                </>
+              )}
+            </>
+          )}
           <label className="flex items-center gap-2">
             <input type="checkbox" checked={businessHours} onChange={(event) => setBusinessHours(event.target.checked)} />
             Only send 7am–9pm {localTimeZone.replace(/_/g, " ")} time (multi-day sends pause overnight)
