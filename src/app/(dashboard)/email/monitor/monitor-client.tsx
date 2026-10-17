@@ -335,8 +335,8 @@ export function MonitorClient({ emailId, notice }: Props) {
             <p className="text-xs text-slate-500">Latest 50 status changes.</p>
           </div>
           <div className="max-h-[420px] overflow-auto">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
+            <table className="min-w-[680px] w-full divide-y divide-slate-200 text-sm">
+              <thead className="sticky top-0 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500 whitespace-nowrap">
                 <tr>
                   <th className="px-4 py-2">Recipient</th>
                   <th className="px-4 py-2">Status</th>
@@ -355,12 +355,12 @@ export function MonitorClient({ emailId, notice }: Props) {
                 ) : (
                   recipientLog.map((row, index) => (
                     <tr key={`${row.recipientEmail ?? "unknown"}-${row.updatedAt ?? index}`}>
-                      <td className="px-4 py-2 font-mono text-xs text-slate-700">{row.recipientEmail}</td>
-                      <td className="px-4 py-2 text-slate-700">{row.status}</td>
+                      <td className="px-4 py-2 font-mono text-xs text-slate-700 break-all">{row.recipientEmail}</td>
+                      <td className="px-4 py-2 text-slate-700 whitespace-nowrap">{row.status}</td>
                       <td className="px-4 py-2 text-slate-700">
                         {row.attemptCount}/{row.maxAttempts}
                       </td>
-                      <td className="px-4 py-2 text-slate-700">{row.updatedAt?.replace("T", " ").slice(0, 19)}</td>
+                      <td className="px-4 py-2 text-slate-700 whitespace-nowrap tabular-nums">{row.updatedAt?.replace("T", " ").slice(0, 19)}</td>
                       <td className="px-4 py-2 text-xs text-red-700">{row.lastError ?? "-"}</td>
                     </tr>
                   ))
