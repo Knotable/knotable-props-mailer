@@ -444,6 +444,37 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(backend.tables.emails.find((row) => row.id === email.id).status).toBe("queued");
   });
 
+  it("skips recipients a same-subject campaign already reached, but not test sends or the sender copy", async () => {
+    const now = new Date().toISOString();
+    const earlier = seedCampaign({ recipients: 0, status: "sent", approve: false });
+    earlier.created_at = now;
+    earlier.subject = "Autumn update!";
+    const sentRow = (to, extra = {}) => ({ id: crypto.randomUUID(), status: "succeeded", payload: { to }, available_at: now, campaign_label: `${earlier.id}:2026-10-16`, ...extra });
+    earlier.id && backend.tables.mail_queue.push(
+      { email_id: earlier.id, ...sentRow("person0@example.test") },
+      { email_id: earlier.id, ...sentRow("person1@example.test") },
+      { email_id: earlier.id, ...sentRow("person2@example.test", { campaign_label: `test:${earlier.id}:2026-10-16` }) },
+      { email_id: earlier.id, ...sentRow("sender@example.test") },
+    );
+    const unrelated = seedCampaign({ recipients: 0, status: "sent", approve: false });
+    unrelated.created_at = now;
+    unrelated.subject = "Winter results";
+    backend.tables.mail_queue.push({ email_id: unrelated.id, ...sentRow("person3@example.test") });
+
+    const email = seedCampaign({ recipients: 5, extraRows: [{ id: crypto.randomUUID(), status: "pending", payload: { to: "sender@example.test" }, available_at: HOLD }] });
+    email.created_at = now;
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    const destinations = sentDestinations();
+    expect(destinations).not.toContain("person0@example.test");
+    expect(destinations).not.toContain("person1@example.test");
+    expect(destinations).toEqual(expect.arrayContaining(["person2@example.test", "person3@example.test", "person4@example.test", "sender@example.test"]));
+    const skipped = rowsFor(email.id).filter((row) => row.status === "canceled");
+    expect(skipped).toHaveLength(2);
+    expect(skipped[0].last_error).toMatch(new RegExp(`same-subject email \\(campaign ${earlier.id}\\)`));
+    expect(recordFor(email.id).state).toBe("complete");
+  });
+
   it("refuses to prepare on top of unsent rows left by a queue for other lists", async () => {
     const email = seedListCampaign({ sendAfterPrepare: true, approvedMaxRecipients: 1_000_000 });
     const staleList = crypto.randomUUID();
