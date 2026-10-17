@@ -3,15 +3,27 @@ import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { upsertListAction } from "./actions";
 import { ImportMembersForm } from "./import-members-form";
 import Link from "next/link";
-import { BLOCKED_EMAIL_DOMAINS } from "@/lib/blockList";
 
 export default async function ListsPage() {
   await requireServerAuthContext();
   const supabase = getSupabaseAdmin();
-  const { data: lists } = await supabase
+  const { data: lists, error: listsError } = await supabase
     .from("lists")
-    .select("id, name, address, description, updated_at, list_members(count)")
+    .select("id, name, address, description, updated_at")
     .order("updated_at", { ascending: false });
+
+  // Counted separately: the embedded `list_members(count)` aggregate is rejected
+  // when PostgREST aggregate functions are disabled, which silently blanked this page.
+  const memberCounts = new Map<string, number>();
+  await Promise.all(
+    (lists ?? []).map(async (list) => {
+      const { count } = await supabase
+        .from("list_members")
+        .select("id", { count: "exact", head: true })
+        .eq("list_id", list.id);
+      memberCounts.set(list.id, count ?? 0);
+    }),
+  );
 
   return (
     <div className="space-y-6">
@@ -20,19 +32,6 @@ export default async function ListsPage() {
         <h2 className="text-2xl font-semibold text-slate-900">Manage Lists</h2>
         <p className="text-sm text-slate-500">Create lists, import recipients, and manage suppressions before they reach a campaign queue.</p>
       </header>
-      <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3">
-        <div className="flex items-start gap-3">
-          <span className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-xs font-bold text-white" aria-hidden="true">
-            ✓
-          </span>
-          <div>
-            <p className="text-sm font-semibold text-emerald-900">Automatic suppression is active</p>
-            <p className="text-sm text-emerald-800">
-              Addresses at {BLOCKED_EMAIL_DOMAINS.map((domain) => `@${domain}`).join(" and ")} are automatically blocked during import, queueing, and sending.
-            </p>
-          </div>
-        </div>
-      </div>
       <form action={upsertListAction} className="rounded-lg border border-slate-200 bg-slate-50 p-6">
         <p className="text-sm font-medium text-slate-700">Create or update list</p>
         <div className="mt-3 grid gap-4 sm:grid-cols-2">
@@ -56,7 +55,7 @@ export default async function ListsPage() {
       <div className="divide-y rounded-xl border border-slate-200">
         {lists?.length ? (
           lists.map((list) => {
-            const memberCount = (list.list_members as { count: number }[])?.[0]?.count ?? 0;
+            const memberCount = memberCounts.get(list.id) ?? 0;
             return (
               <div key={list.id} className="space-y-3 p-4">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
@@ -89,7 +88,9 @@ export default async function ListsPage() {
             );
           })
         ) : (
-          <p className="p-6 text-sm text-slate-500">No lists yet.</p>
+          <p className="p-6 text-sm text-slate-500">
+            {listsError ? `Could not load lists: ${listsError.message}` : "No lists yet."}
+          </p>
         )}
       </div>
     </div>

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
-import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
+import { ScheduleActions } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
 import { describeAutopilot, estimateSendDuration, getAutopilotRecords, isActiveAutopilot, type AutopilotView } from "@/lib/sendAutopilot";
 
@@ -181,7 +181,6 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
             Drafts, campaigns ready to send, and sends in progress.
           </p>
         </div>
-        <QueueSafetyNotice />
       </header>
 
       {totalActiveQueueRows > 0 && (
