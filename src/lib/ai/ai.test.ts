@@ -33,3 +33,16 @@ describe("agent interface", () => {
     expect(actions).toContain("buildQueueReleaseConfirmation(emailId)");
   });
 });
+
+describe("request_send approval links", () => {
+  it("never sends: the approve step requires the operator's password and is not an /ai action", () => {
+    const actions = readFileSync("src/app/(dashboard)/approve/[token]/actions.ts", "utf8");
+    const create = actions.slice(actions.indexOf("export async function createSendRequestAction"), actions.indexOf("async function passwordMatches"));
+    expect(create).not.toContain("sendQueuedEmailAction");
+    const approve = actions.slice(actions.indexOf("export async function approveSendRequestAction"));
+    expect(approve.indexOf("passwordMatches(")).toBeLessThan(approve.indexOf("sendQueuedEmailAction("));
+    expect(approve).toContain('transitionSendRequest(request, "pending"');
+    expect(Object.keys(ACTION_HANDLERS)).toContain("request_send");
+    expect(Object.keys(ACTION_HANDLERS).some((name) => /approve/.test(name))).toBe(false);
+  });
+});

@@ -18,6 +18,24 @@ For Next.js behavior, read the version-matched bundled documentation under `node
 
 A second, chrome-free interface for AI agents and browser-automation tools. Start at **`/ai`** (public catalog; also advertised by `/llms.txt` and a `ai-agent-interface` meta tag). Every page is script-free, server-rendered HTML with stable ids (`#result[data-ok]`, `#unsent[data-value]`, `#form-<action>`, `#<action>-<field>`, `#submit-<action>`, `dd[data-key=…]`), and the same page as JSON with `?format=json` or `Accept: application/json` (including the actions valid right now and their fields). Actions are form POSTs to `/ai/do/<action>` that call the **same server actions** as the human UI (so exact-count approval, content digest, and deliverability guards are identical); they 303 back with `?result=…&ok=1|0`, or return JSON when `format=json`. Cross-origin POSTs are rejected; sessions are the normal Supabase or bypass cookies (`/ai/login`). Pages: `/ai/status`, `/ai/campaigns[?status&q&limit]`, `/ai/campaigns/new`, `/ai/campaigns/{id}` (+`/log`, `/analytics`), `/ai/lists`, `/ai/lists/{id}[?q&status&page]`. Actions: login_password, login_bypass, logout, save_draft, duplicate, test_to_me, test_send, queue, send, pause, unqueue, edit, mark_sent, retry_failed, delete, list_upsert, list_import, member_suppress. User/permission admin stays human-only. Code: `src/app/ai/`, `src/lib/ai/`. A full sign-in → draft → queue → send → pause run takes ~3 s against `npm run dev:fake`.
 
+## HUMAN APPROVAL LINKS FOR AI-REQUESTED SENDS (2026-10-17)
+
+Preferred way for an agent to get a queued campaign sent: POST `/ai/do/request_send`
+(`id`, optional `send_window`, `send_at`, `note`). It sends nothing. It returns
+`data.approvalUrl` — a one-time `/approve/<token>` link valid 24 h. Give that URL to the
+operator verbatim. On that page the operator sees the rendered email, From/Reply-To, per-list
+audience and exact unsent count, window/start and duration estimate, then approves with
+their **account password** (agents must never enter it) or rejects. Approval calls the same
+`sendQueuedEmailAction` as the Schedule page, pinned to the count shown.
+
+- Only the SHA-256 of the token is stored (`app_settings` key `send_request:<hash>`).
+- Single use: pending → approving → approved/rejected via compare-and-set; a failed send
+  returns it to pending with `lastError`.
+- If subject/From/Reply-To/body changes after the request, the link refuses (content digest).
+- Signed-out visitors are sent to login and returned to the link afterwards (15-min
+  `props_return_to` cookie; only `/approve/<token>` paths are honored).
+- Code: `src/lib/sendApprovalRequests.ts`, `src/app/(dashboard)/approve/[token]/`.
+
 ## QUEUE CLEANUP AND AUDIENCE-MERGE GUARD (2026-10-17)
 
 Incident 2026-10-16: a five-list queue built 187k held rows; **Unqueue** reported success twice but canceled none (one UPDATE over 187k rows hit the statement timeout and its error was ignored); a later six-list **Send Now** on the same campaign was upserted on top of the leftovers, and only the approved-count guard (189,693 > 35,334) stopped it from mailing the merged audience. Fixed:

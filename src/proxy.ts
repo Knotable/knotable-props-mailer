@@ -2,6 +2,7 @@ import { createServerClient } from "@supabase/ssr";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { requestHasBypassAccess } from "@/lib/authAccessEdge";
+import { POST_LOGIN_RETURN_COOKIE, POST_LOGIN_RETURN_MAX_AGE_S, safeReturnPath } from "@/lib/postLoginReturn";
 
 export async function proxy(request: NextRequest) {
   const response = NextResponse.next({
@@ -45,7 +46,18 @@ export async function proxy(request: NextRequest) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.search = "";
-    return NextResponse.redirect(loginUrl);
+    const redirect = NextResponse.redirect(loginUrl);
+    const returnTo = safeReturnPath(request.nextUrl.pathname);
+    if (returnTo) {
+      redirect.cookies.set(POST_LOGIN_RETURN_COOKIE, returnTo, {
+        httpOnly: true,
+        secure: request.nextUrl.protocol === "https:",
+        sameSite: "lax",
+        path: "/",
+        maxAge: POST_LOGIN_RETURN_MAX_AGE_S,
+      });
+    }
+    return redirect;
   }
 
   return response;

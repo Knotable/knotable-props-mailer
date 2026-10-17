@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { ensureUserProfile } from "@/lib/authAccess";
 import { createServerSupabaseClient } from "@/lib/supabaseServer";
+import { POST_LOGIN_RETURN_COOKIE, safeReturnPath } from "@/lib/postLoginReturn";
 
 const OTP_TYPES = new Set<EmailOtpType>([
   "email",
@@ -44,5 +45,9 @@ export async function GET(request: NextRequest) {
     await ensureUserProfile(user.id, user.email);
   }
 
-  return redirectTo(request, isRecovery ? "/reset-password" : "/email/composer");
+  if (isRecovery) return redirectTo(request, "/reset-password");
+  const returnTo = safeReturnPath(request.cookies.get(POST_LOGIN_RETURN_COOKIE)?.value);
+  const response = redirectTo(request, returnTo ?? "/email/composer");
+  if (returnTo) response.cookies.delete(POST_LOGIN_RETURN_COOKIE);
+  return response;
 }

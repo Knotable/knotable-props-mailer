@@ -186,6 +186,7 @@ async function campaignView(emailId: string, returnTo: string): Promise<View> {
   if (status === "queued" || status === "sending") {
     if (unsent > 0) available.push(spec("test_to_me", {}, values));
     if (unsent > 0 && record?.state !== "preparing" && !(status === "sending" && active)) {
+      available.push(spec("request_send", {}, values));
       available.push(spec("send", {}, { ...values, confirm_recipients: "" }));
     }
     if (active || status === "sending") available.push(spec("pause", {}, values));

@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { consumePostLoginPath } from "@/lib/postLoginReturn.server";
 import {
   clearBypassSessionCookie,
   ensureUserProfile,
@@ -290,7 +291,7 @@ export async function verifyLoginCode(formData: FormData) {
   }
 
   await logAuthTrace(correlationId, "Login code verify succeeded", { email, ip, userAgent });
-  redirect("/email/composer");
+  redirect(await consumePostLoginPath("/email/composer"));
 }
 
 export async function signInWithPassword(formData: FormData) {
@@ -348,7 +349,7 @@ export async function signInWithPassword(formData: FormData) {
   }
   await clearBypassSessionCookie();
   await logAuthTrace(correlationId, "Password login succeeded", { email, ip, userAgent });
-  redirect("/email/composer");
+  redirect(await consumePostLoginPath("/email/composer"));
 }
 
 export async function updatePasswordAction(formData: FormData) {
@@ -403,7 +404,7 @@ export async function updatePasswordAction(formData: FormData) {
     userAgent,
     email: data.user.email,
   });
-  redirect("/email/composer");
+  redirect(await consumePostLoginPath("/email/composer"));
 }
 
 export async function bypassLogin(formData: FormData) {
@@ -439,7 +440,7 @@ export async function bypassLogin(formData: FormData) {
     userAgent,
     allowedEmail: ALLOWED_EMAIL,
   });
-  redirect("/email/composer");
+  redirect(await consumePostLoginPath("/email/composer"));
 }
 
 export async function signOutAction() {

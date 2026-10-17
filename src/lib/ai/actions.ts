@@ -19,6 +19,7 @@ import {
   sendQueuedTestAction,
   sendTestAction,
 } from "@/app/(dashboard)/email/actions";
+import { createSendRequestAction } from "@/app/(dashboard)/approve/[token]/actions";
 import { importMembersAction, suppressListMemberAction, upsertListAction } from "@/app/(dashboard)/lists/actions";
 import { bypassLogin, signInWithPassword, signOutAction } from "@/app/(auth)/login/actions";
 
@@ -150,6 +151,17 @@ export const ACTION_SPECS: ActionSpec[] = [
     ],
   },
   {
+    action: "request_send",
+    label: "Request human approval to send",
+    description: "Creates a one-time approval link (valid 24h) for the operator. Nothing sends until a person opens the link, reviews the preview, audience and count, and approves with their password. Return data.approvalUrl to the operator.",
+    fields: [
+      { name: "id", label: "Campaign id", type: "hidden" },
+      { name: "send_window", label: "Send window (optional, e.g. 07:00-21:00 America/New_York)", type: "text" },
+      { name: "send_at", label: "Send at (optional ISO-8601)", type: "text" },
+      { name: "note", label: "Note for the approver (optional)", type: "text" },
+    ],
+  },
+  {
     action: "send",
     label: "Send (approve for autopilot)",
     description: "Approves the exact unsent count for the cloud sender. confirm_recipients must equal the current unsent count shown on the campaign page.",
@@ -270,6 +282,23 @@ export const ACTION_HANDLERS: Record<string, Handler> = {
     const listIds = input.getAll("list_id").map(String).filter(Boolean);
     if (!listIds.length) return { ok: false, message: "Select at least one list_id." };
     return queueToLists(id(input), listIds, input.get("confirm_recent_contact") === "yes");
+  },
+  async request_send(input) {
+    const emailId = id(input);
+    const res = await createSendRequestAction(fd({
+      id: emailId,
+      send_window: String(input.get("send_window") ?? ""),
+      send_at: String(input.get("send_at") ?? ""),
+      note: String(input.get("note") ?? ""),
+    }));
+    return res.error || !res.url
+      ? { ok: false, message: res.error ?? "Could not create the approval link." }
+      : {
+          ok: true,
+          message: `Approval link for ${res.unsent?.toLocaleString("en-US")} recipients (expires ${res.expiresAt}). Give this URL to the operator; it works once: ${res.url}`,
+          next: campaignPage(emailId),
+          data: { approvalUrl: res.url, expiresAt: res.expiresAt, unsent: res.unsent },
+        };
   },
   async send(input) {
     const emailId = id(input);
