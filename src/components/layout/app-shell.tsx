@@ -48,7 +48,7 @@ function NavLinkPendingState() {
       />
       <Loader2
         aria-hidden="true"
-        className={`relative size-3.5 shrink-0 animate-spin text-slate-900 transition-opacity ${
+        className={`absolute right-1 top-1 size-2.5 animate-spin text-slate-900 transition-opacity ${
           pending ? "animate-spin opacity-100" : "opacity-0"
         }`}
       />

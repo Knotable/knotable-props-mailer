@@ -6,11 +6,14 @@ import { NextResponse } from "next/server";
 import { getServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { getMailerRuntimeLimits } from "@/lib/dailyQuota";
-import { describeAutopilot, estimateSendDuration, getAutopilotRecord, getAutopilotRecords, listActiveAutopilotRecords } from "@/lib/sendAutopilot";
+import { describeAutopilot, estimateSendDuration, getAutopilotRecord, getAutopilotRecords, isActiveAutopilot, listActiveAutopilotRecords } from "@/lib/sendAutopilot";
 import { ACTION_SPECS, type ActionResult } from "@/lib/ai/actions";
 import { dl, esc, form, link, page, table, type ActionSpec } from "@/lib/ai/html";
 
 export const dynamic = "force-dynamic";
+// Bulk queue cleanup (unqueue/delete on large campaigns) runs in bounded
+// batches for up to ~40 s; give these server actions room to finish.
+export const maxDuration = 60;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type Auth = Awaited<ReturnType<typeof getServerAuthContext>>;
@@ -171,7 +174,7 @@ async function campaignView(emailId: string, returnTo: string): Promise<View> {
   const unsent = summary.pending_due + summary.pending_held;
   const view = describeAutopilot(record);
   const status = email.status as string;
-  const active = Boolean(record && ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"].includes(record.state));
+  const active = isActiveAutopilot(record);
   const values = { id: emailId };
   const available: ActionSpec[] = [];
   const listOptions = (lists ?? []).map((list) => ({ value: list.id, label: `${list.name} <${list.address}> [${list.id}]` }));

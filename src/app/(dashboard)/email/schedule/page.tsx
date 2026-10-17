@@ -5,6 +5,10 @@ import { ScheduleActions } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
 import { describeAutopilot, estimateSendDuration, getAutopilotRecords, isActiveAutopilot, type AutopilotView } from "@/lib/sendAutopilot";
 
+// Bulk queue cleanup (unqueue/delete on large campaigns) runs in bounded
+// batches for up to ~40 s; give these server actions room to finish.
+export const maxDuration = 60;
+
 const DIRECT_RECIPIENTS_ID = "__direct_recipients__";
 
 type SchedulePageProps = {
@@ -40,14 +44,18 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
   const sendError = typeof params.sendError === "string" ? params.sendError : null;
   const notice = typeof params.notice === "string" ? params.notice.slice(0, 400) : null;
 
-  const { data: emails } = await admin
+  const [activeResult, completedResult] = await Promise.all([admin
     .from("emails")
     .select("id, subject, from_address, status, created_at, updated_at")
     .in("status", ["draft", "queued", "sending"])
     .order("updated_at", { ascending: false })
-    .limit(50);
+    .limit(50), admin.from("emails").select("id, subject, from_address, status, created_at, updated_at")
+      .eq("status", "sent").order("updated_at", { ascending: false }).limit(10)]);
+  if (activeResult.error) throw activeResult.error;
+  if (completedResult.error) throw completedResult.error;
 
-  const baseEmails = ((emails ?? []) as ScheduleEmailRow[]);
+  const baseEmails = (activeResult.data ?? []) as ScheduleEmailRow[];
+  const recentEmails = [...baseEmails, ...(completedResult.data ?? []) as ScheduleEmailRow[]];
   const emailMap = new Map(baseEmails.map((email) => [email.id, email]));
   const emailIds = [...emailMap.keys()];
   const { data: queueSummaryData, error: queueSummaryError } = emailIds.length
@@ -69,7 +77,7 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
   if (queueSummaryError) throw queueSummaryError;
   const queueRows = (queueSummaryData ?? []) as ScheduleQueueSummaryRow[];
   const autopilotRecords = await getAutopilotRecords(
-    baseEmails.filter((email) => email.status !== "draft").map((email) => email.id),
+    recentEmails.filter((email) => email.status !== "draft").map((email) => email.id),
   );
   const totalActiveQueueRows = queueRows.reduce(
     (sum, row) => sum + row.pending_due + row.pending_held + row.processing,
@@ -327,6 +335,13 @@ export default async function SchedulePage({ searchParams }: SchedulePageProps) 
                       autopilotActive={autopilotActive}
                       preparing={autopilotRecord?.state === "preparing"}
                       estimate={estimateSendDuration(unsent)}
+                      afterCampaign={autopilotRecord?.afterCampaign}
+                      predecessors={recentEmails.flatMap((candidate) => {
+                        const approval = autopilotRecords.get(candidate.id);
+                        if (candidate.id === item.id || !approval || !["sending", "sent"].includes(candidate.status ?? "") || (!isActiveAutopilot(approval) && approval.state !== "complete") || approval.state === "preparing") return [];
+                        const audience = (listsByEmail.get(candidate.id) ?? []).map((list) => list.name).join(" + ");
+                        return [{ id: candidate.id, approvalId: approval.approvalId, label: `${audience || candidate.subject || "Campaign"} · ${candidate.id.slice(0, 8)}` }];
+                      })}
                     />
                   ) : null}
                 </div>

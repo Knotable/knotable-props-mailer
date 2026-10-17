@@ -35,6 +35,7 @@ import {
   autopilotKey,
   availableQuota,
   campaignContentDigest,
+  campaignDependencyStatus,
   classifySendException,
   createBackoff,
   createPacer,
@@ -52,14 +53,8 @@ import {
   sendWindowStatus,
   runUrlFromEnv,
 } from "./lib/autopilot-core.mjs";
-import {
-  buildMemberQueueRow,
-  buildSenderCopyQueueRow,
-  extractEmailAddress,
-  findRecentDuplicateRecipients,
-  findRecentTwinEmailIds,
-  recentDuplicateCutoffIso,
-} from "./lib/queue-rows.mjs";
+import { buildMemberQueueRow, buildSenderCopyQueueRow, extractEmailAddress } from "./lib/queue-rows.mjs";
+import { similarCampaignIds } from "./lib/subject-similarity.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -613,6 +608,68 @@ async function findLateSuppressed(items) {
   return lateSuppressedIds(items, inactive ?? []);
 }
 
+// Cross-campaign duplicate guard. A campaign split into batches (or
+// re-created as a copy) has a new id, so the per-campaign dedupe hash cannot
+// stop a person on two batch lists from receiving it twice. Any campaign whose
+// subject is identical or >= 90% similar counts as the same email; recipients
+// it already sent to (or is sending to) are skipped here, just before each batch.
+const SIBLING_LOOKBACK_DAYS = 120;
+
+async function loadSiblingCampaigns(email) {
+  const since = new Date(Date.now() - SIBLING_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const rows = await retry("sibling campaigns", () => unwrap("sibling campaigns")(
+    supabase.from("emails").select("id, subject, status").neq("id", email.id)
+      .in("status", ["queued", "sending", "sent"]).gte("created_at", since).limit(1_000),
+  ), 4);
+  const ids = new Set(similarCampaignIds(email.subject, rows ?? [], email.id));
+  return (rows ?? []).filter((row) => ids.has(row.id));
+}
+
+// Map of queue item id -> sibling campaign id that already reached that address.
+async function findSiblingDuplicates(siblings, items, senderEmail) {
+  const hits = new Map();
+  if (!siblings.length || !items.length) return hits;
+  const sender = String(senderEmail ?? "").toLowerCase();
+  const byAddress = new Map();
+  for (const item of items) {
+    const key = String(item.payload?.to ?? "").trim().toLowerCase();
+    // The operator's own record copy of each batch is always delivered.
+    if (!key || key === sender) continue;
+    byAddress.set(key, [...(byAddress.get(key) ?? []), item.id]);
+  }
+  if (!byAddress.size) return hits;
+  const variants = [...new Set(items.flatMap((item) => {
+    const to = String(item.payload?.to ?? "").trim();
+    return to ? [to, to.toLowerCase()] : [];
+  }))];
+  const mark = (address, campaignId) => {
+    for (const id of byAddress.get(String(address).toLowerCase()) ?? []) if (!hits.has(id)) hits.set(id, campaignId);
+  };
+  const rows = await retry("sibling duplicate lookup", () => unwrap("sibling duplicate lookup")(
+    supabase.from("mail_queue").select("email_id, payload, campaign_label")
+      .in("email_id", siblings.map((sibling) => sibling.id))
+      .in("status", ["succeeded", "processing"])
+      .in("payload->>to", variants),
+  ), 4);
+  for (const row of rows ?? []) {
+    // Test sends never count as having sent the campaign.
+    if (String(row.campaign_label ?? "").startsWith("test:")) continue;
+    mark(row.payload?.to, row.email_id);
+  }
+  // Finished campaigns may be compacted (queue rows deleted); ask the ledger.
+  for (const sibling of siblings.filter((candidate) => candidate.status === "sent")) {
+    const pending = [...byAddress.keys()].filter((address) => byAddress.get(address).some((id) => !hits.has(id)));
+    if (!pending.length) break;
+    const { data, error } = await supabase.rpc("delivery_accepted_among", { p_email_id: sibling.id, p_recipients: pending });
+    if (error) continue;
+    for (const item of Array.isArray(data) ? data : []) {
+      const address = item && typeof item === "object" ? Object.values(item)[0] : item;
+      if (typeof address === "string") mark(address, sibling.id);
+    }
+  }
+  return hits;
+}
+
 async function earliestRetryAt(emailId) {
   const { data } = await supabase.from("mail_queue").select("available_at").eq("email_id", emailId).eq("status", "pending")
     .gt("available_at", nowIso()).lt("available_at", HOLD_FLOOR).order("available_at", { ascending: true }).limit(1).maybeSingle();
@@ -738,6 +795,15 @@ async function prepareQueue(record, email) {
   const emailId = email.id;
   const listIds = (record.audience?.listIds ?? []).filter((id) => uuidPattern.test(id));
   if (!listIds.length) return { stop: await block(email, record, "Cloud preparation had no lists to read.") };
+  // Never build on unsent rows left by a queue for other lists: the upsert
+  // below would merge that old audience into this send (2026-10-16 incident).
+  const foreign = await unwrap("foreign unsent rows")(
+    supabase.from("mail_queue").select("list_id").eq("email_id", emailId).in("status", ["pending", "processing"])
+      .not("list_id", "is", null).not("list_id", "in", `(${listIds.join(",")})`).limit(1),
+  );
+  if (foreign?.length) {
+    return { stop: await block(email, record, "The campaign still holds unsent recipients from an earlier queue for other lists. Unqueue it (or Duplicate it into a fresh draft), then queue again.") };
+  }
   const excluded = new Set((record.audience?.excludeRecipients ?? []).map((value) => String(value).trim().toLowerCase()));
   const campaignLabel = `${emailId}:${nowIso().slice(0, 10)}`;
   const canceledSample = await unwrap("canceled sample")(
@@ -745,15 +811,6 @@ async function prepareQueue(record, email) {
   );
   const reviveCanceled = Boolean(canceledSample?.length);
   const checkAccepted = await deliveryRecordExists(emailId);
-  // Same content, different draft, inside 12 hours: skip those recipients.
-  const duplicateCutoff = recentDuplicateCutoffIso();
-  const twinEmailIds = await findRecentTwinEmailIds(supabase, {
-    emailId,
-    subject: email.subject,
-    html: email.html,
-    sinceIso: duplicateCutoff,
-  });
-  let skippedRecentDuplicate = 0;
   let skippedAccepted = 0;
   let prepared = 0;
   let lastBeat = 0;
@@ -797,17 +854,6 @@ async function prepareQueue(record, email) {
           rows = rows.filter((row) => !done.has(row.payload.to));
         }
       }
-      if (twinEmailIds.length && rows.length) {
-        const recent = await findRecentDuplicateRecipients(supabase, {
-          twinEmailIds,
-          recipients: rows.map((row) => String(row.payload.to).trim().toLowerCase()),
-          sinceIso: duplicateCutoff,
-        });
-        if (recent.size) {
-          skippedRecentDuplicate += recent.size;
-          rows = rows.filter((row) => !recent.has(String(row.payload.to).trim().toLowerCase()));
-        }
-      }
       await upsertRows(rows);
       prepared += rows.length;
       if (Date.now() - lastBeat > 5_000) {
@@ -828,20 +874,12 @@ async function prepareQueue(record, email) {
   const senderEmail = extractEmailAddress(email.from_address);
   if (senderEmail && !isBlockedRecipient(senderEmail)) {
     const copyDone = checkAccepted ? await acceptedAmong(emailId, [senderEmail]) : new Set();
-    const copyRecent = twinEmailIds.length
-      ? await findRecentDuplicateRecipients(supabase, { twinEmailIds, recipients: [senderEmail], sinceIso: duplicateCutoff })
-      : new Set();
     if (copyDone.size) skippedAccepted += 1;
-    else if (copyRecent.size) skippedRecentDuplicate += 1;
     else await upsertRows([buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel })]);
   }
   if (skippedAccepted) {
     console.log(`campaign ${emailId}: skipped ${skippedAccepted} recipients SES already accepted for this campaign`);
     summaryLine(`- SKIPPED ${skippedAccepted.toLocaleString()} recipients already accepted for **${email.subject}**`);
-  }
-  if (skippedRecentDuplicate) {
-    console.log(`campaign ${emailId}: skipped ${skippedRecentDuplicate} recipients who received this exact content in the last 12 hours`);
-    summaryLine(`- SKIPPED ${skippedRecentDuplicate.toLocaleString()} recipients who already received this exact content within 12 hours`);
   }
 
   const summary = await loadSummary(emailId);
@@ -853,18 +891,26 @@ async function prepareQueue(record, email) {
   summaryLine(`- PREPARED **${email.subject}** — ${unsent.toLocaleString()} unsent recipients queued`);
 
   if (!record.sendAfterPrepare) {
-    await supabase.from("emails").update({ status: "queued", updated_at: nowIso() }).eq("id", emailId).in("status", ["draft", "queued"]);
-    await patchRecord(record, {
+    // Only an approval that is still active may finish; a cancel or pause that
+    // landed during preparation wins, and a draft is never flipped back.
+    const finished = await patchRecord(record, {
       state: "prepared",
       approvedRecipients: unsent,
       heartbeatAt: nowIso(),
       progress: { prepared },
       message: `Prepared ${unsent.toLocaleString()} recipients. Review, then press Send on the Queue page.`,
     });
+    if (finished !== true) return { stop: "paused" };
+    await supabase.from("emails").update({ status: "queued", updated_at: nowIso() }).eq("id", emailId).eq("status", "queued");
     return { stop: "prepared" };
   }
-  const { error } = await supabase.from("emails").update({ status: "sending", updated_at: nowIso() }).eq("id", emailId).in("status", ["draft", "queued", "sending"]);
+  const { data: activated, error } = await supabase.from("emails").update({ status: "sending", updated_at: nowIso() })
+    .eq("id", emailId).in("status", ["queued", "sending"]).select("id");
   if (error) throw new Error(`activate campaign after preparation: ${error.message}`);
+  if (!activated?.length) {
+    await patchRecord(record, { state: "paused", message: "Campaign was unqueued during preparation; nothing was sent." });
+    return { stop: "paused" };
+  }
   const wrote = await patchRecord(record, {
     state: "approved",
     approvedRecipients: unsent,
@@ -881,6 +927,14 @@ async function runCampaign(record) {
   if (!email) {
     await patchRecord(record, { state: "canceled", message: "Campaign no longer exists." });
     return "skipped";
+  }
+  const dependency = record.afterCampaign
+    ? campaignDependencyStatus(record, new Map((await listRecords()).map((item) => [item.emailId, item])), Date.now())
+    : { status: "ready" };
+  if (dependency.status === "blocked") return block(email, record, dependency.reason);
+  if (dependency.status === "waiting") {
+    await patchRecord(record, { state: "waiting_campaign", nextCheckAt: dependency.nextCheckAt ?? null, message: "Waiting for the approved earlier campaign and its delay. No operator action is needed." });
+    return "dependency";
   }
   if (record.state === "preparing") {
     if (!["draft", "queued", "sending"].includes(email.status)) {
@@ -971,6 +1025,12 @@ async function runCampaign(record) {
   }
 
   const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl });
+  const siblings = await loadSiblingCampaigns(email);
+  const senderAddress = extractEmailAddress(email.from_address);
+  let duplicatesSkipped = 0;
+  if (siblings.length) {
+    console.log(`campaign ${emailId}: skipping recipients already reached by ${siblings.length} same-subject campaign(s): ${siblings.map((sibling) => sibling.id).join(", ")}`);
+  }
   const { data: sample } = await supabase.from("mail_queue").select("id, payload").eq("email_id", emailId).eq("status", "pending").limit(1).maybeSingle();
   if (sample && !sample.payload?.subject) {
     try {
@@ -1148,9 +1208,12 @@ async function runCampaign(record) {
     }
     racedClaims = 0;
     const suppressed = await findLateSuppressed(claim.items);
-    const { invalid, deliverable } = buildDeliverable(email, compiled, claim.items.filter((item) => !suppressed.has(item.id)));
+    const duplicates = await findSiblingDuplicates(siblings, claim.items.filter((item) => !suppressed.has(item.id)), senderAddress);
+    duplicatesSkipped += duplicates.size;
+    const { invalid, deliverable } = buildDeliverable(email, compiled, claim.items.filter((item) => !suppressed.has(item.id) && !duplicates.has(item.id)));
     const results = [
       ...[...suppressed].map((id) => ({ id, outcome: "canceled", ses_message_id: null, last_error: "Canceled: recipient unsubscribed, bounced, complained, or was blocked after queueing." })),
+      ...[...duplicates].map(([id, campaignId]) => ({ id, outcome: "canceled", ses_message_id: null, last_error: `Skipped: already sent a same-subject email (campaign ${campaignId}).` })),
       ...invalid,
     ];
     const groups = new Map();
@@ -1261,6 +1324,7 @@ async function runCampaign(record) {
     return "deadline";
   }
 
+  if (duplicatesSkipped) summaryLine(`- SKIPPED ${duplicatesSkipped.toLocaleString()} recipients already sent a same-subject email for **${email.subject}**`);
   if (await finalizeComplete(email, record, "all recipients processed")) return "complete";
   const retryAt = await earliestRetryAt(emailId);
   await patchRecord(record, {
@@ -1462,10 +1526,10 @@ async function autopilot() {
   while (Date.now() < deadlineMs) {
     const records = await listRecords();
     const due = orderDueRecords(
-      records.filter((record) => !emailIdArg || record.emailId === emailIdArg),
+      records,
       Date.now(),
       config.heartbeatStaleMs,
-    ).filter((record) => !processed.has(record.emailId));
+    ).filter((record) => (!emailIdArg || record.emailId === emailIdArg) && !processed.has(record.emailId));
     const next = due[0];
     if (!next) break;
     processed.add(next.emailId);

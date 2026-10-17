@@ -444,6 +444,71 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(backend.tables.emails.find((row) => row.id === email.id).status).toBe("queued");
   });
 
+  it("skips recipients a same-subject campaign already reached, but not test sends or the sender copy", async () => {
+    const now = new Date().toISOString();
+    const earlier = seedCampaign({ recipients: 0, status: "sent", approve: false });
+    earlier.created_at = now;
+    earlier.subject = "Autumn update!";
+    const sentRow = (to, extra = {}) => ({ id: crypto.randomUUID(), status: "succeeded", payload: { to }, available_at: now, campaign_label: `${earlier.id}:2026-10-16`, ...extra });
+    earlier.id && backend.tables.mail_queue.push(
+      { email_id: earlier.id, ...sentRow("person0@example.test") },
+      { email_id: earlier.id, ...sentRow("person1@example.test") },
+      { email_id: earlier.id, ...sentRow("person2@example.test", { campaign_label: `test:${earlier.id}:2026-10-16` }) },
+      { email_id: earlier.id, ...sentRow("sender@example.test") },
+    );
+    const unrelated = seedCampaign({ recipients: 0, status: "sent", approve: false });
+    unrelated.created_at = now;
+    unrelated.subject = "Winter results";
+    backend.tables.mail_queue.push({ email_id: unrelated.id, ...sentRow("person3@example.test") });
+
+    const email = seedCampaign({ recipients: 5, extraRows: [{ id: crypto.randomUUID(), status: "pending", payload: { to: "sender@example.test" }, available_at: HOLD }] });
+    email.created_at = now;
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    const destinations = sentDestinations();
+    expect(destinations).not.toContain("person0@example.test");
+    expect(destinations).not.toContain("person1@example.test");
+    expect(destinations).toEqual(expect.arrayContaining(["person2@example.test", "person3@example.test", "person4@example.test", "sender@example.test"]));
+    const skipped = rowsFor(email.id).filter((row) => row.status === "canceled");
+    expect(skipped).toHaveLength(2);
+    expect(skipped[0].last_error).toMatch(new RegExp(`same-subject email \\(campaign ${earlier.id}\\)`));
+    expect(recordFor(email.id).state).toBe("complete");
+  });
+
+  it("refuses to prepare on top of unsent rows left by a queue for other lists", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: true, approvedMaxRecipients: 1_000_000 });
+    const staleList = crypto.randomUUID();
+    for (let index = 0; index < 25; index += 1) {
+      backend.tables.mail_queue.push({
+        id: crypto.randomUUID(),
+        email_id: email.id,
+        list_id: staleList,
+        status: "pending",
+        payload: { to: `stale${index}@example.test` },
+        dedupe_hash: `stale-${email.id}-${index}`,
+        available_at: "2999-12-31T23:59:59Z",
+        attempts: 0,
+        max_attempts: 5,
+      });
+    }
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    expect(rowsFor(email.id)).toHaveLength(25);
+    expect(recordFor(email.id).state).toBe("blocked");
+    expect(recordFor(email.id).message).toMatch(/earlier queue for other lists/);
+  });
+
+  it("leaves an unqueued draft alone when preparation finishes", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: true });
+    backend.tables.emails.find((row) => row.id === email.id).status = "draft";
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    expect(backend.tables.emails.find((row) => row.id === email.id).status).toBe("draft");
+    expect(recordFor(email.id).state).toBe("paused");
+  });
+
   it("blocks when preparation yields more recipients than approved", async () => {
     const email = seedListCampaign({ sendAfterPrepare: true, approvedMaxRecipients: 100 });
     const result = await runWorker();
@@ -550,5 +615,59 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     const secondWave = sentDestinations().slice(firstWave);
     expect(secondWave.sort()).toEqual(["late1@example.test", "late2@example.test", "late3@example.test"]);
     expect(recordFor(email.id).state).toBe("complete");
+  });
+});
+
+describe("automatic audience sequencing", { timeout: 90_000 }, () => {
+  function link(child, parent, delayMinutes = 0) {
+    Object.assign(recordFor(child.id), { state: "waiting_campaign", afterCampaign: { emailId: parent.id, approvalId: recordFor(parent.id).approvalId, delayMinutes } });
+    // Distinct content avoids the independent same-subject duplicate guard.
+    child.subject = `Next stage ${child.id}`;
+    recordFor(child.id).contentSha256 = campaignContentDigest(child);
+  }
+
+  it("finishes three approved audiences in order in one run without another click", async () => {
+    const first = seedCampaign({ recipients: 2 });
+    const second = seedCampaign({ recipients: 2 });
+    const third = seedCampaign({ recipients: 2 });
+    link(second, first);
+    link(third, second);
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    for (const email of [first, second, third]) expect(recordFor(email.id).state).toBe("complete");
+    const campaignOrder = backend.ses.bulkRequests.map(request => request.BulkEmailEntries[0].ReplacementTags.find(tag => tag.Name === "campaign_id")?.Value);
+    expect(campaignOrder).toEqual([first.id, second.id, third.id]);
+  });
+
+  it("keeps the next audience held for 12 hours, then resumes automatically on a later worker", async () => {
+    const first = seedCampaign({ recipients: 2 });
+    const second = seedCampaign({ recipients: 2 });
+    link(second, first, 720);
+    expect((await runWorker()).code).toBe(0);
+    expect(recordFor(first.id).state).toBe("complete");
+    expect(recordFor(second.id).state).toBe("waiting_campaign");
+    expect(count(rowsFor(second.id), "pending")).toBe(2);
+    recordFor(first.id).completedAt = new Date(Date.now() - 721 * 60_000).toISOString();
+    // A campaign-scoped invocation must still load its predecessor's record.
+    const result = await runWorker(["--mode", "autopilot", "--email-id", second.id]);
+    expect(result.code, result.stderr).toBe(0);
+    expect(recordFor(second.id).state).toBe("complete");
+  });
+
+  it.each(["paused", "canceled", "blocked", "replaced", "missing"])("does not send the next audience after an earlier approval is %s", async (failure) => {
+    const first = seedCampaign({ recipients: 2 });
+    const second = seedCampaign({ recipients: 2 });
+    link(second, first);
+    if (failure === "replaced") recordFor(first.id).approvalId = crypto.randomUUID();
+    else if (failure === "missing") backend.tables.app_settings = backend.tables.app_settings.filter(row => row.key !== autopilotKey(first.id));
+    else recordFor(first.id).state = failure;
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(recordFor(second.id).state).toBe("blocked");
+    expect(count(rowsFor(second.id), "pending")).toBe(2);
+    const childRequests = backend.ses.bulkRequests.filter(request =>
+      request.BulkEmailEntries.some(entry =>
+        entry.ReplacementTags.some(tag => tag.Name === "campaign_id" && tag.Value === second.id)));
+    expect(childRequests).toHaveLength(0);
   });
 });

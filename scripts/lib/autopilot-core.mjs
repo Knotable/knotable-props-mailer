@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 
 export const AUTOPILOT_KEY_PREFIX = "send_autopilot:";
 export const WORKER_LEASE_KEY = "send_worker_lease";
-export const ACTIVE_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"];
+export const ACTIVE_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry", "waiting_campaign"];
 export const AMBIGUOUS_CLAIM_PREFIX = "ambiguous_claim:";
 
 export const autopilotKey = (emailId) => `${AUTOPILOT_KEY_PREFIX}${emailId}`;
@@ -36,9 +36,45 @@ export function isRecordDue(record, nowMs, staleMs) {
 }
 
 export function orderDueRecords(records, nowMs, staleMs) {
+  const byId = new Map(records.map((record) => [record.emailId, record]));
   return records
-    .filter((record) => isRecordDue(record, nowMs, staleMs))
+    .filter((record) => isRecordDue(record, nowMs, staleMs) && campaignDependencyStatus(record, byId, nowMs).status !== "waiting")
     .sort((a, b) => String(a.approvedAt ?? "").localeCompare(String(b.approvedAt ?? "")));
+}
+
+// Dependencies bind an exact approval, not merely a campaign id. Editing,
+// canceling or re-approving an earlier stage must never release a later one.
+// Shared by the cheap probe and sender; broken dependencies are due so the
+// sender can block them and notify the operator, rather than waiting forever.
+export function campaignDependencyStatus(record, byId, nowMs) {
+  const dependency = record.afterCampaign;
+  if (!dependency) return { status: "ready" };
+  const seen = new Set([record.emailId]);
+  let cursor = record;
+  while (cursor.afterCampaign) {
+    const link = cursor.afterCampaign;
+    if (!link.emailId || !link.approvalId || seen.has(link.emailId) || !Number.isFinite(link.delayMinutes) || link.delayMinutes < 0 || link.delayMinutes > 86_400) {
+      return { status: "blocked", reason: "Invalid or circular campaign dependency. Review the send sequence." };
+    }
+    seen.add(link.emailId);
+    const previous = byId.get(link.emailId);
+    if (!previous || previous.approvalId !== link.approvalId) {
+      return { status: "blocked", reason: "An earlier campaign was deleted or re-approved. Review the sequence and approve this stage again." };
+    }
+    if (["paused", "canceled", "blocked"].includes(previous.state)) {
+      return { status: "blocked", reason: `An earlier campaign is ${previous.state}. Review the sequence before resuming.` };
+    }
+    if (![...ACTIVE_STATES, "complete"].includes(previous.state)) {
+      return { status: "blocked", reason: "An earlier campaign has no send approval. Review the sequence." };
+    }
+    cursor = previous;
+  }
+  const previous = byId.get(dependency.emailId);
+  if (previous.state !== "complete") return { status: "waiting" };
+  const completed = Date.parse(previous.completedAt ?? "");
+  if (!Number.isFinite(completed)) return { status: "blocked", reason: "An earlier campaign has no verified completion time." };
+  const nextAt = completed + dependency.delayMinutes * 60_000;
+  return nextAt > nowMs ? { status: "waiting", nextCheckAt: new Date(nextAt).toISOString() } : { status: "ready" };
 }
 
 export function availableQuota({ max24HourSend, sentLast24Hours, reserve = 0 }) {

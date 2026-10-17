@@ -4,7 +4,7 @@ import type { Json } from "@/supabase/types";
 
 // Shared contract with scripts/ses-bulk-worker.mjs (scripts/lib/autopilot-core.mjs).
 export const AUTOPILOT_KEY_PREFIX = "send_autopilot:";
-export const ACTIVE_AUTOPILOT_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry"] as const;
+export const ACTIVE_AUTOPILOT_STATES = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry", "waiting_campaign"] as const;
 export const HEARTBEAT_STALE_MS = 3 * 60_000;
 export const AUTOPILOT_SCHEDULE_MINUTES = 5;
 
@@ -34,6 +34,7 @@ export type AutopilotRecord = {
   nextCheckAt?: string | null;
   startAt?: string | null;
   sendWindow?: string | null;
+  afterCampaign?: { emailId: string; approvalId: string; delayMinutes: number; subject?: string };
   eventsBlindNotified?: boolean;
   updatedAt?: string;
   completedAt?: string;
@@ -166,8 +167,8 @@ export type AutopilotDispatchResult = { dispatched: boolean; detail: string };
 // campaign up, so a failure here is informational, never fatal.
 export async function dispatchAutopilotWorker(emailId: string): Promise<AutopilotDispatchResult> {
   const token = process.env.GITHUB_ACTIONS_DISPATCH_TOKEN;
-  const fallback = `The autopilot schedule picks it up within ${AUTOPILOT_SCHEDULE_MINUTES} minutes.`;
-  if (!token) return { dispatched: false, detail: fallback };
+  const fallback = `The next scheduled worker picks it up automatically. GitHub targets every ${AUTOPILOT_SCHEDULE_MINUTES} minutes but can run late.`;
+  if (!token || !emailId) return { dispatched: false, detail: fallback };
   const repository = process.env.GITHUB_REPOSITORY ?? "Knotable/knotable-props-mailer";
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) return { dispatched: false, detail: fallback };
   try {
@@ -179,7 +180,9 @@ export async function dispatchAutopilotWorker(emailId: string): Promise<Autopilo
         Authorization: `Bearer ${token}`,
         "X-GitHub-Api-Version": "2022-11-28",
       },
-      body: JSON.stringify({ ref: process.env.GITHUB_ACTIONS_REF ?? "master", inputs: { mode: "autopilot", email_id: emailId } }),
+      // Drain all approved work, so finishing one stage can start its successor
+      // in this same run instead of waiting for another scheduled invocation.
+      body: JSON.stringify({ ref: process.env.GITHUB_ACTIONS_REF ?? "master", inputs: { mode: "autopilot" } }),
       signal: AbortSignal.timeout(8_000),
     });
     if (response.status === 204) return { dispatched: true, detail: "A worker is starting now." };
@@ -203,10 +206,12 @@ export function describeAutopilot(record: AutopilotRecord | null | undefined, no
   const live = Number.isFinite(heartbeatMs) && nowMs - heartbeatMs < HEARTBEAT_STALE_MS;
   const detail = record.message ?? "";
   switch (record.state) {
+    case "waiting_campaign":
+      return { label: "Waiting for earlier campaign", tone: "slate", detail, live: false };
     case "preparing":
       return live
         ? { label: "Preparing recipients", tone: "blue", detail, live }
-        : { label: "Preparing recipients", tone: "blue", detail: detail || `Waiting for a cloud worker to build the recipient queue (within ${AUTOPILOT_SCHEDULE_MINUTES} minutes).`, live };
+        : { label: "Preparing recipients", tone: "blue", detail: detail || "Waiting for the next cloud worker to build the recipient queue; scheduled starts can run late.", live };
     case "prepared":
       return { label: "Prepared", tone: "slate", detail: detail || "Recipients are queued. Review, then press Send.", live: false };
     case "approved": {
@@ -214,7 +219,7 @@ export function describeAutopilot(record: AutopilotRecord | null | undefined, no
       if (Number.isFinite(startMs) && startMs > nowMs) {
         return { label: "Scheduled", tone: "slate", detail: `Sends automatically at ${formatUtc(record.startAt!)}. Pause to cancel.`, live: false };
       }
-      return { label: "Starting", tone: "blue", detail: detail || `Approved; a worker starts within ${AUTOPILOT_SCHEDULE_MINUTES} minutes.`, live };
+      return { label: "Starting", tone: "blue", detail: detail || "Approved; the next scheduled worker starts automatically. Scheduled runs can be delayed.", live };
     }
     case "running":
       return live

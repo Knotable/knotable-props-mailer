@@ -48,8 +48,8 @@ async function followRedirect(run: () => Promise<unknown>): Promise<string | nul
   }
 }
 
-// Exact repeats are always excluded — the queue itself refuses to send one
-// recipient the same content twice, so there is nothing to tick here.
+// No "skip exact duplicates" field: the worker's cross-campaign guard already
+// cancels recipients a same-subject campaign reached, so there is nothing to tick.
 async function queueToLists(emailId: string, listIds: string[], confirmRecent: boolean): Promise<ActionResult> {
   const exclude: string[] = [];
   const skip = confirmRecent;
@@ -61,6 +61,7 @@ async function queueToLists(emailId: string, listIds: string[], confirmRecent: b
       const res = await queueCampaignAction(fd({
         emailId,
         listId,
+        audienceListIds: JSON.stringify(listIds),
         offset: String(offset),
         skipDuplicateCheck: skip ? "true" : undefined,
         excludeRecipients: exclude.length ? JSON.stringify(exclude) : undefined,
@@ -69,7 +70,7 @@ async function queueToLists(emailId: string, listIds: string[], confirmRecent: b
         if (!res.requiresConfirmation) return { ok: false, message: res.error };
         return {
           ok: false,
-          message: `Recent-contact check: ${res.duplicateCount} recipients already received this exact email and ${res.recentlySentCount} got another email to this list in the last 30 days. Exact repeats are skipped automatically; resubmit with confirm_recent_contact=yes to queue the rest anyway.`,
+          message: `Recent-contact check: ${res.duplicateCount} recipients already received this exact email and ${res.recentlySentCount} got another email to this list in the last 30 days. Recipients a same-subject campaign already reached are canceled automatically before each batch; resubmit with confirm_recent_contact=yes to queue the rest anyway.`,
           data: { duplicateCount: res.duplicateCount, recentlySentCount: res.recentlySentCount, warningGroups: res.warningGroups.map((group) => ({ date: group.date, subject: group.subject, recipients: group.recipientAddresses.length })) },
         };
       }
@@ -141,7 +142,7 @@ export const ACTION_SPECS: ActionSpec[] = [
   {
     action: "queue",
     label: "Queue to lists",
-    description: "Build the held recipient queue from one or more lists. Each recipient is queued once across the selected lists, and anyone who received this exact content in the last 12 hours is skipped. Nothing sends until 'send'. Lists over 5,000 finish preparing in the cloud.",
+    description: "Build the held recipient queue from one or more lists. Each recipient is queued once across the selected lists, and the worker cancels anyone a same-subject campaign already reached. Nothing sends until 'send'. Lists over 5,000 finish preparing in the cloud.",
     fields: [
       { name: "id", label: "Campaign id", type: "hidden" },
       { name: "list_id", label: "Lists", type: "checkbox", options: [] },
@@ -158,6 +159,9 @@ export const ACTION_SPECS: ActionSpec[] = [
       { name: "confirm_recipients", label: "Confirm unsent recipient count", type: "number", required: true },
       { name: "send_at", label: "Send at (optional ISO-8601, e.g. 2026-10-01T13:00:00Z)", type: "text" },
       { name: "send_window", label: "Send window (optional, e.g. 07:00-21:00 America/New_York)", type: "text" },
+      { name: "after_campaign_id", label: "Optional: send after this campaign completes", type: "text" },
+      { name: "after_approval_id", label: "Earlier campaign's exact approvalId (required with after_campaign_id)", type: "text" },
+      { name: "after_delay_minutes", label: "Delay after completion in minutes (0–86400)", type: "number" },
     ],
   },
   { action: "pause", label: "Pause", description: "Stop sending within ~15 seconds; unsent recipients are kept. Resume with send.", fields: [{ name: "id", label: "Campaign id", type: "hidden" }] },
@@ -275,6 +279,9 @@ export const ACTION_HANDLERS: Record<string, Handler> = {
       expectedRecipients: String(input.get("confirm_recipients") ?? ""),
       sendAt: String(input.get("send_at") ?? ""),
       sendWindow: String(input.get("send_window") ?? ""),
+      afterCampaignId: String(input.get("after_campaign_id") ?? ""),
+      afterApprovalId: String(input.get("after_approval_id") ?? ""),
+      afterDelayMinutes: String(input.get("after_delay_minutes") ?? "0"),
     }));
     return res.error
       ? { ok: false, message: res.error }

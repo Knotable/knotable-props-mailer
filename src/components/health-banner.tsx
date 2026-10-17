@@ -1,7 +1,7 @@
 "use client";
 
 import { Activity, AlertTriangle, ChevronDown, ChevronUp, CircleAlert, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import type { HealthCheck, HealthReport } from "@/app/api/health/route";
 
 const DISMISSED_KEY = "health_banner_dismissed_v1";
@@ -9,6 +9,9 @@ const REPORT_CACHE_KEY = "health_banner_report_v1";
 const REPORT_TTL_MS = 5 * 60 * 1000;
 const HEALTH_FETCH_DELAY_MS = 1200;
 const HEALTH_WARNING_RECHECK_MS = 5 * 60 * 1000;
+const subscribeHydration = () => () => {};
+const clientSnapshot = () => true;
+const serverSnapshot = () => false;
 
 type CachedReport = {
   savedAt: number;
@@ -37,6 +40,9 @@ function getInitialState() {
 }
 
 export function HealthBanner() {
+  // Session storage exists only in the browser. Keep the initial hydration
+  // markup identical to the server, then reveal the cached report afterwards.
+  const hydrated = useSyncExternalStore(subscribeHydration, clientSnapshot, serverSnapshot);
   const [initialState] = useState(getInitialState);
   const [report, setReport] = useState<HealthReport | null>(initialState.report);
   const [dismissed, setDismissed] = useState(initialState.dismissed);
@@ -108,7 +114,7 @@ export function HealthBanner() {
     );
   };
 
-  if (!report && checking) {
+  if (!hydrated || (!report && checking)) {
     return (
       <div className="border-b border-blue-100 bg-blue-50 text-sm text-blue-900">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-2">

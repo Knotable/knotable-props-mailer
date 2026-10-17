@@ -12,6 +12,13 @@ import { logAudit } from "@/lib/logger";
 import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/queueReleaseGuard";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { findAcceptedRecipients } from "@/lib/deliveryLedger";
+import {
+  describeIncompleteCleanup,
+  findForeignUnsentList,
+  hasMailedListAudience,
+  mailQueueCleanupOps,
+  runBatchedCleanup,
+} from "@/lib/queueCleanup";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
 import { assertSendReadySubject } from "@/lib/subjectReadiness";
@@ -25,16 +32,15 @@ import {
   isActiveAutopilot,
   setAutopilotState,
   writeAutopilotRecord,
+  type AutopilotRecord,
 } from "@/lib/sendAutopilot";
+import { campaignDependencyStatus } from "../../../../scripts/lib/autopilot-core.mjs";
 import type { Json } from "@/supabase/types";
 import {
   QUEUE_HOLD_AT,
   buildMemberQueueRow,
   buildSenderCopyQueueRow,
   extractEmailAddress,
-  findRecentDuplicateRecipients,
-  findRecentTwinEmailIds,
-  recentDuplicateCutoffIso,
 } from "../../../../scripts/lib/queue-rows.mjs";
 
 const SaveDraftSchema = z.object({
@@ -107,6 +113,36 @@ async function assertEmailOwned(
 ): Promise<boolean> {
   const { data } = await supabase.from("emails").select("id").eq("id", emailId).maybeSingle();
   return !!data;
+}
+
+// Clears a campaign's unsent rows in bounded batches. Rows of a campaign that
+// never mailed a list are deleted (they carry no history); otherwise they are
+// soft-canceled so "resend to unsent" can still find who was not reached.
+// Returns an error message unless every unsent row was cleared.
+async function clearUnsentQueueRows(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+  actionLabel: string,
+): Promise<{ cleared: number; mode: "cancel" | "delete"; error?: string }> {
+  const mode = (await hasMailedListAudience(supabase, emailId)) ? "cancel" : "delete";
+  const result = await runBatchedCleanup(mailQueueCleanupOps(supabase, emailId, mode));
+  return result.complete && !result.error
+    ? { cleared: result.affected, mode }
+    : { cleared: result.affected, mode, error: describeIncompleteCleanup(actionLabel, result) };
+}
+
+async function assertNoForeignUnsentRows(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+  listIds: string[],
+) {
+  const foreign = await findForeignUnsentList(supabase, emailId, listIds);
+  if (!foreign) return;
+  const { data: list } = await supabase.from("lists").select("name").eq("id", foreign).maybeSingle();
+  throw new Error(
+    `This campaign still holds unsent recipients from an earlier queue (list "${(list as { name?: string } | null)?.name ?? foreign}"), ` +
+    "which would be merged into this send. Unqueue it first, or Duplicate it into a fresh draft.",
+  );
 }
 
 type DraftPayload = {
@@ -665,6 +701,19 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   // network failure. The dedupe_hash upsert below makes repeated pages
   // idempotent, so do not block when partially queued rows already exist.
   if (offset === 0) {
+    // Refuse to build on unsent rows from lists outside this queue's audience.
+    // Callers pass every selected list so multi-list queues still resume.
+    const audienceRaw = formData.get("audienceListIds");
+    if (typeof audienceRaw === "string" && audienceRaw) {
+      let audience: string[] = [];
+      try {
+        const parsedAudience = JSON.parse(audienceRaw) as unknown;
+        if (Array.isArray(parsedAudience)) audience = parsedAudience.filter((value): value is string => typeof value === "string");
+      } catch {
+        audience = [];
+      }
+      await assertNoForeignUnsentRows(supabase, emailId, [...new Set([...audience, listId])]);
+    }
     const { count: existingCount } = await supabase
       .from("mail_queue")
       .select("id", { count: "exact", head: true })
@@ -756,26 +805,8 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     emailId,
     (membersToQueue as Array<{ email: string }>).map((member) => member.email),
   );
-
-  // Nobody gets the same content twice within 12 hours, even when a later
-  // batch is sent from a duplicated draft with a different email_id.
-  const duplicateCutoff = recentDuplicateCutoffIso();
-  const twinEmailIds = await findRecentTwinEmailIds(supabase, {
-    emailId,
-    subject: email.subject,
-    html: email.html,
-    sinceIso: duplicateCutoff,
-  });
-  const recentlyReceived = await findRecentDuplicateRecipients(supabase, {
-    twinEmailIds,
-    recipients: (membersToQueue as Array<{ email: string }>).map((member) =>
-      normalizeEmailAddress(member.email),
-    ),
-    sinceIso: duplicateCutoff,
-  });
   for (const member of membersToQueue) {
     if (alreadyAccepted.has((member as { email: string }).email)) continue;
-    if (recentlyReceived.has(normalizeEmailAddress((member as { email: string }).email))) continue;
     queueRows.push(buildMemberQueueRow({ emailId, listId, email, member, campaignLabel }));
   }
 
@@ -783,9 +814,7 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
     const senderEmail = extractEmailAddress(email.from_address);
     if (senderEmail && !isBlockedRecipientEmail(senderEmail)) {
       const senderAccepted = await findAcceptedRecipients(supabase, emailId, [senderEmail]);
-      if (!senderAccepted.size && !recentlyReceived.has(senderEmail)) {
-        queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
-      }
+      if (!senderAccepted.size) queueRows.push(buildSenderCopyQueueRow({ emailId, email, senderEmail, campaignLabel }));
     }
   }
 
@@ -1222,8 +1251,38 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
     const windowInput = parseSendWindowInput(formData.get("sendWindow"));
     if (windowInput.error) return { error: windowInput.error };
 
+    let afterCampaign: AutopilotRecord["afterCampaign"];
+    const predecessorId = String(formData.get("afterCampaignId") ?? "").trim();
+    if (predecessorId) {
+      const dependency = z.object({
+        emailId: z.string().uuid(),
+        approvalId: z.string().uuid(),
+        delayMinutes: z.coerce.number().int().min(0).max(86_400),
+      }).safeParse({
+        emailId: predecessorId,
+        approvalId: formData.get("afterApprovalId"),
+        delayMinutes: formData.get("afterDelayMinutes") ?? 0,
+      });
+      if (!dependency.success || predecessorId === id) return { error: "Choose a valid earlier campaign and a delay between 0 and 1,440 hours." };
+      const { data: settings, error: dependencyError } = await supabase.from("app_settings").select("key,value").like("key", "send_autopilot:%");
+      if (dependencyError) return { error: `Cannot verify the send sequence: ${dependencyError.message}` };
+      const records = ((settings ?? []) as { key: string; value: Json }[]).map((row) => row.value as unknown as AutopilotRecord);
+      const byId = new Map(records.map((record) => [record.emailId, record]));
+      const gate = campaignDependencyStatus({ emailId: id, afterCampaign: dependency.data }, byId, Date.now());
+      if (gate.status === "blocked") return { error: gate.reason };
+      const parent = byId.get(predecessorId)!;
+      const { data: parentEmail, error: parentError } = await supabase.from("emails").select("status").eq("id", predecessorId).maybeSingle();
+      if (parentError) return { error: parentError.message };
+      const parentStatus = (parentEmail as { status: string } | null)?.status;
+      if (!parentStatus || !["sending", "sent"].includes(parentStatus)) return { error: "Approve the earlier campaign first, then reload this page." };
+      afterCampaign = { ...dependency.data, subject: parent.subject };
+    }
+
     const contentSha256 = campaignContentDigest(emailRow);
     if (!schedule.startAt && !windowInput.sendWindow && existing && isActiveAutopilot(existing) && existing.contentSha256 === contentSha256 && emailRow.status === "sending") {
+      // An ordinary retry must not discard a dependency; changing an active
+      // approval requires Pause first, just as changing its content does.
+      if (afterCampaign && JSON.stringify(existing.afterCampaign) !== JSON.stringify(afterCampaign)) return { error: "Pause this campaign before changing its sequence." };
       const dispatch = await dispatchAutopilotWorker(id);
       return { recipients: unsent, alreadyActive: true, dispatched: dispatch.dispatched, detail: `Already approved and sending. ${dispatch.detail}` };
     }
@@ -1237,8 +1296,11 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
       contentSha256,
       subject: emailRow.subject,
       source: "app",
-      state: "approved",
-      message: schedule.startAt
+      state: afterCampaign ? "waiting_campaign" : "approved",
+      afterCampaign,
+      message: afterCampaign
+        ? `Approved for ${unsent.toLocaleString()} recipients. Sends automatically ${afterCampaign.delayMinutes ? `${afterCampaign.delayMinutes / 60} hours ` : ""}after ${afterCampaign.subject || afterCampaign.emailId} (${afterCampaign.emailId.slice(0, 8)}) completes. Pause stops this stage.`
+        : schedule.startAt
         ? `Approved for ${unsent.toLocaleString()} recipients, scheduled for ${formatUtc(schedule.startAt)}.`
         : `Approved for ${unsent.toLocaleString()} recipients. Waiting for a cloud worker.`,
       heartbeatAt: null,
@@ -1269,6 +1331,7 @@ export async function sendQueuedEmailAction(formData: FormData): Promise<SendQue
         processing: preflight.processing,
         contentSha256,
         startAt: schedule.startAt,
+        afterCampaign,
         dispatched: dispatch.dispatched,
       },
     }).catch(console.error);
@@ -1339,6 +1402,7 @@ export async function prepareInCloudAction(formData: FormData): Promise<CloudPre
     }
     try {
       assertSendReadySubject(email.subject ?? "");
+      await assertNoForeignUnsentRows(supabase, emailId, listIds);
     } catch (error) {
       return { error: toActionErrorMessage(error, "Subject is not send-ready.") };
     }
@@ -1473,22 +1537,16 @@ export async function editQueuedEmailAction(
     }
     const userId = auth.userId;
 
-    // Soft-cancel unsent rows so we preserve a record of who wasn't sent to.
-    const nowIso = new Date().toISOString();
-    // Only unsent rows: rows a live worker already claimed are finalized by
-    // that worker, so the send history stays truthful.
-    await supabase
-      .from("mail_queue")
-      .update({ status: "canceled", locked_at: null, updated_at: nowIso })
-      .eq("email_id", id)
-      .eq("status", "pending");
-
+    // Stop sending first (one-row writes), then clear unsent rows in batches.
+    // Rows a live worker already claimed are finalized by that worker.
     await setAutopilotState(id, "canceled", "Unsent recipients were canceled so the draft could be edited.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
       .eq("id", id);
     if (error) return { error: error.message };
+    const cleared = await clearUnsentQueueRows(supabase, id, "Reopen for editing");
+    if (cleared.error) return { error: cleared.error };
 
     logAudit({
       userId,
@@ -1576,24 +1634,17 @@ export async function cancelEmailAction(formData: FormData): Promise<{ error?: s
     }
     const userId = auth.userId;
 
-    // Soft-cancel unsent rows so the record of who wasn't reached is preserved.
-    // A subsequent re-queue can use mail_queue WHERE status='canceled' to find
-    // exactly who needs to be retried.
-    const nowIso = new Date().toISOString();
-    // Only unsent rows: rows a live worker already claimed are finalized by
-    // that worker, so the send history stays truthful.
-    await supabase
-      .from("mail_queue")
-      .update({ status: "canceled", locked_at: null, updated_at: nowIso })
-      .eq("email_id", id)
-      .eq("status", "pending");
-
+    // Stop sending first (one-row writes, cannot time out), then clear unsent
+    // rows in bounded batches and report honestly if any remain. Rows a live
+    // worker already claimed are finalized by that worker.
     await setAutopilotState(id, "canceled", "Unqueued; unsent recipients were canceled.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
       .eq("id", id);
     if (error) return { error: error.message };
+    const cleared = await clearUnsentQueueRows(supabase, id, "Unqueue");
+    if (cleared.error) return { error: cleared.error };
 
     logAudit({
       userId,
@@ -1626,8 +1677,12 @@ export async function deleteEmailAction(formData: FormData): Promise<{ error?: s
     const userId = auth.userId;
 
     await setAutopilotState(id, "canceled", "Email deleted.");
-    await supabase.from("mail_queue").delete().eq("email_id", id);
-    await supabase.from("email_recipients").delete().eq("email_id", id);
+    // Park the campaign first so nothing can send while rows are removed.
+    await supabase.from("emails").update({ status: "draft", scheduled_at: null }).eq("id", id).in("status", ["queued", "sending"]);
+    const rows = await runBatchedCleanup(mailQueueCleanupOps(supabase, id, "delete", null));
+    if (!rows.complete || rows.error) return { error: describeIncompleteCleanup("Delete", rows) };
+    const { error: recipientsError } = await supabase.from("email_recipients").delete().eq("email_id", id);
+    if (recipientsError) return { error: recipientsError.message };
 
     const { error } = await supabase.from("emails").delete().eq("id", id);
     if (error) return { error: error.message };
