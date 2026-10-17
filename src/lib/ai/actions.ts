@@ -59,6 +59,7 @@ async function queueToLists(emailId: string, listIds: string[], confirmRecent: b
       const res = await queueCampaignAction(fd({
         emailId,
         listId,
+        audienceListIds: JSON.stringify(listIds),
         offset: String(offset),
         skipDuplicateCheck: skip ? "true" : undefined,
         excludeRecipients: exclude.length ? JSON.stringify(exclude) : undefined,

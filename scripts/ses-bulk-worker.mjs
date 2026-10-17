@@ -731,6 +731,15 @@ async function prepareQueue(record, email) {
   const emailId = email.id;
   const listIds = (record.audience?.listIds ?? []).filter((id) => uuidPattern.test(id));
   if (!listIds.length) return { stop: await block(email, record, "Cloud preparation had no lists to read.") };
+  // Never build on unsent rows left by a queue for other lists: the upsert
+  // below would merge that old audience into this send (2026-10-16 incident).
+  const foreign = await unwrap("foreign unsent rows")(
+    supabase.from("mail_queue").select("list_id").eq("email_id", emailId).in("status", ["pending", "processing"])
+      .not("list_id", "is", null).not("list_id", "in", `(${listIds.join(",")})`).limit(1),
+  );
+  if (foreign?.length) {
+    return { stop: await block(email, record, "The campaign still holds unsent recipients from an earlier queue for other lists. Unqueue it (or Duplicate it into a fresh draft), then queue again.") };
+  }
   const excluded = new Set((record.audience?.excludeRecipients ?? []).map((value) => String(value).trim().toLowerCase()));
   const campaignLabel = `${emailId}:${nowIso().slice(0, 10)}`;
   const canceledSample = await unwrap("canceled sample")(
@@ -818,18 +827,26 @@ async function prepareQueue(record, email) {
   summaryLine(`- PREPARED **${email.subject}** — ${unsent.toLocaleString()} unsent recipients queued`);
 
   if (!record.sendAfterPrepare) {
-    await supabase.from("emails").update({ status: "queued", updated_at: nowIso() }).eq("id", emailId).in("status", ["draft", "queued"]);
-    await patchRecord(record, {
+    // Only an approval that is still active may finish; a cancel or pause that
+    // landed during preparation wins, and a draft is never flipped back.
+    const finished = await patchRecord(record, {
       state: "prepared",
       approvedRecipients: unsent,
       heartbeatAt: nowIso(),
       progress: { prepared },
       message: `Prepared ${unsent.toLocaleString()} recipients. Review, then press Send on the Queue page.`,
     });
+    if (finished !== true) return { stop: "paused" };
+    await supabase.from("emails").update({ status: "queued", updated_at: nowIso() }).eq("id", emailId).eq("status", "queued");
     return { stop: "prepared" };
   }
-  const { error } = await supabase.from("emails").update({ status: "sending", updated_at: nowIso() }).eq("id", emailId).in("status", ["draft", "queued", "sending"]);
+  const { data: activated, error } = await supabase.from("emails").update({ status: "sending", updated_at: nowIso() })
+    .eq("id", emailId).in("status", ["queued", "sending"]).select("id");
   if (error) throw new Error(`activate campaign after preparation: ${error.message}`);
+  if (!activated?.length) {
+    await patchRecord(record, { state: "paused", message: "Campaign was unqueued during preparation; nothing was sent." });
+    return { stop: "paused" };
+  }
   const wrote = await patchRecord(record, {
     state: "approved",
     approvedRecipients: unsent,

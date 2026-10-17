@@ -12,6 +12,13 @@ import { logAudit } from "@/lib/logger";
 import { describeQueueReleasePreflight, isQueueReleaseConfirmed } from "@/lib/queueReleaseGuard";
 import { isBlockedRecipientEmail } from "@/lib/blockList";
 import { findAcceptedRecipients } from "@/lib/deliveryLedger";
+import {
+  describeIncompleteCleanup,
+  findForeignUnsentList,
+  hasMailedListAudience,
+  mailQueueCleanupOps,
+  runBatchedCleanup,
+} from "@/lib/queueCleanup";
 import { buildRecipientPersonalization, personalizeEmailContent } from "@/lib/personalization";
 import { parseOneTimeAudienceCsv } from "@/lib/client/oneTimeAudience";
 import { assertSendReadySubject } from "@/lib/subjectReadiness";
@@ -104,6 +111,36 @@ async function assertEmailOwned(
 ): Promise<boolean> {
   const { data } = await supabase.from("emails").select("id").eq("id", emailId).maybeSingle();
   return !!data;
+}
+
+// Clears a campaign's unsent rows in bounded batches. Rows of a campaign that
+// never mailed a list are deleted (they carry no history); otherwise they are
+// soft-canceled so "resend to unsent" can still find who was not reached.
+// Returns an error message unless every unsent row was cleared.
+async function clearUnsentQueueRows(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+  actionLabel: string,
+): Promise<{ cleared: number; mode: "cancel" | "delete"; error?: string }> {
+  const mode = (await hasMailedListAudience(supabase, emailId)) ? "cancel" : "delete";
+  const result = await runBatchedCleanup(mailQueueCleanupOps(supabase, emailId, mode));
+  return result.complete && !result.error
+    ? { cleared: result.affected, mode }
+    : { cleared: result.affected, mode, error: describeIncompleteCleanup(actionLabel, result) };
+}
+
+async function assertNoForeignUnsentRows(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  emailId: string,
+  listIds: string[],
+) {
+  const foreign = await findForeignUnsentList(supabase, emailId, listIds);
+  if (!foreign) return;
+  const { data: list } = await supabase.from("lists").select("name").eq("id", foreign).maybeSingle();
+  throw new Error(
+    `This campaign still holds unsent recipients from an earlier queue (list "${(list as { name?: string } | null)?.name ?? foreign}"), ` +
+    "which would be merged into this send. Unqueue it first, or Duplicate it into a fresh draft.",
+  );
 }
 
 type DraftPayload = {
@@ -662,6 +699,19 @@ export async function queueCampaignAction(formData: FormData): Promise<QueueCamp
   // network failure. The dedupe_hash upsert below makes repeated pages
   // idempotent, so do not block when partially queued rows already exist.
   if (offset === 0) {
+    // Refuse to build on unsent rows from lists outside this queue's audience.
+    // Callers pass every selected list so multi-list queues still resume.
+    const audienceRaw = formData.get("audienceListIds");
+    if (typeof audienceRaw === "string" && audienceRaw) {
+      let audience: string[] = [];
+      try {
+        const parsedAudience = JSON.parse(audienceRaw) as unknown;
+        if (Array.isArray(parsedAudience)) audience = parsedAudience.filter((value): value is string => typeof value === "string");
+      } catch {
+        audience = [];
+      }
+      await assertNoForeignUnsentRows(supabase, emailId, [...new Set([...audience, listId])]);
+    }
     const { count: existingCount } = await supabase
       .from("mail_queue")
       .select("id", { count: "exact", head: true })
@@ -1316,6 +1366,7 @@ export async function prepareInCloudAction(formData: FormData): Promise<CloudPre
     }
     try {
       assertSendReadySubject(email.subject ?? "");
+      await assertNoForeignUnsentRows(supabase, emailId, listIds);
     } catch (error) {
       return { error: toActionErrorMessage(error, "Subject is not send-ready.") };
     }
@@ -1450,22 +1501,16 @@ export async function editQueuedEmailAction(
     }
     const userId = auth.userId;
 
-    // Soft-cancel unsent rows so we preserve a record of who wasn't sent to.
-    const nowIso = new Date().toISOString();
-    // Only unsent rows: rows a live worker already claimed are finalized by
-    // that worker, so the send history stays truthful.
-    await supabase
-      .from("mail_queue")
-      .update({ status: "canceled", locked_at: null, updated_at: nowIso })
-      .eq("email_id", id)
-      .eq("status", "pending");
-
+    // Stop sending first (one-row writes), then clear unsent rows in batches.
+    // Rows a live worker already claimed are finalized by that worker.
     await setAutopilotState(id, "canceled", "Unsent recipients were canceled so the draft could be edited.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
       .eq("id", id);
     if (error) return { error: error.message };
+    const cleared = await clearUnsentQueueRows(supabase, id, "Reopen for editing");
+    if (cleared.error) return { error: cleared.error };
 
     logAudit({
       userId,
@@ -1553,24 +1598,17 @@ export async function cancelEmailAction(formData: FormData): Promise<{ error?: s
     }
     const userId = auth.userId;
 
-    // Soft-cancel unsent rows so the record of who wasn't reached is preserved.
-    // A subsequent re-queue can use mail_queue WHERE status='canceled' to find
-    // exactly who needs to be retried.
-    const nowIso = new Date().toISOString();
-    // Only unsent rows: rows a live worker already claimed are finalized by
-    // that worker, so the send history stays truthful.
-    await supabase
-      .from("mail_queue")
-      .update({ status: "canceled", locked_at: null, updated_at: nowIso })
-      .eq("email_id", id)
-      .eq("status", "pending");
-
+    // Stop sending first (one-row writes, cannot time out), then clear unsent
+    // rows in bounded batches and report honestly if any remain. Rows a live
+    // worker already claimed are finalized by that worker.
     await setAutopilotState(id, "canceled", "Unqueued; unsent recipients were canceled.");
     const { error } = await supabase
       .from("emails")
       .update({ status: "draft", scheduled_at: null })
       .eq("id", id);
     if (error) return { error: error.message };
+    const cleared = await clearUnsentQueueRows(supabase, id, "Unqueue");
+    if (cleared.error) return { error: cleared.error };
 
     logAudit({
       userId,
@@ -1603,8 +1641,12 @@ export async function deleteEmailAction(formData: FormData): Promise<{ error?: s
     const userId = auth.userId;
 
     await setAutopilotState(id, "canceled", "Email deleted.");
-    await supabase.from("mail_queue").delete().eq("email_id", id);
-    await supabase.from("email_recipients").delete().eq("email_id", id);
+    // Park the campaign first so nothing can send while rows are removed.
+    await supabase.from("emails").update({ status: "draft", scheduled_at: null }).eq("id", id).in("status", ["queued", "sending"]);
+    const rows = await runBatchedCleanup(mailQueueCleanupOps(supabase, id, "delete", null));
+    if (!rows.complete || rows.error) return { error: describeIncompleteCleanup("Delete", rows) };
+    const { error: recipientsError } = await supabase.from("email_recipients").delete().eq("email_id", id);
+    if (recipientsError) return { error: recipientsError.message };
 
     const { error } = await supabase.from("emails").delete().eq("id", id);
     if (error) return { error: error.message };

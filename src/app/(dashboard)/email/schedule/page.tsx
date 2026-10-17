@@ -5,6 +5,10 @@ import { ScheduleActions, QueueSafetyNotice } from "./schedule-actions";
 import { RecipientBadges } from "./recipient-badges";
 import { describeAutopilot, estimateSendDuration, getAutopilotRecords, isActiveAutopilot, type AutopilotView } from "@/lib/sendAutopilot";
 
+// Bulk queue cleanup (unqueue/delete on large campaigns) runs in bounded
+// batches for up to ~40 s; give these server actions room to finish.
+export const maxDuration = 60;
+
 const DIRECT_RECIPIENTS_ID = "__direct_recipients__";
 
 type SchedulePageProps = {

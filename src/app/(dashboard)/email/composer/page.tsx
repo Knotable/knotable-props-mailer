@@ -2,6 +2,10 @@ import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 import { ComposerForm } from "./composer-form";
 
+// Bulk queue cleanup (unqueue/delete on large campaigns) runs in bounded
+// batches for up to ~40 s; give these server actions room to finish.
+export const maxDuration = 60;
+
 type Props = {
   searchParams: Promise<{ id?: string; cloneId?: string }>;
 };

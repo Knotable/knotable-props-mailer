@@ -444,6 +444,40 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(backend.tables.emails.find((row) => row.id === email.id).status).toBe("queued");
   });
 
+  it("refuses to prepare on top of unsent rows left by a queue for other lists", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: true, approvedMaxRecipients: 1_000_000 });
+    const staleList = crypto.randomUUID();
+    for (let index = 0; index < 25; index += 1) {
+      backend.tables.mail_queue.push({
+        id: crypto.randomUUID(),
+        email_id: email.id,
+        list_id: staleList,
+        status: "pending",
+        payload: { to: `stale${index}@example.test` },
+        dedupe_hash: `stale-${email.id}-${index}`,
+        available_at: "2999-12-31T23:59:59Z",
+        attempts: 0,
+        max_attempts: 5,
+      });
+    }
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    expect(rowsFor(email.id)).toHaveLength(25);
+    expect(recordFor(email.id).state).toBe("blocked");
+    expect(recordFor(email.id).message).toMatch(/earlier queue for other lists/);
+  });
+
+  it("leaves an unqueued draft alone when preparation finishes", async () => {
+    const email = seedListCampaign({ sendAfterPrepare: true });
+    backend.tables.emails.find((row) => row.id === email.id).status = "draft";
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(backend.ses.bulkRequests).toHaveLength(0);
+    expect(backend.tables.emails.find((row) => row.id === email.id).status).toBe("draft");
+    expect(recordFor(email.id).state).toBe("paused");
+  });
+
   it("blocks when preparation yields more recipients than approved", async () => {
     const email = seedListCampaign({ sendAfterPrepare: true, approvedMaxRecipients: 100 });
     const result = await runWorker();

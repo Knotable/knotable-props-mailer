@@ -376,6 +376,7 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
         // This helper is called once per list below; the DB dedupe hash
         // collapses recipients appearing in more than one selected list.
         fd.set("listId", selectedList.id);
+        fd.set("audienceListIds", JSON.stringify(selectedLists.map((list) => list.id)));
         fd.set("offset", String(offset));
         if (skipDuplicateCheck) fd.set("skipDuplicateCheck", "true");
         if (excludeRecipients && excludeRecipients.length > 0) {

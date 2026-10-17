@@ -11,6 +11,9 @@ import { ACTION_SPECS, type ActionResult } from "@/lib/ai/actions";
 import { dl, esc, form, link, page, table, type ActionSpec } from "@/lib/ai/html";
 
 export const dynamic = "force-dynamic";
+// Bulk queue cleanup (unqueue/delete on large campaigns) runs in bounded
+// batches for up to ~40 s; give these server actions room to finish.
+export const maxDuration = 60;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type Auth = Awaited<ReturnType<typeof getServerAuthContext>>;
