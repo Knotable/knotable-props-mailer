@@ -256,7 +256,8 @@ async function logView(emailId: string): Promise<View> {
 
 // Every recipient SES accepted for this campaign, with its bounce/complaint
 // outcome and the receiving server's diagnostic, plus a per-domain rollup.
-async function outcomesView(emailId: string): Promise<View> {
+async function outcomesView(emailId: string, url?: URL): Promise<View> {
+  const problemsOnly = url?.searchParams.get("only") === "problems";
   const admin = getSupabaseAdmin();
   const [{ data: sent, error: sentError }, { data: events, error: eventError }] = await Promise.all([
     admin.from("mail_queue").select("payload, updated_at").eq("email_id", emailId).eq("status", "succeeded").order("updated_at", { ascending: true }).limit(2000),
@@ -280,7 +281,12 @@ async function outcomesView(emailId: string): Promise<View> {
       diagnostic: detail?.diagnosticCode ?? detail?.status ?? null,
     });
   }
-  const rows = ((sent ?? []) as Array<{ payload: { to?: string } | null; updated_at: string }>).map((row) => {
+  // ?only=problems lists every bounce/complaint straight from the events, so
+  // large campaigns (beyond the 2,000 sent rows shown) are fully covered.
+  const sentRows = problemsOnly
+    ? [...byRecipient.keys()].map((recipient) => ({ payload: { to: recipient }, updated_at: "" }))
+    : ((sent ?? []) as Array<{ payload: { to?: string } | null; updated_at: string }>);
+  const rows = sentRows.map((row) => {
     const recipient = row.payload?.to ?? "";
     const outcome = byRecipient.get(recipient.toLowerCase());
     return {
@@ -429,7 +435,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ path
     else if (section === "campaigns" && itemId === "new" && !sub) view = newCampaignView();
     else if (section === "campaigns" && UUID.test(itemId ?? "") && !sub) view = await campaignView(itemId!, returnTo);
     else if (section === "campaigns" && UUID.test(itemId ?? "") && sub === "log") view = await logView(itemId!);
-    else if (section === "campaigns" && UUID.test(itemId ?? "") && sub === "outcomes") view = await outcomesView(itemId!);
+    else if (section === "campaigns" && UUID.test(itemId ?? "") && sub === "outcomes") view = await outcomesView(itemId!, url);
     else if (section === "campaigns" && UUID.test(itemId ?? "") && sub === "analytics") view = await analyticsView(itemId!);
     else if (section === "lists" && !itemId) view = await listsView(returnTo);
     else if (section === "lists" && UUID.test(itemId ?? "") && !sub) view = await listView(itemId!, url, returnTo);
