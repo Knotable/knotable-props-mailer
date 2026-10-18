@@ -51,6 +51,7 @@ function indexView(auth: Auth): View {
     ["GET /ai/campaigns/new", "Form to create a draft."],
     ["GET /ai/campaigns/{id}", "Campaign detail and every action valid for its state."],
     ["GET /ai/campaigns/{id}/log", "Latest 50 recipient status changes."],
+    ["GET /ai/campaigns/{id}/outcomes", "Every accepted recipient with bounce/complaint outcome, server diagnostic, and per-domain rollup."],
     ["GET /ai/campaigns/{id}/analytics", "Accepted, delivered, bounced, complained, opened, clicked."],
     ["GET /api/email/preview/{id}", "Rendered HTML of the email (human-style preview)."],
     ["GET /ai/lists", "Lists with active member counts."],
@@ -220,7 +221,7 @@ ${record ? dl("autopilot-state", [
     ["report", record.report ? JSON.stringify(record.report) : null],
     ["worker_run", record.run?.url],
   ]) : `<p id="autopilot-state">Not approved for sending.</p>`}
-<p>${link(`/ai/campaigns/${emailId}/log`, "Recipient log", "log-link")} | ${link(`/ai/campaigns/${emailId}/analytics`, "Analytics", "analytics-link")} | ${link(`/api/email/preview/${emailId}`, "Rendered preview", "preview-link")}</p>
+<p>${link(`/ai/campaigns/${emailId}/log`, "Recipient log", "log-link")} | ${link(`/ai/campaigns/${emailId}/analytics`, "Analytics", "analytics-link")} | ${link(`/ai/campaigns/${emailId}/outcomes`, "Recipient outcomes", "outcomes-link")} | ${link(`/api/email/preview/${emailId}`, "Rendered preview", "preview-link")}</p>
 <h2 id="available-actions">Available actions</h2>
 ${available.map((action) => form(action, returnTo)).join("\n<hr>\n")}`;
   return {
@@ -250,6 +251,60 @@ async function logView(emailId: string): Promise<View> {
     title: "Recipient log",
     html: `<p>${link(`/ai/campaigns/${emailId}`, "Back to campaign")}</p>${table("log-table", ["Recipient", "Status", "Attempts", "Updated", "Last error"], rows.map((row) => [row.recipient, row.status, row.attempts, row.updatedAt, row.lastError]))}`,
     data: { emailId, rows },
+  };
+}
+
+// Every recipient SES accepted for this campaign, with its bounce/complaint
+// outcome and the receiving server's diagnostic, plus a per-domain rollup.
+async function outcomesView(emailId: string): Promise<View> {
+  const admin = getSupabaseAdmin();
+  const [{ data: sent, error: sentError }, { data: events, error: eventError }] = await Promise.all([
+    admin.from("mail_queue").select("payload, updated_at").eq("email_id", emailId).eq("status", "succeeded").order("updated_at", { ascending: true }).limit(2000),
+    admin.from("provider_events").select("event_type, recipient, payload").eq("email_id", emailId).in("event_type", ["bounced", "complained"]).limit(5000),
+  ]);
+  if (sentError) throw sentError;
+  if (eventError) throw eventError;
+  type Outcome = { kind: string; type: string | null; subType: string | null; diagnostic: string | null };
+  const byRecipient = new Map<string, Outcome>();
+  for (const event of (events ?? []) as Array<{ event_type: string; recipient: string | null; payload: Record<string, unknown> | null }>) {
+    if (!event.recipient) continue;
+    const bounce = (event.payload?.bounce ?? null) as { bounceType?: string; bounceSubType?: string; bouncedRecipients?: Array<{ emailAddress?: string; diagnosticCode?: string; status?: string }> } | null;
+    const detail = bounce?.bouncedRecipients?.find((r) => r.emailAddress?.toLowerCase() === event.recipient!.toLowerCase()) ?? bounce?.bouncedRecipients?.[0];
+    const key = event.recipient.toLowerCase();
+    const previous = byRecipient.get(key);
+    if (previous?.type === "Permanent") continue;
+    byRecipient.set(key, {
+      kind: event.event_type,
+      type: bounce?.bounceType ?? null,
+      subType: bounce?.bounceSubType ?? null,
+      diagnostic: detail?.diagnosticCode ?? detail?.status ?? null,
+    });
+  }
+  const rows = ((sent ?? []) as Array<{ payload: { to?: string } | null; updated_at: string }>).map((row) => {
+    const recipient = row.payload?.to ?? "";
+    const outcome = byRecipient.get(recipient.toLowerCase());
+    return {
+      recipient,
+      domain: recipient.split("@")[1]?.toLowerCase() ?? "",
+      sentAt: row.updated_at,
+      outcome: outcome ? (outcome.kind === "complained" ? "complaint" : outcome.type === "Permanent" ? "hard bounce" : "soft bounce") : "no bounce",
+      subType: outcome?.subType ?? null,
+      diagnostic: outcome?.diagnostic ?? null,
+    };
+  });
+  const domains = new Map<string, { domain: string; sent: number; hard: number; soft: number }>();
+  for (const row of rows) {
+    const entry = domains.get(row.domain) ?? { domain: row.domain, sent: 0, hard: 0, soft: 0 };
+    entry.sent += 1;
+    if (row.outcome === "hard bounce") entry.hard += 1;
+    if (row.outcome === "soft bounce") entry.soft += 1;
+    domains.set(row.domain, entry);
+  }
+  const domainRows = [...domains.values()].sort((a, b) => b.sent - a.sent);
+  return {
+    title: "Recipient outcomes",
+    html: `<p>${link(`/ai/campaigns/${emailId}`, "Back to campaign")}</p><h2>By domain</h2>${table("domain-table", ["Domain", "Sent", "Hard bounce", "Soft bounce"], domainRows.map((d) => [d.domain, d.sent, d.hard, d.soft]))}<h2>Recipients</h2>${table("outcome-table", ["Recipient", "Outcome", "Sub-type", "Server said", "Sent"], rows.map((r) => [r.recipient, r.outcome, r.subType, r.diagnostic, r.sentAt]))}`,
+    data: { emailId, domains: domainRows, rows },
   };
 }
 
@@ -372,6 +427,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ path
     else if (section === "campaigns" && itemId === "new" && !sub) view = newCampaignView();
     else if (section === "campaigns" && UUID.test(itemId ?? "") && !sub) view = await campaignView(itemId!, returnTo);
     else if (section === "campaigns" && UUID.test(itemId ?? "") && sub === "log") view = await logView(itemId!);
+    else if (section === "campaigns" && UUID.test(itemId ?? "") && sub === "outcomes") view = await outcomesView(itemId!);
     else if (section === "campaigns" && UUID.test(itemId ?? "") && sub === "analytics") view = await analyticsView(itemId!);
     else if (section === "lists" && !itemId) view = await listsView(returnTo);
     else if (section === "lists" && UUID.test(itemId ?? "") && !sub) view = await listView(itemId!, url, returnTo);
