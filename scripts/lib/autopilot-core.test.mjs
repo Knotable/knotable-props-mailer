@@ -178,6 +178,14 @@ describe("results report", () => {
     expect(lines).toContain("Complaints: 1 (0.10%)");
     expect(lines.find((line) => line.startsWith("Clicked"))).toContain("10.0% of delivered; 20.0% of openers");
   });
+
+  it("still reports when one figure timed out", async () => {
+    const { formatResultsReport } = await import("./autopilot-core.mjs");
+    const lines = formatResultsReport({ accepted: 10_812, delivered: 10_618, bounced: 203, complained: 0, opened: null, clicked: 1_204 });
+    expect(lines).toContain("Opened (unique): unavailable (database query timed out)");
+    expect(lines).toContain("Delivered: 10,618 (98.2%)");
+    expect(lines.find((line) => line.startsWith("Clicked"))).toBe("Clicked (unique): 1,204 (11.3% of delivered)");
+  });
 });
 
 describe("approved campaign sequences", () => {

@@ -146,7 +146,7 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     suppressedPageSize: 0,
     suppressionRequests: [],
   };
-  const failures = { finalizeNext: 0 };
+  const failures = { finalizeNext: 0, metricTimeout: null };
 
   function filterRows(table, params) {
     let rows = tables[table];
@@ -258,6 +258,9 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
         } catch (error) {
           return send(response, 500, { message: error.message });
         }
+      }
+      if (fn === "get_email_provider_analytics_metric" && failures.metricTimeout === args?.p_event_type) {
+        return send(response, 500, { message: "canceling statement due to statement timeout" });
       }
       if (rpcHandlers[fn]) return send(response, 200, rpcHandlers[fn](args ?? {}));
       if (lenient) return send(response, 200, []);

@@ -1438,12 +1438,27 @@ async function manualSend(emailId) {
   return runCampaignSafely(record);
 }
 
+// Each figure is fetched on its own; one that times out (opened analytics on a
+// large campaign) is reported as unavailable instead of blocking the report.
 async function campaignResults(emailId) {
-  const queueRows = await unwrap("queue analytics")(supabase.rpc("get_email_queue_analytics_metric", { p_email_id: emailId }));
-  const metrics = { accepted: Number(queueRows?.[0]?.sent ?? 0) };
+  const metrics = { unavailable: [] };
+  try {
+    const queueRows = await unwrap("queue analytics")(supabase.rpc("get_email_queue_analytics_metric", { p_email_id: emailId }));
+    metrics.accepted = Number(queueRows?.[0]?.sent ?? 0);
+  } catch (error) {
+    metrics.accepted = null;
+    metrics.unavailable.push("accepted");
+    console.warn(`results report: accepted unavailable (${conciseError(error)})`);
+  }
   for (const metric of ["delivered", "bounced", "complained", "opened", "clicked"]) {
-    const rows = await unwrap(`${metric} analytics`)(supabase.rpc("get_email_provider_analytics_metric", { p_email_id: emailId, p_event_type: metric }));
-    metrics[metric] = Number(rows?.[0]?.unique_recipients ?? 0);
+    try {
+      const rows = await unwrap(`${metric} analytics`)(supabase.rpc("get_email_provider_analytics_metric", { p_email_id: emailId, p_event_type: metric }));
+      metrics[metric] = Number(rows?.[0]?.unique_recipients ?? 0);
+    } catch (error) {
+      metrics[metric] = null;
+      metrics.unavailable.push(metric);
+      console.warn(`results report: ${metric} unavailable (${conciseError(error)})`);
+    }
   }
   return metrics;
 }
@@ -1474,7 +1489,7 @@ async function sendDueReports(records) {
         ...formatResultsReport(results),
         `Campaign: ${record.emailId}`,
       ]);
-      summaryLine(`- REPORT **${email.subject}** — delivered ${results.delivered}, opened ${results.opened}, clicked ${results.clicked}`);
+      summaryLine(`- REPORT **${email.subject}** — delivered ${results.delivered ?? "n/a"}, opened ${results.opened ?? "n/a"}, clicked ${results.clicked ?? "n/a"}`);
     } catch (error) {
       console.warn(`results report for ${record.emailId} failed (${conciseError(error)}); will retry next run`);
     }

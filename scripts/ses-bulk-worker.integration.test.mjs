@@ -364,6 +364,19 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(backend.ses.notices).toHaveLength(2);
   });
 
+  it("sends the results report even when one analytics query times out", async () => {
+    backend.ses.emitDeliveries = true;
+    seedCampaign({ recipients: 20 });
+    backend.failures.metricTimeout = "opened";
+    const result = await runWorker(["--mode", "autopilot"], { SES_REPORT_DELAY_HOURS: "0" });
+    expect(result.code, result.stderr).toBe(0);
+    const report = backend.ses.notices.find((notice) => notice.Content.Simple.Subject.Data.startsWith("[Props Mailer] Results"));
+    expect(report).toBeTruthy();
+    const body = report.Content.Simple.Body.Text.Data;
+    expect(body).toContain("Opened (unique): unavailable (database query timed out)");
+    expect(body).toContain("Delivered: 20 (100.0%)");
+  });
+
   it("stays quiet when delivery events flow", async () => {
     backend.ses.emitDeliveries = true;
     seedCampaign({ recipients: 1_200 });
