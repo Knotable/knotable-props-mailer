@@ -139,6 +139,7 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     dropConnectionNext: 0,
     entryStatus: null,
     bounceEvery: 0,
+    bounceSubType: null,
     emitDeliveries: false,
     flagDeliveries: false,
     acceptedCount: 0,
@@ -377,7 +378,7 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
             email_id: entry.ReplacementTags?.find((tag) => tag.Name === "campaign_id")?.Value ?? null,
             event_type: "bounced",
             message_id: messageId,
-            payload: { bounce: { bounceType: "Permanent" } },
+            payload: { bounce: { bounceType: "Permanent", ...(ses.bounceSubType ? { bounceSubType: ses.bounceSubType } : {}) } },
             received_at: new Date(now()).toISOString(),
           });
         }

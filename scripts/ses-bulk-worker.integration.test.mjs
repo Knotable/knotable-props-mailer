@@ -230,6 +230,17 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(count(rows, "succeeded")).toBe(600);
   });
 
+  it("canary: SES suppression-list skips do not count as hard bounces", async () => {
+    backend.ses.bounceEvery = 5;
+    backend.ses.bounceSubType = "OnAccountSuppressionList";
+    const email = seedCampaign({ recipients: 600 });
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "100", SES_CANARY_WAIT_SECONDS: "1" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(count(rowsFor(email.id), "succeeded")).toBe(600);
+    expect(recordFor(email.id)).toMatchObject({ state: "complete", canaryPassed: true });
+    expect(recordFor(email.id).deliverability).toMatchObject({ hardBounces: 0, suppressedSkips: expect.any(Number) });
+  });
+
   it("canary: continues at full speed when early signals are healthy", async () => {
     backend.ses.bounceEvery = 200;
     const email = seedCampaign({ recipients: 600 });

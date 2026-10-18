@@ -574,12 +574,17 @@ async function deliverabilityCounts(emailId) {
     if (error) return count((query) => query.eq("event_type", "delivered"));
     return Number(data?.[0]?.unique_recipients ?? 0);
   };
-  const [hardBounces, complaints, delivered] = await Promise.all([
+  // SES never attempts delivery to addresses on the account-level suppression
+  // list and excludes them from Reputation.BounceRate, so they are counted
+  // separately and removed from both the bounces and the sample. Real
+  // permanent bounces still trip the breaker at the same threshold.
+  const [permanent, suppressedSkips, complaints, delivered] = await Promise.all([
     count((query) => query.eq("event_type", "bounced").eq("payload->bounce->>bounceType", "Permanent")),
+    count((query) => query.eq("event_type", "bounced").eq("payload->bounce->>bounceSubType", "OnAccountSuppressionList")),
     count((query) => query.eq("event_type", "complained")),
     deliveredCount(),
   ]);
-  return { hardBounces, complaints, delivered };
+  return { hardBounces: Math.max(0, permanent - suppressedSkips), suppressedSkips, complaints, delivered };
 }
 
 let vacuumWarned = false;
@@ -1142,7 +1147,7 @@ async function runCampaign(record) {
     const counts = await deliverabilityCounts(emailId).catch(() => null);
     if (counts) await patchRecord(record, { breakerBaseline: { accepted: summary.succeeded, ...counts, at: nowIso() } });
   }
-  const baseline = record.breakerBaseline ?? { accepted: summary.succeeded, hardBounces: 0, complaints: 0 };
+  const baseline = record.breakerBaseline ?? { accepted: summary.succeeded, hardBounces: 0, complaints: 0, suppressedSkips: 0 };
   sentSinceBaseline = summary.succeeded - baseline.accepted;
   canaryPending = config.canaryRecipients > 0 && !record.canaryPassed && sentSinceBaseline < config.canaryRecipients && remainingAtStart > config.canaryRecipients;
   let lastBreakerCheck = Date.now();
@@ -1150,8 +1155,10 @@ async function runCampaign(record) {
   const checkBreaker = async (minSample) => {
     const counts = await deliverabilityCounts(emailId).catch(() => null);
     if (!counts) return null;
+    const skipped = Math.max(0, counts.suppressedSkips - (baseline.suppressedSkips ?? 0));
     const sample = {
-      accepted: Math.max(0, sentSinceBaseline),
+      accepted: Math.max(0, sentSinceBaseline - skipped),
+      suppressedSkips: skipped,
       hardBounces: Math.max(0, counts.hardBounces - baseline.hardBounces),
       complaints: Math.max(0, counts.complaints - baseline.complaints),
     };
