@@ -295,6 +295,28 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(again.stdout).not.toContain("SES suppression sync:");
   });
 
+  it("resumes a partial SES suppression pass from its page token", async () => {
+    seedCampaign({ recipients: 2 });
+    const target = { id: crypto.randomUUID(), list_id: crypto.randomUUID(), email: "c@x.test", status: "active" };
+    backend.tables.list_members.push(target);
+    backend.ses.suppressed = ["a@x.test", "b@x.test", "c@x.test"];
+    backend.ses.suppressedPageSize = 1;
+    const first = await runWorker(["--mode", "autopilot"], { SES_SUPPRESSION_SYNC_BUDGET_MS: "1" });
+    expect(first.code, first.stderr).toBe(0);
+    expect(first.stdout).toContain("partial; resumes next run");
+    let sync = backend.tables.app_settings.find((row) => row.key === "ses_suppression_sync");
+    expect(sync.value.resumeToken).toBe("1");
+    expect(target.status).toBe("active");
+
+    seedCampaign({ recipients: 2 });
+    const second = await runWorker(["--mode", "autopilot"], { SES_SUPPRESSION_SYNC_BUDGET_MS: "600000" });
+    expect(second.code, second.stderr).toBe(0);
+    expect(backend.ses.suppressionRequests).toEqual([0, 1, 2]);
+    sync = backend.tables.app_settings.find((row) => row.key === "ses_suppression_sync");
+    expect(sync.value).toMatchObject({ complete: true, resumeToken: null, totalSeenThisPass: 3 });
+    expect(target.status).toBe("unsubscribed");
+  });
+
   it("keeps sending when the SES suppression list cannot be read", async () => {
     const email = seedCampaign({ recipients: 3 });
     backend.ses.suppressed = null;

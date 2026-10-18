@@ -143,6 +143,8 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     flagDeliveries: false,
     acceptedCount: 0,
     suppressed: [],
+    suppressedPageSize: 0,
+    suppressionRequests: [],
   };
   const failures = { finalizeNext: 0 };
 
@@ -337,6 +339,13 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     }
     if (request.method === "GET" && url.pathname === "/v2/email/suppression/addresses") {
       if (!Array.isArray(ses.suppressed)) return send(response, 403, { message: "not authorized to perform ses:ListSuppressedDestinations" });
+      if (ses.suppressedPageSize) {
+        const start = Number(url.searchParams.get("NextToken") ?? 0);
+        const page = ses.suppressed.slice(start, start + ses.suppressedPageSize);
+        const next = start + ses.suppressedPageSize < ses.suppressed.length ? String(start + ses.suppressedPageSize) : undefined;
+        ses.suppressionRequests.push(start);
+        return send(response, 200, { SuppressedDestinationSummaries: page.map((EmailAddress) => ({ EmailAddress, Reason: "BOUNCE", LastUpdateTime: 0 })), ...(next ? { NextToken: next } : {}) });
+      }
       return send(response, 200, { SuppressedDestinationSummaries: ses.suppressed.map((EmailAddress) => ({ EmailAddress, Reason: "BOUNCE", LastUpdateTime: 0 })) });
     }
     if (request.method === "POST" && url.pathname === "/v2/email/outbound-bulk-emails") {

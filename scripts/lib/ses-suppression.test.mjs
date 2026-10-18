@@ -16,6 +16,7 @@ describe("SES suppression sync helpers", () => {
     expect(suppressionSyncDue(null, now)).toBe(true);
     expect(suppressionSyncDue({ attemptedAt: "2026-10-18T00:00:00Z" }, now)).toBe(false);
     expect(suppressionSyncDue({ attemptedAt: "2026-10-17T20:00:00Z" }, now)).toBe(true);
+    expect(suppressionSyncDue({ attemptedAt: "2026-10-18T02:59:00Z", resumeToken: "page-18" }, now)).toBe(true);
   });
 
   it("chunks", () => {

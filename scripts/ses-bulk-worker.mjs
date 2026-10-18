@@ -1556,14 +1556,18 @@ async function compactFinishedCampaigns(records) {
 // full pass) and unsubscribe matching active list members, so late suppression
 // cancels them before SES is asked to send. Best effort: a missing IAM grant
 // (ses:ListSuppressedDestinations) or an API error never blocks sending.
-async function syncSesSuppressionList({ budgetMs = 120_000 } = {}) {
+async function syncSesSuppressionList({ budgetMs = Number(process.env.SES_SUPPRESSION_SYNC_BUDGET_MS) || 10 * 60_000 } = {}) {
   const { data: stateRow } = await supabase.from("app_settings").select("value").eq("key", SES_SUPPRESSION_SYNC_KEY).maybeSingle();
   const state = stateRow?.value ?? null;
   if (!suppressionSyncDue(state, Date.now())) return null;
   const attemptedAt = nowIso();
   const started = Date.now();
-  const since = state?.completedAt ? new Date(Date.parse(state.completedAt) - 60 * 60 * 1000) : undefined;
-  let nextToken;
+  // A partial pass resumes from its saved page token (same StartDate) so a
+  // large suppression list is eventually covered instead of re-reading page 1.
+  const resuming = Boolean(state?.resumeToken);
+  const sinceIso = resuming ? state.resumeSince : state?.completedAt ? new Date(Date.parse(state.completedAt) - 60 * 60 * 1000).toISOString() : null;
+  const since = sinceIso ? new Date(sinceIso) : undefined;
+  let nextToken = resuming ? state.resumeToken : undefined;
   let seen = 0;
   let unsubscribed = 0;
   let complete = false;
@@ -1587,12 +1591,17 @@ async function syncSesSuppressionList({ budgetMs = 120_000 } = {}) {
   } catch (caught) {
     error = conciseError(caught);
     console.warn(`SES suppression sync skipped: ${error}`);
+    nextToken = undefined; // a stale page token restarts the pass next time
   }
   const value = {
     attemptedAt,
-    completedAt: complete ? attemptedAt : state?.completedAt ?? null,
+    completedAt: complete ? (state?.passStartedAt ?? attemptedAt) : state?.completedAt ?? null,
+    passStartedAt: complete || error ? null : (resuming ? state.passStartedAt : attemptedAt),
+    resumeToken: complete || error ? null : nextToken,
+    resumeSince: complete || error ? null : sinceIso,
     lastSeen: seen,
     lastUnsubscribed: unsubscribed,
+    totalSeenThisPass: (resuming ? state.totalSeenThisPass ?? 0 : 0) + seen,
     complete,
     error,
   };
