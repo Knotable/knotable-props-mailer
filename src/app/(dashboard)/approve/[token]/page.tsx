@@ -37,9 +37,21 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
   }
 
   const supabase = getSupabaseAdmin();
-  const [{ data: email }, { data: summaries }, record] = await Promise.all([
+  // The per-list summary can hit the statement timeout on a 180k-row queue.
+  // Retry, and never mistake a failed count for "nothing left to send".
+  const loadSummaries = async () => {
+    let last: { message: string } | null = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const { data, error } = await supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [request.emailId], p_now: new Date().toISOString() });
+      if (!error) return { data, error: null };
+      last = error;
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+    }
+    return { data: null, error: last };
+  };
+  const [{ data: email }, { data: summaries, error: summaryError }, record] = await Promise.all([
     supabase.from("emails").select("status, subject, from_address, reply_to, html, text").eq("id", request.emailId).maybeSingle(),
-    supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [request.emailId], p_now: new Date().toISOString() }),
+    loadSummaries(),
     getAutopilotRecord(request.emailId),
   ]);
 
@@ -54,7 +66,8 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
   const check = checkSendRequest(request, email ? campaignContentDigest(email) : null);
   const statusOk = email && ["queued", "sending"].includes(email.status);
   const drift = unsent !== request.unsentAtRequest;
-  const canApprove = check.ok && statusOk && unsent > 0;
+  const countUnavailable = Boolean(summaryError);
+  const canApprove = check.ok && statusOk && unsent > 0 && !countUnavailable;
 
   return (
     <div className="mx-auto max-w-4xl space-y-5 p-4">
@@ -68,7 +81,8 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
 
       {!check.ok && <Notice tone={check.reason === "decided" && request.status === "approved" ? "green" : "red"}>{check.message}</Notice>}
       {check.ok && !statusOk && <Notice tone="red">This campaign is {email?.status ?? "missing"} now, so it can’t be sent from this link.</Notice>}
-      {check.ok && statusOk && unsent === 0 && <Notice tone="amber">No unsent recipients remain for this campaign.</Notice>}
+      {countUnavailable && <Notice tone="amber">The database was too busy to count recipients just now. Reload this page in a few seconds; the link still works.</Notice>}
+      {check.ok && statusOk && !countUnavailable && unsent === 0 && <Notice tone="amber">No unsent recipients remain for this campaign.</Notice>}
       {request.lastError && check.ok && <Notice tone="amber">Last attempt failed: {request.lastError}</Notice>}
       {request.note && (
         <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
