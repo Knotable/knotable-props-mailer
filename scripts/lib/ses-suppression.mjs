@@ -21,7 +21,9 @@ export function normalizeSuppressedAddresses(summaries) {
 }
 
 export function suppressionSyncDue(state, nowMs, everyMs = SES_SUPPRESSION_SYNC_EVERY_MS) {
-  if (state?.resumeToken) return true; // finish a partial pass before anything else
+  // Finish a partial pass before anything else (including records written
+  // before page tokens were saved, which only say complete: false).
+  if (state?.resumeToken || (state && state.complete === false && !state.error)) return true;
   const last = Date.parse(state?.attemptedAt ?? "");
   return !Number.isFinite(last) || nowMs - last >= everyMs;
 }
