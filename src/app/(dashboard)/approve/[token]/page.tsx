@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
+import { CountingSpinner, RetryCountSoon } from "./counting";
 import { requireCanSendAuthContext } from "@/lib/authAccess";
 import { campaignContentDigest, estimateSendDuration, getAutopilotRecord } from "@/lib/sendAutopilot";
 import { checkSendRequest, loadSendRequestByToken } from "@/lib/sendApprovalRequests";
@@ -37,37 +39,13 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
   }
 
   const supabase = getSupabaseAdmin();
-  // The per-list summary can hit the statement timeout on a 180k-row queue.
-  // Retry, and never mistake a failed count for "nothing left to send".
-  const loadSummaries = async () => {
-    let last: { message: string } | null = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const { data, error } = await supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [request.emailId], p_now: new Date().toISOString() });
-      if (!error) return { data, error: null };
-      last = error;
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
-    }
-    return { data: null, error: last };
-  };
-  const [{ data: email }, { data: summaries, error: summaryError }, record] = await Promise.all([
+  const [{ data: email }, record] = await Promise.all([
     supabase.from("emails").select("status, subject, from_address, reply_to, html, text").eq("id", request.emailId).maybeSingle(),
-    loadSummaries(),
     getAutopilotRecord(request.emailId),
   ]);
-
-  const rows = (summaries ?? []).map((r) => ({ listId: r.list_id, unsent: Number(r.pending_due ?? 0) + Number(r.pending_held ?? 0), sent: Number(r.succeeded ?? 0) }));
-  const unsent = rows.reduce((t, r) => t + r.unsent, 0);
-  const listIds = rows.map((r) => r.listId).filter((id): id is string => Boolean(id));
-  const { data: lists } = listIds.length
-    ? await supabase.from("lists").select("id, name").in("id", listIds)
-    : { data: [] as { id: string; name: string }[] };
-  const listName = new Map((lists ?? []).map((l) => [l.id, l.name]));
-
   const check = checkSendRequest(request, email ? campaignContentDigest(email) : null);
-  const statusOk = email && ["queued", "sending"].includes(email.status);
-  const drift = unsent !== request.unsentAtRequest;
-  const countUnavailable = Boolean(summaryError);
-  const canApprove = check.ok && statusOk && unsent > 0 && !countUnavailable;
+  const statusOk = Boolean(email && ["queued", "sending"].includes(email.status));
+  const counts = loadCounts(request.emailId);
 
   return (
     <div className="mx-auto max-w-4xl space-y-5 p-4">
@@ -81,8 +59,6 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
 
       {!check.ok && <Notice tone={check.reason === "decided" && request.status === "approved" ? "green" : "red"}>{check.message}</Notice>}
       {check.ok && !statusOk && <Notice tone="red">This campaign is {email?.status ?? "missing"} now, so it can’t be sent from this link.</Notice>}
-      {countUnavailable && <Notice tone="amber">The database was too busy to count recipients just now. Reload this page in a few seconds; the link still works.</Notice>}
-      {check.ok && statusOk && !countUnavailable && unsent === 0 && <Notice tone="amber">No unsent recipients remain for this campaign.</Notice>}
       {request.lastError && check.ok && <Notice tone="amber">Last attempt failed: {request.lastError}</Notice>}
       {request.note && (
         <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
@@ -99,17 +75,9 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
           <dt className="text-slate-500">Reply-to</dt>
           <dd className="break-all font-medium">{email?.reply_to || "same as From"}</dd>
         </div>
-        <div>
-          <dt className="text-slate-500">Recipients this send</dt>
-          <dd className="text-lg font-semibold">{fmt(unsent)}</dd>
-          {drift && (
-            <dd className="text-xs text-amber-700">Was {fmt(request.unsentAtRequest)} when requested.</dd>
-          )}
-        </div>
-        <div>
-          <dt className="text-slate-500">Estimated duration</dt>
-          <dd className="font-medium">{estimateSendDuration(unsent) ?? "—"}</dd>
-        </div>
+        <Suspense fallback={<CountingSpinner className="sm:col-span-2" />}>
+          <CountSummary counts={counts} unsentAtRequest={request.unsentAtRequest} />
+        </Suspense>
         <div>
           <dt className="text-slate-500">Send window</dt>
           <dd className="font-medium">{request.sendWindow ?? "Any time (no window)"}</dd>
@@ -117,21 +85,6 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
         <div>
           <dt className="text-slate-500">Start</dt>
           <dd className="font-medium">{request.sendAt ? when(request.sendAt) : "Immediately after approval"}</dd>
-        </div>
-        <div className="sm:col-span-2">
-          <dt className="text-slate-500">Audience</dt>
-          <dd>
-            <ul className="mt-1 space-y-1">
-              {rows.map((r) => (
-                <li key={r.listId ?? "direct"} className="flex justify-between gap-3">
-                  <span className="break-words">{r.listId ? (listName.get(r.listId) ?? r.listId) : "Direct recipients"}</span>
-                  <span className="whitespace-nowrap tabular-nums">
-                    {fmt(r.unsent)} unsent{r.sent ? ` · ${fmt(r.sent)} already sent` : ""}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </dd>
         </div>
         {record && (
           <div className="sm:col-span-2 text-xs text-slate-500">Autopilot state: {record.state}</div>
@@ -153,8 +106,10 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
         />
       </div>
 
-      {canApprove ? (
-        <ApproveForm token={token} expectedRecipients={unsent} />
+      {check.ok && statusOk ? (
+        <Suspense fallback={<CountingSpinner />}>
+          <ApproveSection counts={counts} token={token} />
+        </Suspense>
       ) : (
         <a href="/email/schedule" className="inline-block text-sm text-slate-600 underline">
           Back to the schedule
@@ -162,4 +117,67 @@ export default async function ApprovePage({ params }: { params: Promise<{ token:
       )}
     </div>
   );
+}
+
+type Counts = { rows: { listId: string | null; name: string; unsent: number; sent: number }[]; unsent: number } | null;
+
+// The per-list summary can hit the statement timeout on a 180k-row queue.
+// Keep retrying for ~40 s while the page shows a spinner; if the database is
+// still busy, the client keeps retrying. A failed count is never shown as 0.
+async function loadCounts(emailId: string): Promise<Counts> {
+  const supabase = getSupabaseAdmin();
+  const started = Date.now();
+  while (Date.now() - started < 40_000) {
+    const { data, error } = await supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [emailId], p_now: new Date().toISOString() });
+    if (!error) {
+      const raw = ((data ?? []) as Array<{ list_id: string | null; pending_due: number | null; pending_held: number | null; succeeded: number | null }>).map((r) => ({ listId: r.list_id as string | null, unsent: Number(r.pending_due ?? 0) + Number(r.pending_held ?? 0), sent: Number(r.succeeded ?? 0) }));
+      const listIds = raw.map((r) => r.listId).filter((id: string | null): id is string => Boolean(id));
+      const { data: lists } = listIds.length ? await supabase.from("lists").select("id, name").in("id", listIds) : { data: [] as { id: string; name: string }[] };
+      const names = new Map((lists ?? []).map((l) => [l.id, l.name]));
+      const rows = raw.map((r) => ({ ...r, name: r.listId ? (names.get(r.listId) ?? r.listId) : "Direct recipients" }));
+      return { rows, unsent: rows.reduce((t, r) => t + r.unsent, 0) };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  return null;
+}
+
+async function CountSummary({ counts, unsentAtRequest }: { counts: Promise<Counts>; unsentAtRequest: number }) {
+  const result = await counts;
+  if (!result) return <RetryCountSoon className="sm:col-span-2" />;
+  return (
+    <>
+      <div>
+        <dt className="text-slate-500">Recipients this send</dt>
+        <dd className="text-lg font-semibold">{fmt(result.unsent)}</dd>
+        {result.unsent !== unsentAtRequest && <dd className="text-xs text-amber-700">Was {fmt(unsentAtRequest)} when requested.</dd>}
+      </div>
+      <div>
+        <dt className="text-slate-500">Estimated duration</dt>
+        <dd className="font-medium">{estimateSendDuration(result.unsent) ?? "—"}</dd>
+      </div>
+      <div className="sm:col-span-2">
+        <dt className="text-slate-500">Audience</dt>
+        <dd>
+          <ul className="mt-1 space-y-1">
+            {result.rows.map((r) => (
+              <li key={r.listId ?? "direct"} className="flex justify-between gap-3">
+                <span className="break-words">{r.name}</span>
+                <span className="whitespace-nowrap tabular-nums">
+                  {fmt(r.unsent)} unsent{r.sent ? ` · ${fmt(r.sent)} already sent` : ""}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </dd>
+      </div>
+    </>
+  );
+}
+
+async function ApproveSection({ counts, token }: { counts: Promise<Counts>; token: string }) {
+  const result = await counts;
+  if (!result) return <RetryCountSoon />;
+  if (result.unsent === 0) return <Notice tone="amber">No unsent recipients remain for this campaign.</Notice>;
+  return <ApproveForm token={token} expectedRecipients={result.unsent} />;
 }
