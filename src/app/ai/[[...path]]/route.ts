@@ -360,6 +360,7 @@ async function listView(listId: string, url: URL, returnTo: string): Promise<Vie
   });
   const importAction = spec("list_import", {}, { list_id: listId });
   const suppressAction = spec("member_suppress", {}, { list_id: listId });
+  const cleanupAction = spec("list_suppress_targets", {}, { list_id: listId });
   const next = (count ?? 0) > (pageIndex + 1) * 100 ? link(`/ai/lists/${listId}?${new URLSearchParams({ q, status, page: String(pageIndex + 1) })}`, "Next page", "next-page") : "";
   return {
     title: `List: ${list.name}`,
@@ -368,9 +369,10 @@ async function listView(listId: string, url: URL, returnTo: string): Promise<Vie
 ${table("members-table", ["Email", "Member id", "Status", "Name"], rows.map((row) => [row.email, row.id, row.status, row.name]))}
 <p>Page ${pageIndex}. ${next}</p>
 ${form(importAction, returnTo)}
-${form(suppressAction, returnTo)}`,
+${form(suppressAction, returnTo)}
+${form(cleanupAction, returnTo)}`,
     data: { list, total: count ?? 0, page: pageIndex, members: rows },
-    actions: [importAction, suppressAction],
+    actions: [importAction, suppressAction, cleanupAction],
   };
 }
 

@@ -377,3 +377,69 @@ export async function suppressListMemberAction(formData: FormData) {
   revalidatePath("/lists");
   revalidatePath(`/lists/${listId}`);
 }
+
+// ── Operator list cleanup by domain / address ──────────────────────────────
+// Marks active members of ONE list as blocked (reversible status change, no
+// rows deleted) when their address is at an exact domain (no subdomains) or
+// equals a listed address. Blocked members are skipped by every queued
+// campaign at send time. Without confirm=suppress it only counts (dry run).
+// Requires send rights instead of list ownership, because imported audience
+// lists are often owned by another account.
+const SuppressTargetsSchema = z.object({
+  listId: z.string().uuid(),
+  targets: z.string().max(20_000),
+  confirm: z.string().optional(),
+});
+
+export async function suppressListTargetsAction(formData: FormData): Promise<{
+  error?: string;
+  dryRun?: boolean;
+  counts?: Record<string, number>;
+  total?: number;
+}> {
+  const { requireCanSendAuthContext } = await import("@/lib/authAccess");
+  const { parseSuppressTargets } = await import("@/lib/listCleanup");
+  const auth = await requireCanSendAuthContext();
+  const parsed = SuppressTargetsSchema.safeParse({
+    listId: formData.get("listId"),
+    targets: formData.get("targets") ?? "",
+    confirm: formData.get("confirm") ?? undefined,
+  });
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
+  const { listId, targets, confirm } = parsed.data;
+  const { domains, addresses } = parseSuppressTargets(targets, OWNER_ALWAYS_INCLUDE_EMAIL);
+  if (!domains.length && !addresses.length) return { error: "Give at least one domain or address." };
+  if (domains.length + addresses.length > 200) return { error: "At most 200 domains/addresses per call." };
+  const dryRun = confirm?.trim().toLowerCase() !== "suppress";
+  const supabase = getSupabaseAdmin();
+  const { data: list } = await supabase.from("lists").select("id").eq("id", listId).maybeSingle();
+  if (!list) return { error: "List not found" };
+
+  const now = new Date().toISOString();
+  const counts: Record<string, number> = {};
+  const run = (target: string, isDomain: boolean) => {
+    const base = dryRun
+      ? supabase.from("list_members").select("id", { count: "exact", head: true })
+      : supabase.from("list_members").update({ status: "blocked", source: "manual_suppression", unsubscribed_at: now }, { count: "exact" });
+    const scoped = base.eq("list_id", listId).eq("status", "active").neq("email", OWNER_ALWAYS_INCLUDE_EMAIL);
+    return isDomain ? scoped.ilike("email", `%@${target.replace(/[%_\\]/g, "\\$&")}`) : scoped.eq("email", target);
+  };
+  for (const domain of domains) {
+    const { count, error } = await run(domain, true);
+    if (error) return { error: `${domain}: ${error.message}`, counts };
+    counts[domain] = count ?? 0;
+  }
+  let listed = 0;
+  for (const address of addresses) {
+    const { count, error } = await run(address, false);
+    if (error) return { error: `${address}: ${error.message}`, counts };
+    listed += count ?? 0;
+  }
+  if (addresses.length) counts[`${addresses.length} listed address(es)`] = listed;
+  const total = Object.values(counts).reduce((sum, n) => sum + n, 0);
+  if (!dryRun) {
+    await logAudit({ userId: auth.userId, action: "list.bulk_suppress", entity: "lists", entityId: listId, payload: { counts, domains, addresses } }).catch(console.error);
+    revalidatePath(`/lists/${listId}`);
+  }
+  return { dryRun, counts, total };
+}

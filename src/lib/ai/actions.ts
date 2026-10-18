@@ -20,7 +20,7 @@ import {
   sendTestAction,
 } from "@/app/(dashboard)/email/actions";
 import { createSendRequestAction } from "@/app/(dashboard)/approve/[token]/actions";
-import { importMembersAction, suppressListMemberAction, upsertListAction } from "@/app/(dashboard)/lists/actions";
+import { importMembersAction, suppressListMemberAction, suppressListTargetsAction, upsertListAction } from "@/app/(dashboard)/lists/actions";
 import { bypassLogin, signInWithPassword, signOutAction } from "@/app/(auth)/login/actions";
 
 export type ActionResult = { ok: boolean; message: string; next?: string; data?: Record<string, unknown> };
@@ -210,6 +210,17 @@ export const ACTION_SPECS: ActionSpec[] = [
       { name: "member_id", label: "Member id", type: "text", required: true },
     ],
   },
+  {
+    action: "list_suppress_targets",
+    label: "Clean up by domain or address",
+    description: "Mark active members of this list at the given exact domains (no subdomains) or addresses as blocked (reversible; nothing is deleted). Blank confirm = dry-run count; type suppress to apply.",
+    danger: true,
+    fields: [
+      { name: "list_id", label: "List id", type: "hidden" },
+      { name: "targets", label: "Domains or addresses (comma/newline separated)", type: "textarea", required: true },
+      { name: "confirm", label: "Type suppress to apply (blank = dry run)", type: "text" },
+    ],
+  },
 ];
 
 export const ACTION_HANDLERS: Record<string, Handler> = {
@@ -349,6 +360,13 @@ export const ACTION_HANDLERS: Record<string, Handler> = {
     const listId = id(input, "list_id");
     const res = await importMembersAction(fd({ listId, members: String(input.get("members") ?? "") }));
     return { ok: true, message: `Imported: ${res.upserted} upserted, ${res.skippedInvalid} invalid, ${res.skippedDuplicate} duplicate.`, next: `/ai/lists/${listId}`, data: res };
+  },
+  async list_suppress_targets(input) {
+    const listId = id(input, "list_id");
+    const res = await suppressListTargetsAction(fd({ listId, targets: String(input.get("targets") ?? ""), confirm: String(input.get("confirm") ?? "") }));
+    if (res.error) return { ok: false, message: res.error };
+    const detail = Object.entries(res.counts ?? {}).map(([key, n]) => `${key}: ${n}`).join(", ");
+    return { ok: true, message: `${res.dryRun ? "Dry run: would block" : "Blocked"} ${res.total} member(s). ${detail}`, next: `/ai/lists/${listId}`, data: { dryRun: res.dryRun, counts: res.counts, total: res.total } };
   },
   async member_suppress(input) {
     const listId = id(input, "list_id");
