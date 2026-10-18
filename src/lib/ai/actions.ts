@@ -21,6 +21,7 @@ import {
 } from "@/app/(dashboard)/email/actions";
 import { createSendRequestAction } from "@/app/(dashboard)/approve/[token]/actions";
 import { templateFromCampaign } from "@/app/(dashboard)/email/templates/actions";
+import { replaceCampaignLinkAction } from "@/app/(dashboard)/email/link-fix-actions";
 import { importMembersAction, suppressListMemberAction, suppressListTargetsAction, upsertListAction } from "@/app/(dashboard)/lists/actions";
 import { bypassLogin, signInWithPassword, signOutAction } from "@/app/(auth)/login/actions";
 
@@ -137,6 +138,17 @@ export const ACTION_SPECS: ActionSpec[] = [
     fields: [
       { name: "id", label: "Campaign id", type: "hidden" },
       { name: "name", label: "Template name (blank = subject)", type: "text" },
+    ],
+  },
+  {
+    action: "campaign_replace_link",
+    label: "Replace a link",
+    description: "Swap one URL in this campaign's body without unqueueing recipients (refused while actively sending). Optionally fix every template too. The campaign then needs a fresh approval.",
+    fields: [
+      { name: "id", label: "Campaign id", type: "hidden" },
+      { name: "find", label: "Old URL", type: "text", required: true },
+      { name: "replace", label: "New URL", type: "text", required: true },
+      { name: "templates", label: "Also fix every template", type: "checkbox" },
     ],
   },
   { action: "duplicate", label: "Duplicate", description: "Copy this campaign into a new draft.", fields: [{ name: "id", label: "Campaign id", type: "hidden" }] },
@@ -267,6 +279,12 @@ export const ACTION_HANDLERS: Record<string, Handler> = {
   async template_from_campaign(input) {
     const res = await templateFromCampaign(id(input), String(input.get("name") ?? ""));
     return "error" in res ? { ok: false, message: res.error ?? "Could not save the template." } : { ok: true, message: `Saved template "${res.name}".`, data: { templateId: res.id, editUrl: `/email/templates/${res.id}` } };
+  },
+  async campaign_replace_link(input) {
+    const res = await replaceCampaignLinkAction(fd({ id: id(input), find: String(input.get("find") ?? ""), replace: String(input.get("replace") ?? ""), templates: input.get("templates") === "yes" ? "yes" : "" }));
+    return res.error
+      ? { ok: false, message: res.error }
+      : { ok: true, message: `Replaced ${res.campaignReplacements} occurrence(s) in the campaign and updated ${res.templatesUpdated} template(s). Approve again before it sends.`, next: campaignPage(id(input)), data: res };
   },
   async duplicate(input) {
     const { data: email, error } = await getSupabaseAdmin().from("emails").select("from_address, reply_to, subject, html, campaigns, tags").eq("id", id(input)).maybeSingle();
