@@ -195,7 +195,7 @@ async function campaignView(emailId: string, returnTo: string): Promise<View> {
     available.push(spec("edit", {}, values), spec("unqueue", {}, values));
   }
   if (summary.dead + summary.failed > 0) available.push(spec("retry_failed", {}, values));
-  available.push(spec("duplicate", {}, values), spec("delete", {}, values));
+  available.push(spec("template_from_campaign", {}, values), spec("duplicate", {}, values), spec("delete", {}, values));
 
   const html = `${dl("campaign", [
     ["id", email.id],

@@ -17,6 +17,8 @@ import {
   X,
 } from "lucide-react";
 import { useState, useRef, useEffect, useCallback } from "react";
+import Link from "next/link";
+import type { TemplateSummary } from "@/lib/emailTemplateCore";
 import { useRouter } from "next/navigation";
 import NextLink from "next/link";
 import {
@@ -60,6 +62,8 @@ type Props = {
   draft: Draft | null;
   lists: List[];
   templateMode?: boolean;
+  templates?: TemplateSummary[];
+  activeTemplateId?: string | null;
   userEmail: string;
   canSend: boolean;
 };
@@ -73,7 +77,7 @@ function isOneTimeList(list: List | null) {
   return list?.access_level === "one_time_csv" || list?.address.startsWith("one-time-") || false;
 }
 
-export function ComposerForm({ draft, lists, templateMode = false, userEmail, canSend }: Props) {
+export function ComposerForm({ draft, lists, templateMode = false, templates = [], activeTemplateId = null, userEmail, canSend }: Props) {
   const router = useRouter();
   const initialLists = draft?.list_id
     ? lists.filter((l) => l.id === draft.list_id)
@@ -548,9 +552,39 @@ export function ComposerForm({ draft, lists, templateMode = false, userEmail, ca
     <div className="space-y-6">
       <header>
         <p className="text-xs uppercase tracking-wide text-slate-400">
-          {templateMode ? "From Existing Email" : draft ? "Editing Draft" : "Draft"}
+          {activeTemplateId ? "From Template" : templateMode ? "From Existing Email" : draft ? "Editing Draft" : "Draft"}
         </p>
-        <h2 className="text-2xl font-semibold text-slate-900">Compose Email</h2>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <h2 className="text-2xl font-semibold text-slate-900">Compose Email</h2>
+          {templates.length > 0 && (
+            <label className="flex min-w-0 items-center gap-2 text-sm text-slate-600">
+              <span className="shrink-0">Template</span>
+              <select
+                aria-label="Start from a template"
+                value={activeTemplateId ?? ""}
+                onChange={(event) => {
+                  const next = event.target.value;
+                  if (!next) return;
+                  const label = templates.find((t) => t.id === next)?.name ?? "this template";
+                  if ((draftId || activeTemplateId) && !window.confirm(`Start a new email from “${label}”? This leaves the current email as it was last saved.`)) {
+                    event.target.value = activeTemplateId ?? "";
+                    return;
+                  }
+                  router.push(`/email/composer?template=${encodeURIComponent(next)}`);
+                }}
+                className="min-w-0 max-w-[16rem] rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-800"
+              >
+                <option value="">Start from template…</option>
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>
+                    {template.format === "plain" ? "✉︎ " : ""}{template.name}
+                  </option>
+                ))}
+              </select>
+              <Link href="/email/templates" className="shrink-0 text-xs underline">Manage</Link>
+            </label>
+          )}
+        </div>
       </header>
 
       <form

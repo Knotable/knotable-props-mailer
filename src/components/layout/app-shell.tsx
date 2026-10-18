@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CloudCog,
   History,
+  LayoutTemplate,
   List,
   ListChecks,
   Loader2,
@@ -25,6 +26,7 @@ import { signOutAction } from "@/app/(auth)/login/actions";
 
 const navIconByHref: Record<string, LucideIcon> = {
   "/email/composer": Pencil,
+  "/email/templates": LayoutTemplate,
   "/email/schedule": ListChecks,
   "/email/sends": History,
   "/email/monitor": Radio,

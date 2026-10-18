@@ -20,6 +20,7 @@ import {
   sendTestAction,
 } from "@/app/(dashboard)/email/actions";
 import { createSendRequestAction } from "@/app/(dashboard)/approve/[token]/actions";
+import { templateFromCampaign } from "@/app/(dashboard)/email/templates/actions";
 import { importMembersAction, suppressListMemberAction, suppressListTargetsAction, upsertListAction } from "@/app/(dashboard)/lists/actions";
 import { bypassLogin, signInWithPassword, signOutAction } from "@/app/(auth)/login/actions";
 
@@ -127,6 +128,15 @@ export const ACTION_SPECS: ActionSpec[] = [
       { name: "recipients", label: "Direct recipients (comma/newline separated, optional)", type: "textarea" },
       { name: "campaigns", label: "Campaign labels (comma separated)", type: "text" },
       { name: "tags", label: "Tags (comma separated)", type: "text" },
+    ],
+  },
+  {
+    action: "template_from_campaign",
+    label: "Save as template",
+    description: "Copy this campaign's subject, sender and HTML into a reusable template (Templates tab, Composer menu).",
+    fields: [
+      { name: "id", label: "Campaign id", type: "hidden" },
+      { name: "name", label: "Template name (blank = subject)", type: "text" },
     ],
   },
   { action: "duplicate", label: "Duplicate", description: "Copy this campaign into a new draft.", fields: [{ name: "id", label: "Campaign id", type: "hidden" }] },
@@ -253,6 +263,10 @@ export const ACTION_HANDLERS: Record<string, Handler> = {
       tags: String(input.get("tags") ?? ""),
     }));
     return { ok: true, message: emailId ? "Draft saved." : "Draft created.", next: campaignPage(res.id), data: { id: res.id } };
+  },
+  async template_from_campaign(input) {
+    const res = await templateFromCampaign(id(input), String(input.get("name") ?? ""));
+    return "error" in res ? { ok: false, message: res.error ?? "Could not save the template." } : { ok: true, message: `Saved template "${res.name}".`, data: { templateId: res.id, editUrl: `/email/templates/${res.id}` } };
   },
   async duplicate(input) {
     const { data: email, error } = await getSupabaseAdmin().from("emails").select("from_address, reply_to, subject, html, campaigns, tags").eq("id", id(input)).maybeSingle();

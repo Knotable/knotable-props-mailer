@@ -18,6 +18,18 @@ For Next.js behavior, read the version-matched bundled documentation under `node
 
 A second, chrome-free interface for AI agents and browser-automation tools. Start at **`/ai`** (public catalog; also advertised by `/llms.txt` and a `ai-agent-interface` meta tag). Every page is script-free, server-rendered HTML with stable ids (`#result[data-ok]`, `#unsent[data-value]`, `#form-<action>`, `#<action>-<field>`, `#submit-<action>`, `dd[data-key=…]`), and the same page as JSON with `?format=json` or `Accept: application/json` (including the actions valid right now and their fields). Actions are form POSTs to `/ai/do/<action>` that call the **same server actions** as the human UI (so exact-count approval, content digest, and deliverability guards are identical); they 303 back with `?result=…&ok=1|0`, or return JSON when `format=json`. Cross-origin POSTs are rejected; sessions are the normal Supabase or bypass cookies (`/ai/login`). Pages: `/ai/status`, `/ai/campaigns[?status&q&limit]`, `/ai/campaigns/new`, `/ai/campaigns/{id}` (+`/log`, `/analytics`), `/ai/lists`, `/ai/lists/{id}[?q&status&page]`. Actions: login_password, login_bypass, logout, save_draft, duplicate, test_to_me, test_send, queue, send, pause, unqueue, edit, mark_sent, retry_failed, delete, list_upsert, list_import, member_suppress. User/permission admin stays human-only. Code: `src/app/ai/`, `src/lib/ai/`. A full sign-in → draft → queue → send → pause run takes ~3 s against `npm run dev:fake`.
 
+## EMAIL TEMPLATES (2026-10-18)
+
+Templates tab at `/email/templates` (list, create, edit, delete, live preview) and a
+"Template" menu in the Composer header (`/email/composer?template=<id>` starts a new draft
+from it). Stored in `app_settings` as `email_template:<id>` — no migration. Two formats:
+`html` (designed) and `plain` (phone-style: rendered as a bare `<div dir="ltr">` with `<br>`s
+and auto-linked URLs, no styling). Built-ins live in `src/lib/emailTemplateCore.ts`
+(`builtin-phone-note`); editing one stores an override, "Reset to default" removes it.
+Agents: `POST /ai/do/template_from_campaign` (`id`, optional `name`) copies a campaign's
+subject/sender/HTML into a template. Code: `src/lib/emailTemplates.ts`,
+`src/app/(dashboard)/email/templates/`.
+
 ## HUMAN APPROVAL LINKS FOR AI-REQUESTED SENDS (2026-10-17)
 
 Preferred way for an agent to get a queued campaign sent: POST `/ai/do/request_send`

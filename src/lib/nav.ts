@@ -11,6 +11,11 @@ export const dashboardNav: NavItem[] = [
     description: "Write and preview",
   },
   {
+    label: "Templates",
+    href: "/email/templates",
+    description: "Reusable starting points",
+  },
+  {
     label: "Queue",
     href: "/email/schedule",
     description: "Drafts and sending",

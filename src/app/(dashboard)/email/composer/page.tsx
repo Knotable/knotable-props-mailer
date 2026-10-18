@@ -1,5 +1,6 @@
 import { requireServerAuthContext } from "@/lib/authAccess";
 import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
+import { getTemplate, listTemplates, summarize, templateHtml } from "@/lib/emailTemplates";
 import { ComposerForm } from "./composer-form";
 
 // Bulk queue cleanup (unqueue/delete on large campaigns) runs in bounded
@@ -7,13 +8,15 @@ import { ComposerForm } from "./composer-form";
 export const maxDuration = 60;
 
 type Props = {
-  searchParams: Promise<{ id?: string; cloneId?: string }>;
+  searchParams: Promise<{ id?: string; cloneId?: string; template?: string }>;
 };
 
 export default async function ComposerPage({ searchParams }: Props) {
-  const { id, cloneId } = await searchParams;
+  const { id, cloneId, template: templateId } = await searchParams;
+  const startTemplate = !id && !cloneId && templateId ? await getTemplate(templateId).catch(() => null) : null;
   const sourceId = cloneId ?? id;
-  const templateMode = Boolean(cloneId);
+  const templateMode = Boolean(cloneId) || Boolean(startTemplate);
+  const templates = (await listTemplates().catch(() => [])).map(summarize);
   const auth = await requireServerAuthContext();
   const supabase = getSupabaseAdmin();
 
@@ -80,8 +83,26 @@ export default async function ComposerPage({ searchParams }: Props) {
     }
   }
 
+  if (startTemplate) {
+    draft = {
+      id: `template:${startTemplate.id}`,
+      from_address: startTemplate.fromAddress || "Amol Sarva <amol@lifex.vc>",
+      reply_to: startTemplate.replyTo || "amol@lifex.vc",
+      subject: startTemplate.subject,
+      html: templateHtml(startTemplate),
+      scheduled_at: null,
+      campaigns: [],
+      tags: [],
+      recipients: [],
+      list_id: null,
+    };
+  }
+
   return (
     <ComposerForm
+      key={startTemplate ? `template:${startTemplate.id}` : (sourceId ?? "new")}
+      templates={templates}
+      activeTemplateId={startTemplate?.id ?? null}
       draft={draft}
       lists={lists ?? []}
       templateMode={templateMode}
