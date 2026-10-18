@@ -218,6 +218,18 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(backend.ses.notices[0].Content.Simple.Subject.Data).toMatch(/Blocked/);
   });
 
+  it("canary: samples recipients at random instead of in queue order", async () => {
+    const email = seedCampaign({ recipients: 600 });
+    const rows = rowsFor(email.id);
+    const result = await runWorker(["--mode", "autopilot"], { SES_CANARY_RECIPIENTS: "60", SES_CANARY_WAIT_SECONDS: "0" });
+    expect(result.code, result.stderr).toBe(0);
+    const canary = backend.ses.bulkRequests.filter((request) => !request.dropped)
+      .flatMap((request) => request.BulkEmailEntries.map((entry) => entry.Destination.ToAddresses[0])).slice(0, 60);
+    const positions = canary.map((address) => rows.findIndex((row) => row.payload.to === address));
+    expect(positions.filter((position) => position >= 60).length).toBeGreaterThan(30);
+    expect(count(rows, "succeeded")).toBe(600);
+  });
+
   it("canary: continues at full speed when early signals are healthy", async () => {
     backend.ses.bounceEvery = 200;
     const email = seedCampaign({ recipients: 600 });
@@ -259,6 +271,37 @@ describe("SES autopilot worker (end to end against fakes)", { timeout: 90_000 },
     expect(rows[2].status).toBe("succeeded");
     expect(sentDestinations()).not.toContain(rows[0].payload.to);
     expect(recordFor(email.id).state).toBe("complete");
+  });
+
+  it("never sends to addresses on the SES account suppression list", async () => {
+    const email = seedCampaign({ recipients: 4 });
+    const listId = crypto.randomUUID();
+    const rows = rowsFor(email.id);
+    for (const row of rows) row.list_id = listId;
+    for (const row of rows) backend.tables.list_members.push({ id: crypto.randomUUID(), list_id: listId, email: row.payload.to, status: "active" });
+    backend.ses.suppressed = [rows[0].payload.to.toUpperCase(), "stranger@example.test"];
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("SES suppression sync: 2 suppressed address(es) checked, 1 list member(s) unsubscribed");
+    expect(rows[0].status).toBe("canceled");
+    expect(rows.slice(1).every((row) => row.status === "succeeded")).toBe(true);
+    expect(sentDestinations()).not.toContain(rows[0].payload.to);
+    const sync = backend.tables.app_settings.find((row) => row.key === "ses_suppression_sync");
+    expect(sync.value.complete).toBe(true);
+
+    // Throttled: a second run within six hours does not call SES again.
+    backend.ses.suppressed = [rows[1].payload.to];
+    const again = await runWorker();
+    expect(again.stdout).not.toContain("SES suppression sync:");
+  });
+
+  it("keeps sending when the SES suppression list cannot be read", async () => {
+    const email = seedCampaign({ recipients: 3 });
+    backend.ses.suppressed = null;
+    const result = await runWorker();
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain("SES suppression sync failed");
+    expect(rowsFor(email.id).every((row) => row.status === "succeeded")).toBe(true);
   });
 
   it("waits outside the approval's send window and names the reopening time", async () => {

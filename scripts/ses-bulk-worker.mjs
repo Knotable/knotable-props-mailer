@@ -17,7 +17,7 @@
 import crypto from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
-import { SESv2Client, GetAccountCommand, SendBulkEmailCommand, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { SESv2Client, GetAccountCommand, ListSuppressedDestinationsCommand, SendBulkEmailCommand, SendEmailCommand } from "@aws-sdk/client-sesv2";
 import pg from "pg";
 import {
   assertSendReadySubject,
@@ -55,6 +55,7 @@ import {
 } from "./lib/autopilot-core.mjs";
 import { buildMemberQueueRow, buildSenderCopyQueueRow, extractEmailAddress } from "./lib/queue-rows.mjs";
 import { similarCampaignIds } from "./lib/subject-similarity.mjs";
+import { SES_SUPPRESSION_SYNC_KEY, chunk, normalizeSuppressedAddresses, suppressionSyncDue } from "./lib/ses-suppression.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -221,6 +222,34 @@ const queue = {
     return [...found, ...undated].map((row) => row.id);
   },
 
+  // Random sample of sendable rows (due, held, or undated). Queue ids are
+  // random UUIDs, so the rows just after a random pivot are a random sample.
+  async selectRandomCandidates(emailId, limit) {
+    const now = nowIso();
+    const pick = async (after, pivot) => {
+      if (dbPool) {
+        const result = await retry("select random batch", () => dbPool.query(
+          `select id from public.mail_queue where email_id = $1 and status = 'pending'
+             and (available_at <= $2 or available_at >= $3 or available_at is null) and id ${after ? ">" : "<="} $4::uuid
+           order by id asc limit $5`,
+          [emailId, now, HOLD_FLOOR, pivot, limit],
+        ));
+        return result.rows.map((row) => row.id);
+      }
+      const base = supabase.from("mail_queue").select("id").eq("email_id", emailId).eq("status", "pending")
+        .or(`available_at.lte.${now},available_at.gte.${HOLD_FLOOR},available_at.is.null`);
+      const rows = await retry("select random batch", () => unwrap("select random batch")(
+        (after ? base.gt("id", pivot) : base.lte("id", pivot)).order("id", { ascending: true }).limit(limit),
+      ));
+      return rows.map((row) => row.id);
+    };
+    const pivot = crypto.randomUUID();
+    const later = await pick(true, pivot);
+    if (later.length >= limit) return later;
+    const ids = [...new Set([...later, ...(await pick(false, pivot))])].slice(0, limit);
+    return ids.length ? ids : this.selectCandidates(emailId, limit);
+  },
+
   async claim(emailId, ids) {
     const now = nowIso();
     if (dbPool) {
@@ -285,9 +314,9 @@ const queue = {
   },
 };
 
-async function claimBatch(emailId, limit) {
+async function claimBatch(emailId, limit, { random = false } = {}) {
   const started = Date.now();
-  const ids = await queue.selectCandidates(emailId, limit);
+  const ids = random ? await queue.selectRandomCandidates(emailId, limit) : await queue.selectCandidates(emailId, limit);
   if (!ids.length) return { items: [], latencyMs: Date.now() - started, retried: false };
   let lastError;
   for (let attempt = 1; attempt <= 8; attempt += 1) {
@@ -1199,7 +1228,10 @@ async function runCampaign(record) {
     }
 
     const claimLimit = canaryPending ? Math.max(1, config.canaryRecipients - sentSinceBaseline) : config.claimSize;
-    const claim = await claimBatch(emailId, Math.min(config.claimSize, claimLimit, available));
+    // The canary must be a random sample. Queue order follows the list's
+    // alphabetical import order, which front-loads numeric student/system
+    // addresses and so misrepresents the audience in both directions.
+    const claim = await claimBatch(emailId, Math.min(config.claimSize, claimLimit, available), { random: canaryPending });
     if (!claim.items.length) {
       // Selected rows changed before the claim (e.g. canceled by an edit).
       // Reselect a few times, never forever.
@@ -1520,8 +1552,62 @@ async function compactFinishedCampaigns(records) {
   }
 }
 
+// Pull the SES account-level suppression list (incrementally after the first
+// full pass) and unsubscribe matching active list members, so late suppression
+// cancels them before SES is asked to send. Best effort: a missing IAM grant
+// (ses:ListSuppressedDestinations) or an API error never blocks sending.
+async function syncSesSuppressionList({ budgetMs = 120_000 } = {}) {
+  const { data: stateRow } = await supabase.from("app_settings").select("value").eq("key", SES_SUPPRESSION_SYNC_KEY).maybeSingle();
+  const state = stateRow?.value ?? null;
+  if (!suppressionSyncDue(state, Date.now())) return null;
+  const attemptedAt = nowIso();
+  const started = Date.now();
+  const since = state?.completedAt ? new Date(Date.parse(state.completedAt) - 60 * 60 * 1000) : undefined;
+  let nextToken;
+  let seen = 0;
+  let unsubscribed = 0;
+  let complete = false;
+  let error = null;
+  try {
+    do {
+      const page = await ses().send(new ListSuppressedDestinationsCommand({ PageSize: 1000, NextToken: nextToken, ...(since ? { StartDate: since } : {}) }));
+      const addresses = normalizeSuppressedAddresses(page.SuppressedDestinationSummaries);
+      seen += addresses.length;
+      for (const part of chunk(addresses, 300)) {
+        const updated = await retry("apply SES suppression", () => unwrap("apply SES suppression")(
+          supabase.from("list_members").update({ status: "unsubscribed", unsubscribed_at: nowIso() })
+            .in("email", part).eq("status", "active").select("id"),
+        ), 4);
+        unsubscribed += updated?.length ?? 0;
+      }
+      nextToken = page.NextToken;
+      if (nextToken) await sleep(1_100); // ListSuppressedDestinations allows ~1 request/second.
+    } while (nextToken && Date.now() - started < budgetMs);
+    complete = !nextToken;
+  } catch (caught) {
+    error = conciseError(caught);
+    console.warn(`SES suppression sync skipped: ${error}`);
+  }
+  const value = {
+    attemptedAt,
+    completedAt: complete ? attemptedAt : state?.completedAt ?? null,
+    lastSeen: seen,
+    lastUnsubscribed: unsubscribed,
+    complete,
+    error,
+  };
+  await supabase.from("app_settings").upsert({ key: SES_SUPPRESSION_SYNC_KEY, value, description: "SES account suppression list sync (worker)", updated_at: attemptedAt }, { onConflict: "key" });
+  const line = error
+    ? `SES suppression sync failed (${error}); sending continues without it.`
+    : `SES suppression sync: ${seen.toLocaleString()} suppressed address(es) checked, ${unsubscribed.toLocaleString()} list member(s) unsubscribed${complete ? "" : " (partial; resumes next run)"}.`;
+  console.log(line);
+  summaryLine(`- ${line}`);
+  return value;
+}
+
 async function autopilot() {
   const processed = new Set();
+  let suppressionSynced = false;
   const outcomes = [];
   while (Date.now() < deadlineMs) {
     const records = await listRecords();
@@ -1532,6 +1618,10 @@ async function autopilot() {
     ).filter((record) => (!emailIdArg || record.emailId === emailIdArg) && !processed.has(record.emailId));
     const next = due[0];
     if (!next) break;
+    if (!suppressionSynced) {
+      suppressionSynced = true;
+      await syncSesSuppressionList().catch((caught) => console.warn(`SES suppression sync error: ${conciseError(caught)}`));
+    }
     processed.add(next.emailId);
     const outcome = await runCampaignSafely(next);
     outcomes.push({ emailId: next.emailId, outcome });

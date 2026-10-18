@@ -142,6 +142,7 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     emitDeliveries: false,
     flagDeliveries: false,
     acceptedCount: 0,
+    suppressed: [],
   };
   const failures = { finalizeNext: 0 };
 
@@ -149,6 +150,15 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
     let rows = tables[table];
     for (const [column, expression] of params) {
       if (RESERVED.has(column)) continue;
+      if (column === "or") {
+        // PostgREST or=(col.op.value,col.op.value)
+        const clauses = expression.replace(/^\(|\)$/g, "").split(",").map((clause) => {
+          const first = clause.indexOf(".");
+          return [clause.slice(0, first), clause.slice(first + 1)];
+        });
+        rows = rows.filter((row) => clauses.some(([name, expr]) => matches(row, name, expr)));
+        continue;
+      }
       rows = rows.filter((row) => matches(row, column, expression));
     }
     return rows;
@@ -324,6 +334,10 @@ export function createFakeBackend({ now = () => Date.now(), lenient = false } = 
   async function handleSes(request, response, url) {
     if (request.method === "GET" && url.pathname === "/v2/email/account") {
       return send(response, 200, { SendQuota: ses.quota, SendingEnabled: ses.sendingEnabled, ProductionAccessEnabled: true });
+    }
+    if (request.method === "GET" && url.pathname === "/v2/email/suppression/addresses") {
+      if (!Array.isArray(ses.suppressed)) return send(response, 403, { message: "not authorized to perform ses:ListSuppressedDestinations" });
+      return send(response, 200, { SuppressedDestinationSummaries: ses.suppressed.map((EmailAddress) => ({ EmailAddress, Reason: "BOUNCE", LastUpdateTime: 0 })) });
     }
     if (request.method === "POST" && url.pathname === "/v2/email/outbound-bulk-emails") {
       const payload = await body(request);
