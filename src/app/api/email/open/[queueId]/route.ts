@@ -40,6 +40,10 @@ export async function GET(
   const { queueId: rawQueueId } = await params;
   const queueId = parseUuid(rawQueueId);
   if (!queueId) return imageResponse();
+  // Opens are counted in aggregate from SES metrics. Recording each pixel hit
+  // cost a queue read plus a write per open, for days after every send, so it
+  // is off unless OPEN_PIXEL_RECORDING=on. Old emails still get their GIF.
+  if (process.env.OPEN_PIXEL_RECORDING?.trim().toLowerCase() !== "on") return imageResponse();
 
   try {
     const supabase = getSupabaseAdmin();

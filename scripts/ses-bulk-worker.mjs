@@ -126,6 +126,9 @@ const deadlineMs = startedAtMs + config.maxRuntimeMs;
 const runUrl = runUrlFromEnv();
 const workerId = `ses-bulk:${process.env.GITHUB_RUN_ID ?? "local"}:${crypto.randomUUID()}`;
 const appBaseUrl = required("APP_BASE_URL");
+// Our own open pixel cost a database read+write per open. Opens now come from
+// SES aggregate metrics, so the pixel is only added with SES_OPEN_PIXEL=on.
+const pixelBaseUrl = process.env.SES_OPEN_PIXEL?.trim().toLowerCase() === "on" ? appBaseUrl : undefined;
 const supabase = createClient(required("SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"), required("SUPABASE_SERVICE_ROLE_KEY"), {
   auth: { persistSession: false, autoRefreshToken: false },
 });
@@ -725,7 +728,7 @@ function buildDeliverable(email, compiled, items) {
       assertSendReadySubject(subject);
       const itemCompiled = subject === email.subject
         ? compiled
-        : compileTemplate({ subject, html: payload.html ?? email.html, text: payload.text ?? email.text, appBaseUrl });
+        : compileTemplate({ subject, html: payload.html ?? email.html, text: payload.text ?? email.text, appBaseUrl: pixelBaseUrl });
       deliverable.push({ item, payload, compiled: itemCompiled, data: recipientData(payload, item.id) });
     } catch (error) {
       invalid.push({ id: item.id, outcome: "dead", ses_message_id: null, last_error: error instanceof Error ? error.message : String(error) });
@@ -1058,7 +1061,7 @@ async function runCampaign(record) {
     return "quota";
   }
 
-  const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl });
+  const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl: pixelBaseUrl });
   const siblings = await loadSiblingCampaigns(email);
   const senderAddress = extractEmailAddress(email.from_address);
   let duplicatesSkipped = 0;
@@ -1405,7 +1408,7 @@ async function dryRun(emailId) {
   assertSendReadySubject(email.subject);
   const summary = await loadSummary(emailId);
   const { data: sample } = await supabase.from("mail_queue").select("id, payload").eq("email_id", emailId).eq("status", "pending").limit(1).maybeSingle();
-  const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl });
+  const compiled = compileTemplate({ subject: email.subject, html: email.html, text: email.text, appBaseUrl: pixelBaseUrl });
   if (sample) compiled.replacementData(recipientData(sample.payload, sample.id));
   const record = await readRecord(emailId).catch(() => null);
   const quota = process.env.AWS_REGION ? await sesQuota().catch((error) => ({ error: conciseError(error) })) : null;

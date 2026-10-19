@@ -163,6 +163,16 @@ const SES_EVENT_MAP: Record<string, string> = {
 };
 
 const MAX_WEBHOOK_BODY_BYTES = 256_000;
+
+// SES event types the webhook persists. Override with SES_WEBHOOK_STORED_EVENTS
+// (comma-separated SES names, e.g. "Bounce,Complaint,Delivery") to restore
+// per-recipient engagement rows when the database can afford them.
+const DEFAULT_STORED_SES_EVENTS = ["Bounce", "Complaint", "Reject", "Rendering Failure"];
+function storedSesEventTypes(): Set<string> {
+  const raw = process.env.SES_WEBHOOK_STORED_EVENTS?.trim();
+  const names = raw ? raw.split(",").map((name) => name.trim()).filter(Boolean) : DEFAULT_STORED_SES_EVENTS;
+  return new Set(names);
+}
 const SES_RECOVERY_DEFER_UNTIL = Date.parse("2026-08-10T11:18:00Z");
 
 export async function POST(request: Request) {
@@ -284,6 +294,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, action: "ignored_no_event_type" });
   }
 
+  // Only events that change who we may email next (and feed the circuit
+  // breaker) touch the database. Send/Delivery/Open/Click arrive once or more
+  // per recipient; per-campaign totals for those come from SES aggregate
+  // metrics polled by the worker, so a large send costs no per-email writes.
+  if (!storedSesEventTypes().has(sesEventType)) {
+    return NextResponse.json({ ok: true, action: "aggregate_only" });
+  }
+
   const eventType = SES_EVENT_MAP[sesEventType] ?? sesEventType.toLowerCase();
   const mail = sesEvent["mail"] as Record<string, unknown> | undefined;
   const messageId = (mail?.["messageId"] as string | undefined) ?? null;
@@ -399,14 +417,10 @@ export async function POST(request: Request) {
   }
 
   if (error) {
-    console.error("[ses-webhook] Failed to insert provider_event", error);
-    await logWebhookFailure("Failed to insert provider_event", {
-      error: error.message,
-      eventType,
-      messageId,
-      recipient,
-      emailId,
-    });
+    // No error_logs write here: when the insert failed the database is usually
+    // the problem, and a second write per failed event doubles the load while
+    // SNS retries. SNS redelivers, so nothing is lost.
+    console.error("[ses-webhook] Failed to insert provider_event", eventType, messageId, error.message);
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 

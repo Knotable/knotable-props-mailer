@@ -18,6 +18,25 @@ For Next.js behavior, read the version-matched bundled documentation under `node
 
 A second, chrome-free interface for AI agents and browser-automation tools. Start at **`/ai`** (public catalog; also advertised by `/llms.txt` and a `ai-agent-interface` meta tag). Every page is script-free, server-rendered HTML with stable ids (`#result[data-ok]`, `#unsent[data-value]`, `#form-<action>`, `#<action>-<field>`, `#submit-<action>`, `dd[data-key=…]`), and the same page as JSON with `?format=json` or `Accept: application/json` (including the actions valid right now and their fields). Actions are form POSTs to `/ai/do/<action>` that call the **same server actions** as the human UI (so exact-count approval, content digest, and deliverability guards are identical); they 303 back with `?result=…&ok=1|0`, or return JSON when `format=json`. Cross-origin POSTs are rejected; sessions are the normal Supabase or bypass cookies (`/ai/login`). Pages: `/ai/status`, `/ai/campaigns[?status&q&limit]`, `/ai/campaigns/new`, `/ai/campaigns/{id}` (+`/log`, `/analytics`), `/ai/lists`, `/ai/lists/{id}[?q&status&page]`. Actions: login_password, login_bypass, logout, save_draft, duplicate, test_to_me, test_send, queue, send, pause, unqueue, edit, mark_sent, retry_failed, delete, list_upsert, list_import, member_suppress. User/permission admin stays human-only. Code: `src/app/ai/`, `src/lib/ai/`. A full sign-in → draft → queue → send → pause run takes ~3 s against `npm run dev:fake`.
 
+## NO PER-EMAIL DATABASE WRITES DURING A SEND (2026-10-19)
+
+A 180k send knocked the free Nano Supabase instance over: every recipient
+produced several webhook hits (Send, Delivery, Open, Click) plus our own open
+pixel, each a database read or write, and failed writes added `error_logs` rows.
+
+- `/api/webhooks/ses` persists only `Bounce`, `Complaint`, `Reject`,
+  `Rendering Failure` (suppression + circuit breaker need them). Everything
+  else returns 200 with no database access. Override with
+  `SES_WEBHOOK_STORED_EVENTS` (comma-separated SES names).
+- A failed `provider_events` insert no longer writes `error_logs`; SNS retries.
+- `/api/email/open/[id]` returns the GIF without touching the database unless
+  `OPEN_PIXEL_RECORDING=on`; the worker no longer injects the pixel unless
+  `SES_OPEN_PIXEL=on`.
+- Consequence: per-recipient delivered/opened/clicked rows stop accumulating.
+  Campaign totals are meant to come from SES aggregate metrics (CloudWatch),
+  polled by the worker. Until that lands, the breaker's "no Delivery events"
+  notice will fire once per campaign; it notifies only, it never pauses.
+
 ## EMAIL TEMPLATES (2026-10-18)
 
 Templates tab at `/email/templates` (list, create, edit, delete, live preview) and a
