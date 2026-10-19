@@ -4,7 +4,14 @@ name: SES event destinations
 # destination keyed by campaign_id and narrows the SNS webhook destination to
 # bounces/complaints/rejects/rendering failures. Without "apply" it only shows
 # the current layout and the planned changes. Also checks CloudWatch read access.
+# A push that changes the script or this workflow applies it (idempotent).
 on:
+  push:
+    branches: [master]
+    paths:
+      - scripts/ses-event-destinations.mjs
+      - scripts/lib/ses-aggregate.mjs
+      - .github/workflows/ses-event-destinations.yml
   workflow_dispatch:
     inputs:
       mode:
@@ -33,4 +40,4 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - run: node scripts/ses-event-destinations.mjs ${{ inputs.mode == 'apply' && '--apply' || '' }}
+      - run: node scripts/ses-event-destinations.mjs ${{ (github.event_name == 'push' || inputs.mode == 'apply') && '--apply' || '' }}
