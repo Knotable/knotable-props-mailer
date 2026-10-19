@@ -18,6 +18,7 @@ import crypto from "node:crypto";
 import { appendFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { SESv2Client, GetAccountCommand, ListSuppressedDestinationsCommand, SendBulkEmailCommand, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { CloudWatchClient, GetMetricDataCommand, ListMetricsCommand } from "@aws-sdk/client-cloudwatch";
 import pg from "pg";
 import {
   assertSendReadySubject,
@@ -56,6 +57,7 @@ import {
 import { buildMemberQueueRow, buildSenderCopyQueueRow, extractEmailAddress } from "./lib/queue-rows.mjs";
 import { similarCampaignIds } from "./lib/subject-similarity.mjs";
 import { SES_SUPPRESSION_SYNC_KEY, chunk, normalizeSuppressedAddresses, suppressionSyncDue } from "./lib/ses-suppression.mjs";
+import { fetchCampaignAggregates, freshSesStats, sesStatsDue, sesStatsKey } from "./lib/ses-aggregate.mjs";
 
 const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) args.set(process.argv[i], process.argv[i + 1]);
@@ -117,6 +119,15 @@ const config = {
   // its queue rows are deleted (see compact_campaign_history). "off" disables.
   compactEnabled: (process.env.SES_COMPACT_HISTORY ?? "on").toLowerCase() !== "off",
   compactAfterMs: Math.max(0, numberEnv("SES_COMPACT_AFTER_HOURS", 1)) * 3_600_000,
+  // Per-campaign totals (sent/delivered/bounced/complained/opened/clicked) read
+  // from SES's CloudWatch metrics every few minutes and stored as one row
+  // (app_settings ses_stats:<id>). "off" disables. See scripts/lib/ses-aggregate.mjs.
+  sesStats: {
+    enabled: (process.env.SES_AGGREGATE_METRICS ?? "on").toLowerCase() !== "off",
+    everyMs: Math.max(1, numberEnv("SES_STATS_EVERY_MINUTES", 10)) * 60_000,
+    windowMs: 30 * 24 * 3_600_000,
+    recentAfterCompleteMs: 7 * 24 * 3_600_000,
+  },
   operatorEmail: process.env.SES_OPERATOR_EMAIL || "a@sarva.co",
   notifyFrom: process.env.SES_NOTIFY_FROM || "",
 };
@@ -147,6 +158,9 @@ const dbPool = process.env.SUPABASE_DB_CONNECTION
 let sesClient;
 const ses = () => (sesClient ??= new SESv2Client({ region: required("AWS_REGION"), maxAttempts: 1 }));
 const configurationSet = process.env.AWS_SES_CONFIGURATION_SET?.trim() || undefined;
+let cloudWatchClient;
+const cloudWatch = () => (cloudWatchClient ??= new CloudWatchClient({ region: required("AWS_REGION"), maxAttempts: 2 }));
+const sesStatsCache = new Map();
 
 function summaryLine(markdown) {
   if (!process.env.GITHUB_STEP_SUMMARY) return;
@@ -573,6 +587,10 @@ async function deliverabilityCounts(emailId) {
   // Delivered events are flagged on the delivery ledger rather than stored as
   // rows, so the campaign metric (rows + flags) is the source of truth.
   const deliveredCount = async () => {
+    // SES's own Delivery total when it is recent; the per-recipient database
+    // count is the fallback (Delivery events are no longer stored by default).
+    const fresh = freshSesStats(sesStatsCache.get(emailId), Date.now(), config.sesStats.everyMs * 2);
+    if (fresh && fresh.series > 0) return fresh.delivered;
     const { data, error } = await supabase.rpc("get_email_provider_analytics_metric", { p_email_id: emailId, p_event_type: "delivered" });
     if (error) return count((query) => query.eq("event_type", "delivered"));
     return Number(data?.[0]?.unique_recipients ?? 0);
@@ -1156,6 +1174,7 @@ async function runCampaign(record) {
   let lastBreakerCheck = Date.now();
 
   const checkBreaker = async (minSample) => {
+    await refreshSesStats(emailId).catch(() => null);
     const counts = await deliverabilityCounts(emailId).catch(() => null);
     if (!counts) return null;
     const skipped = Math.max(0, counts.suppressedSkips - (baseline.suppressedSkips ?? 0));
@@ -1450,6 +1469,53 @@ async function manualSend(emailId) {
 
 // Each figure is fetched on its own; one that times out (opened analytics on a
 // large campaign) is reported as unavailable instead of blocking the report.
+async function readSesStats(emailId) {
+  const { data, error } = await supabase.from("app_settings").select("value").eq("key", sesStatsKey(emailId)).maybeSingle();
+  if (error) throw new Error(`read SES stats: ${error.message}`);
+  return data?.value ?? null;
+}
+
+// One CloudWatch read and one row write per campaign per SES_STATS_EVERY_MINUTES.
+async function refreshSesStats(emailId, { force = false } = {}) {
+  if (!config.sesStats.enabled || !process.env.AWS_REGION) return null;
+  const current = sesStatsCache.get(emailId) ?? (await readSesStats(emailId).catch(() => null));
+  if (!force && !sesStatsDue(current, Date.now(), config.sesStats.everyMs)) {
+    if (current) sesStatsCache.set(emailId, current);
+    return current;
+  }
+  let next;
+  try {
+    const totals = await fetchCampaignAggregates(cloudWatch(), { ListMetricsCommand, GetMetricDataCommand }, {
+      campaignId: emailId,
+      sinceMs: Date.now() - config.sesStats.windowMs,
+    });
+    next = { ...totals, source: "cloudwatch", at: nowIso() };
+  } catch (error) {
+    const lastGood = current?.error ? current.lastGood ?? null : current;
+    next = { at: nowIso(), error: conciseError(error), lastGood };
+    console.warn(`SES aggregate stats unavailable for ${emailId} (${next.error})`);
+  }
+  sesStatsCache.set(emailId, next);
+  const { error } = await supabase.from("app_settings").upsert(
+    { key: sesStatsKey(emailId), value: { emailId, ...next }, description: "SES aggregate campaign totals (worker, CloudWatch)", updated_at: next.at },
+    { onConflict: "key" },
+  );
+  if (error) console.warn(`SES stats write failed (${conciseError(error)})`);
+  return next;
+}
+
+// Finished campaigns keep collecting opens/clicks for days; keep their totals
+// current at the same cadence for a week after completion.
+async function refreshRecentSesStats(records) {
+  const now = Date.now();
+  const recent = records.filter((record) => {
+    if (record.state !== "complete") return false;
+    const completed = Date.parse(record.completedAt ?? "");
+    return Number.isFinite(completed) && now - completed <= config.sesStats.recentAfterCompleteMs;
+  }).slice(0, 10);
+  for (const record of recent) await refreshSesStats(record.emailId).catch(() => null);
+}
+
 async function campaignResults(emailId) {
   const metrics = { unavailable: [] };
   try {
@@ -1459,6 +1525,13 @@ async function campaignResults(emailId) {
     metrics.accepted = null;
     metrics.unavailable.push("accepted");
     console.warn(`results report: accepted unavailable (${conciseError(error)})`);
+  }
+  const sesTotals = freshSesStats(await refreshSesStats(emailId, { force: true }).catch(() => null), Date.now(), 5 * 60_000);
+  if (sesTotals && sesTotals.series > 0) {
+    // SES totals: opens/clicks are all events, not unique recipients.
+    for (const metric of ["delivered", "bounced", "complained", "opened", "clicked"]) metrics[metric] = sesTotals[metric];
+    metrics.source = "ses";
+    return metrics;
   }
   for (const metric of ["delivered", "bounced", "complained", "opened", "clicked"]) {
     try {
@@ -1664,6 +1737,7 @@ async function autopilot() {
   }
   if (!emailIdArg) {
     await sendDueReports(await listRecords());
+    await refreshRecentSesStats(await listRecords());
     await compactFinishedCampaigns(await listRecords());
   }
   return outcomes;

@@ -1,0 +1,36 @@
+name: SES event destinations
+
+# One-time (idempotent) switch to aggregate metrics: adds a CloudWatch event
+# destination keyed by campaign_id and narrows the SNS webhook destination to
+# bounces/complaints/rejects/rendering failures. Without "apply" it only shows
+# the current layout and the planned changes. Also checks CloudWatch read access.
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: '"check" shows the plan; "apply" makes the changes'
+        required: true
+        default: check
+        type: choice
+        options: [check, apply]
+
+permissions:
+  contents: read
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_SES_CONFIGURATION_SET: ${{ vars.AWS_SES_CONFIGURATION_SET }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: node scripts/ses-event-destinations.mjs ${{ inputs.mode == 'apply' && '--apply' || '' }}

@@ -32,10 +32,26 @@ pixel, each a database read or write, and failed writes added `error_logs` rows.
 - `/api/email/open/[id]` returns the GIF without touching the database unless
   `OPEN_PIXEL_RECORDING=on`; the worker no longer injects the pixel unless
   `SES_OPEN_PIXEL=on`.
-- Consequence: per-recipient delivered/opened/clicked rows stop accumulating.
-  Campaign totals are meant to come from SES aggregate metrics (CloudWatch),
-  polled by the worker. Until that lands, the breaker's "no Delivery events"
-  notice will fire once per campaign; it notifies only, it never pauses.
+- Per-recipient delivered/opened/clicked rows stop accumulating. Campaign
+  totals come from SES aggregate metrics instead:
+  - SES configuration set → CloudWatch event destination, dimension
+    `campaign_id` from the message tag the worker sets (never `queue_id`: one
+    metric per recipient would cost real money). SNS keeps only
+    BOUNCE/COMPLAINT/REJECT/RENDERING_FAILURE. Set up/verify with the
+    "SES event destinations" workflow (`scripts/ses-event-destinations.mjs`,
+    mode `check` or `apply`).
+  - The worker reads the sums (`scripts/lib/ses-aggregate.mjs`) at most every
+    `SES_STATS_EVERY_MINUTES` (10) per campaign, while sending and for 7 days
+    after, and upserts one row: `app_settings` `ses_stats:<campaignId>`. Shown
+    on `/ai/campaigns/<id>`; used by results reports (opens/clicks are totals,
+    not unique) and as the breaker's delivered count. `SES_AGGREGATE_METRICS=off`
+    disables.
+  - The worker's AWS user needs `cloudwatch:ListMetrics` and
+    `cloudwatch:GetMetricData`; without them the row records the error and the
+    old database fallbacks apply.
+  - Cost: SES publishing is free; CloudWatch bills ~$0.30 per metric-month,
+    prorated hourly (first 10 free) plus $0.01 per 1,000 metrics read: cents
+    per campaign.
 
 ## EMAIL TEMPLATES (2026-10-18)
 

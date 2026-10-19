@@ -166,11 +166,14 @@ async function campaignView(emailId: string, returnTo: string): Promise<View> {
     .maybeSingle();
   if (error) throw error;
   if (!email) return { status: 404, title: "Campaign not found", html: `<p>No campaign ${esc(emailId)}. ${link("/ai/campaigns", "All campaigns")}</p>`, data: { error: "not_found" } };
-  const [counts, record, { data: lists }] = await Promise.all([
+  const [counts, record, { data: lists }, { data: sesStatsRow }] = await Promise.all([
     summaries([emailId]),
     getAutopilotRecord(emailId),
     admin.from("lists").select("id, name, address").order("name"),
+    admin.from("app_settings").select("value").eq("key", `ses_stats:${emailId}`).maybeSingle(),
   ]);
+  // Totals from SES's CloudWatch metrics, refreshed by the worker every ~10 min.
+  const sesStats = ((sesStatsRow as { value?: unknown } | null)?.value ?? null) as Record<string, unknown> | null;
   const summary = counts.get(emailId) ?? { pending_due: 0, pending_held: 0, processing: 0, succeeded: 0, failed: 0, dead: 0, canceled: 0, total: 0 };
   const unsent = summary.pending_due + summary.pending_held;
   const view = describeAutopilot(record);
@@ -208,6 +211,17 @@ async function campaignView(emailId: string, returnTo: string): Promise<View> {
   ])}
 <h2 id="counts">Recipients</h2>
 <p>Unsent: <strong id="unsent" data-value="${unsent}">${unsent}</strong> · accepted by SES: <span id="accepted">${summary.succeeded}</span> · in flight: <span id="in-flight">${summary.processing}</span> · failed: <span id="failed">${summary.dead + summary.failed}</span> · canceled: <span id="canceled">${summary.canceled}</span>${unsent ? ` · estimated send time: <span id="estimate">${esc(estimateSendDuration(unsent) ?? "")}</span>` : ""}</p>
+<h2 id="ses-totals">SES totals</h2>
+${sesStats ? dl("ses-stats", [
+    ["as_of", sesStats.at as string],
+    ["sent", sesStats.sent as number],
+    ["delivered", sesStats.delivered as number],
+    ["bounced", sesStats.bounced as number],
+    ["complained", sesStats.complained as number],
+    ["opened_total", sesStats.opened as number],
+    ["clicked_total", sesStats.clicked as number],
+    ["error", sesStats.error as string],
+  ]) : `<p id="ses-stats">No SES totals yet (the worker reads them from CloudWatch every ~10 minutes while a campaign sends).</p>`}
 <h2 id="autopilot">Autopilot</h2>
 ${record ? dl("autopilot-state", [
     ["state", record.state],
@@ -228,7 +242,7 @@ ${available.map((action) => form(action, returnTo)).join("\n<hr>\n")}`;
   return {
     title: email.subject || "(no subject)",
     html,
-    data: { campaign: { id: email.id, subject: email.subject, status, from: email.from_address, replyTo: email.reply_to, updatedAt: email.updated_at }, counts: { ...summary, unsent }, autopilot: record, lists },
+    data: { campaign: { id: email.id, subject: email.subject, status, from: email.from_address, replyTo: email.reply_to, updatedAt: email.updated_at }, counts: { ...summary, unsent }, sesStats, autopilot: record, lists },
     actions: available,
   };
 }

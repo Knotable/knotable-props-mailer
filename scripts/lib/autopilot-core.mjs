@@ -263,7 +263,10 @@ export function isCompactionDue(record, nowMs, graceMs = 3_600_000) {
 
 const pct = (part, whole, digits = 1) => (whole > 0 ? `${((part / whole) * 100).toFixed(digits)}%` : "—");
 
-export function formatResultsReport({ accepted, delivered, bounced, complained, opened, clicked }) {
+export function formatResultsReport({ accepted, delivered, bounced, complained, opened, clicked, source }) {
+  // SES aggregate metrics count every open/click event; database rows count
+  // unique recipients.
+  const engagement = source === "ses" ? "total" : "unique";
   const known = (value) => typeof value === "number" && Number.isFinite(value);
   const n = (value) => (known(value) ? value.toLocaleString() : "unavailable (database query timed out)");
   const share = (part, whole, digits) => (known(part) && known(whole) ? ` (${pct(part, whole, digits)})` : "");
@@ -273,7 +276,7 @@ export function formatResultsReport({ accepted, delivered, bounced, complained, 
     `Delivered: ${n(delivered)}${share(delivered, accepted)}`,
     `Bounced: ${n(bounced)}${share(bounced, accepted)}`,
     `Complaints: ${n(complained)}${share(complained, accepted, 2)}`,
-    `Opened (unique): ${n(opened)}${known(opened) && known(base) ? ` (${pct(opened, base)} of delivered; Apple Mail privacy inflates opens)` : ""}`,
-    `Clicked (unique): ${n(clicked)}${known(clicked) && known(base) ? ` (${pct(clicked, base)} of delivered${known(opened) ? `; ${pct(clicked, opened)} of openers` : ""})` : ""}`,
+    `Opened (${engagement}): ${n(opened)}${known(opened) && known(base) ? ` (${pct(opened, base)} of delivered; Apple Mail privacy inflates opens)` : ""}`,
+    `Clicked (${engagement}): ${n(clicked)}${known(clicked) && known(base) ? ` (${pct(clicked, base)} of delivered${known(opened) ? `; ${pct(clicked, opened)} of openers` : ""})` : ""}`,
   ];
 }

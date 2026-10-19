@@ -18,6 +18,7 @@
     "bypass:set": "node scripts/set-bypass-password.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudwatch": "^3.1106.0",
     "@aws-sdk/client-dynamodb": "3.1126.0",
     "@aws-sdk/client-s3": "3.1126.0",
     "@aws-sdk/client-secrets-manager": "3.1126.0",
