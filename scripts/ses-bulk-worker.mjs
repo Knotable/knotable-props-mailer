@@ -528,8 +528,36 @@ async function loadEmail(emailId) {
   return data;
 }
 
+// The summary counts every queue row of the campaign. On a 180k-row queue the
+// PostgREST statement timeout (a few seconds on the free tier) can cancel it,
+// and five such failures in a row block the campaign. A direct connection
+// (SUPABASE_DB_CONNECTION) allows 60 s, so try that first.
+async function loadSummaryDirect(emailId) {
+  const { rows } = await dbPool.query(
+    `select
+       count(*) filter (where status = 'pending' and available_at <= $2) as pending_due,
+       count(*) filter (where status = 'pending' and available_at > $2) as pending_held,
+       count(*) filter (where status = 'processing') as processing,
+       count(*) filter (where status = 'succeeded') as succeeded,
+       count(*) filter (where status = 'failed') as failed,
+       count(*) filter (where status = 'dead') as dead,
+       count(*) filter (where status = 'canceled') as canceled,
+       count(*) as total
+     from public.mail_queue where email_id = $1`,
+    [emailId, nowIso()],
+  );
+  return rows;
+}
+
 async function loadSummary(emailId) {
-  const rows = await retry("queue summary", () => unwrap("queue summary")(
+  let rows = null;
+  if (dbPool) {
+    rows = await retry("queue summary (direct)", () => loadSummaryDirect(emailId), 3).catch((error) => {
+      console.warn(`direct queue summary failed (${conciseError(error)}); falling back to the API`);
+      return null;
+    });
+  }
+  rows ??= await retry("queue summary", () => unwrap("queue summary")(
     supabase.rpc("get_queue_campaign_summaries", { p_email_ids: [emailId], p_now: nowIso() }),
   ), 5);
   return (rows ?? []).reduce((total, row) => {
