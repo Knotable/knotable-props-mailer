@@ -31,6 +31,20 @@ export const CLOUDWATCH_EVENT_TYPES = ["SEND", "DELIVERY", "BOUNCE", "COMPLAINT"
 // The SNS destination keeps only what changes who we may email next.
 export const SNS_EVENT_TYPES = ["BOUNCE", "COMPLAINT", "REJECT", "RENDERING_FAILURE"];
 
+// app_settings key holding the SNS topic ARN the webhook should trust. Written
+// by scripts/ses-event-destinations.mjs from the live SES configuration set, so
+// AWS stays the source of truth and nobody has to retype the ARN anywhere.
+export const SES_SNS_TOPIC_ARN_KEY = "ses_sns_topic_arn";
+
+// The topic ARN of the SNS event destination, or null when there is none.
+export function snsTopicArnOf(eventDestinations = []) {
+  for (const destination of eventDestinations) {
+    const arn = destination?.SnsDestination?.TopicArn;
+    if (typeof arn === "string" && arn.trim()) return arn.trim();
+  }
+  return null;
+}
+
 export function sesStatsKey(campaignId) {
   return `${SES_STATS_KEY_PREFIX}${campaignId}`;
 }

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState, useTransition } from "react";
 import { ProgressStatus } from "@/components/progress-status";
 import { DataFreshness } from "@/components/data-freshness";
 import type { AutopilotRecord, AutopilotView } from "@/lib/sendAutopilot";
-import { pauseQueuedEmailAction } from "../actions";
+import { acknowledgeAutopilotBlockAction, pauseQueuedEmailAction } from "../actions";
 
 type RecipientLogRow = {
   recipientEmail: string | null;
@@ -186,6 +186,12 @@ export function MonitorClient({ emailId, notice }: Props) {
         <AutopilotPanel
           record={snapshot.autopilot}
           view={snapshot.autopilotView}
+          onAcknowledge={async () => {
+            const fd = new FormData();
+            fd.set("id", snapshot.autopilot!.emailId);
+            const res = await acknowledgeAutopilotBlockAction(fd);
+            if (res.error) throw new Error(res.error);
+          }}
           onPause={async () => {
             const fd = new FormData();
             fd.set("id", snapshot.autopilot!.emailId);
@@ -394,9 +400,21 @@ function secondsAgo(value: string | null | undefined) {
   return seconds < 90 ? `${seconds}s ago` : `${Math.round(seconds / 60)}m ago`;
 }
 
-function AutopilotPanel({ record, view, onPause }: { record: AutopilotRecord; view: AutopilotView; onPause: () => Promise<void> }) {
+function AutopilotPanel({
+  record,
+  view,
+  onPause,
+  onAcknowledge,
+}: {
+  record: AutopilotRecord;
+  view: AutopilotView;
+  onPause: () => Promise<void>;
+  onAcknowledge: () => Promise<void>;
+}) {
   const [pausing, setPausing] = useState(false);
   const [pauseError, setPauseError] = useState<string | null>(null);
+  const [acknowledging, setAcknowledging] = useState(false);
+  const unacknowledgedBlock = record.state === "blocked" && !record.resolvedAt;
   const pausable = ["preparing", "approved", "running", "waiting_quota", "waiting_window", "waiting_reconcile", "waiting_retry", "waiting_campaign"].includes(record.state);
   const tones: Record<AutopilotView["tone"], string> = {
     green: "border-green-200 bg-green-50 text-green-900",
@@ -439,6 +457,27 @@ function AutopilotPanel({ record, view, onPause }: { record: AutopilotRecord; vi
             className="ml-auto rounded-md border border-amber-300 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100 disabled:opacity-50"
           >
             {pausing ? "Pausing..." : "Pause send"}
+          </button>
+        )}
+        {unacknowledgedBlock && (
+          <button
+            type="button"
+            disabled={acknowledging}
+            onClick={async () => {
+              setPauseError(null);
+              setAcknowledging(true);
+              try {
+                await onAcknowledge();
+              } catch (error) {
+                setPauseError(error instanceof Error ? error.message : "Acknowledge failed.");
+              } finally {
+                setAcknowledging(false);
+              }
+            }}
+            className="ml-auto rounded-md border border-red-300 bg-red-50 px-3 py-1 text-xs font-semibold text-red-800 hover:bg-red-100 disabled:opacity-50"
+            title="Clears the health warning. Does not resume the send."
+          >
+            {acknowledging ? "Acknowledging..." : "Acknowledge block"}
           </button>
         )}
         {record.state === "paused" && (
@@ -500,7 +539,14 @@ function AutopilotPanel({ record, view, onPause }: { record: AutopilotRecord; vi
             {formatPercent(record.report.clicked, record.report.delivered || record.report.accepted)}
           </p>
         )}
-        {record.state === "blocked" && <p>Fix the reason above, then press Send on the Queue page to re-approve.</p>}
+        {record.state === "blocked" && (
+          <p className="sm:col-span-2">
+            Fix the reason above, then press Send on the Queue page to re-approve.
+            {record.resolvedAt
+              ? ` Acknowledged${record.resolvedBy ? ` by ${record.resolvedBy}` : ""} on ${record.resolvedAt.replace("T", " ").slice(0, 16)} UTC; the health warning is cleared.`
+              : " Acknowledging keeps the campaign blocked and only clears the health warning."}
+          </p>
+        )}
       </div>
     </div>
   );

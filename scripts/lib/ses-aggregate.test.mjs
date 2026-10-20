@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLOUDWATCH_EVENT_TYPES, SNS_EVENT_TYPES, fetchCampaignAggregates, freshSesStats, planEventDestinations, sesStatsDue } from "./ses-aggregate.mjs";
+import { CLOUDWATCH_EVENT_TYPES, SNS_EVENT_TYPES, fetchCampaignAggregates, freshSesStats, planEventDestinations, sesStatsDue, snsTopicArnOf } from "./ses-aggregate.mjs";
 
 class ListMetricsCommand { constructor(input) { this.kind = "list"; this.input = input; } }
 class GetMetricDataCommand { constructor(input) { this.kind = "data"; this.input = input; } }
@@ -74,5 +74,24 @@ describe("planEventDestinations", () => {
       { Name: "cw", Enabled: true, MatchingEventTypes: CLOUDWATCH_EVENT_TYPES, CloudWatchDestination: { DimensionConfigurations: [{ DimensionName: "campaign_id", DimensionValueSource: "MESSAGE_TAG", DefaultDimensionValue: "none" }] } },
     ];
     expect(planEventDestinations(applied)).toEqual([]);
+  });
+});
+
+describe("snsTopicArnOf", () => {
+  it("reads the topic from the SNS destination", () => {
+    expect(snsTopicArnOf([
+      { Name: "props-aggregate-cloudwatch", CloudWatchDestination: {} },
+      { Name: "propsmailer1", SnsDestination: { TopicArn: "arn:aws:sns:us-east-1:1234:propsmailer1" } },
+    ])).toBe("arn:aws:sns:us-east-1:1234:propsmailer1");
+  });
+
+  it("is null when the configuration set has no SNS destination", () => {
+    expect(snsTopicArnOf([{ Name: "cw", CloudWatchDestination: {} }])).toBeNull();
+    expect(snsTopicArnOf([])).toBeNull();
+    expect(snsTopicArnOf()).toBeNull();
+  });
+
+  it("ignores a blank ARN rather than storing an empty expectation", () => {
+    expect(snsTopicArnOf([{ Name: "s", SnsDestination: { TopicArn: "   " } }])).toBeNull();
   });
 });

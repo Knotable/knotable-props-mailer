@@ -4,12 +4,26 @@ import { Activity, AlertTriangle, ChevronDown, ChevronUp, CircleAlert, X } from 
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { HealthCheck, HealthReport } from "@/app/api/health/route";
 
-const DISMISSED_KEY = "health_banner_dismissed_v1";
+const DISMISSED_KEY = "health_banner_dismissed_v2";
 const REPORT_CACHE_KEY = "health_banner_report_v1";
 const REPORT_TTL_MS = 5 * 60 * 1000;
 const HEALTH_FETCH_DELAY_MS = 1200;
 const HEALTH_WARNING_RECHECK_MS = 5 * 60 * 1000;
 const subscribeHydration = () => () => {};
+
+// Dismissal used to be keyed on the critical count alone, so a warning could
+// not be dismissed at all — it sat there for as long as the check failed, which
+// is how you train yourself to stop reading the banner. Key it on which checks
+// are failing instead: dismissing hides exactly this set, and anything new (or
+// a warning that escalates to critical) brings the banner back.
+function signatureOf(report: HealthReport | null | undefined) {
+  if (!report) return "";
+  return report.checks
+    .filter((check) => !check.ok)
+    .map((check) => `${check.id}:${check.severity}`)
+    .sort()
+    .join("|");
+}
 const clientSnapshot = () => true;
 const serverSnapshot = () => false;
 
@@ -29,13 +43,11 @@ function readJson<T>(key: string): T | null {
 }
 
 function getInitialState() {
-  const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
+  const prev = readJson<{ signature?: string }>(DISMISSED_KEY);
   const cached = readJson<CachedReport>(REPORT_CACHE_KEY);
   const isFresh = cached && Date.now() - cached.savedAt < REPORT_TTL_MS;
   const report = isFresh ? cached.report : null;
-  const dismissed = Boolean(
-    report && prev && report.critical <= (prev.critical ?? 0),
-  );
+  const dismissed = Boolean(report && prev && prev.signature === signatureOf(report));
   return { report, dismissed, hasFreshCache: Boolean(isFresh) };
 }
 
@@ -52,7 +64,7 @@ export function HealthBanner() {
   useEffect(() => {
     if (initialState.hasFreshCache) return;
 
-    const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
+    const prev = readJson<{ signature?: string }>(DISMISSED_KEY);
     const controller = new AbortController();
     const load = () => {
       fetch("/api/health", { signal: controller.signal })
@@ -63,8 +75,8 @@ export function HealthBanner() {
             REPORT_CACHE_KEY,
             JSON.stringify({ savedAt: Date.now(), report: data }),
           );
-          // Only dismiss if the user already dismissed AND critical count hasn't grown.
-          if (prev && data.critical <= (prev.critical ?? 0)) {
+          // Stay dismissed only while exactly the same checks are failing.
+          if (prev && prev.signature === signatureOf(data)) {
             setDismissed(true);
           }
         })
@@ -84,7 +96,7 @@ export function HealthBanner() {
 
     const controller = new AbortController();
     const timeout = window.setTimeout(() => {
-      const prev = readJson<{ critical?: number }>(DISMISSED_KEY);
+      const prev = readJson<{ signature?: string }>(DISMISSED_KEY);
       fetch("/api/health", { signal: controller.signal })
         .then((r) => r.json())
         .then((data: HealthReport) => {
@@ -93,8 +105,10 @@ export function HealthBanner() {
             REPORT_CACHE_KEY,
             JSON.stringify({ savedAt: Date.now(), report: data }),
           );
-          if (prev && data.critical <= (prev.critical ?? 0)) {
+          if (prev && prev.signature === signatureOf(data)) {
             setDismissed(true);
+          } else {
+            setDismissed(false);
           }
         })
         .catch(() => undefined);
@@ -110,7 +124,7 @@ export function HealthBanner() {
     setDismissed(true);
     sessionStorage.setItem(
       DISMISSED_KEY,
-      JSON.stringify({ critical: report?.critical ?? 0 }),
+      JSON.stringify({ signature: signatureOf(report) }),
     );
   };
 
@@ -167,7 +181,7 @@ export function HealthBanner() {
         <button
           onClick={handleDismiss}
           className="ml-1 inline-flex items-center rounded px-2 py-1 text-xs opacity-60 hover:opacity-100"
-          title="Dismiss until next critical issue"
+          title="Dismiss until something new fails"
         >
           <X aria-hidden="true" className="size-3.5" />
           <span className="sr-only">Dismiss</span>

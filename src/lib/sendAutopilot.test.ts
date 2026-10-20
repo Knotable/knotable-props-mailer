@@ -7,6 +7,7 @@ import {
   campaignContentDigest,
   describeAutopilot,
   estimateSendDuration,
+  isActiveAutopilot,
   parseFutureSendAt,
   type AutopilotRecord,
 } from "./sendAutopilot";
@@ -73,5 +74,28 @@ describe("public surfaces", () => {
     const health = readFileSync("src/app/api/health/route.ts", "utf8");
     const autopilotSection = health.slice(health.indexOf("Cloud autopilot sender"), health.indexOf("Verified SES sending identity"));
     expect(autopilotSection).not.toMatch(/record\.(subject|message|emailId)/);
+  });
+});
+
+describe("acknowledged blocks", () => {
+  const blocked: AutopilotRecord = { ...base, state: "blocked", message: "Queue summary timed out." };
+
+  it("shows a block in red until it is acknowledged", () => {
+    const view = describeAutopilot(blocked, NOW)!;
+    expect(view.label).toBe("Blocked");
+    expect(view.tone).toBe("red");
+    expect(view.detail).toBe("Queue summary timed out.");
+  });
+
+  it("keeps the reason visible after acknowledgement, without the alarm", () => {
+    const view = describeAutopilot({ ...blocked, resolvedAt: "2026-09-28T12:30:00Z", resolvedBy: "a@sarva.co" }, NOW)!;
+    expect(view.label).toBe("Blocked (acknowledged)");
+    expect(view.tone).toBe("slate");
+    expect(view.detail).toBe("Queue summary timed out.");
+  });
+
+  it("does not make an acknowledged campaign active again", () => {
+    // Acknowledging is bookkeeping: only re-approving resumes a send.
+    expect(isActiveAutopilot({ ...blocked, resolvedAt: "2026-09-28T12:30:00Z" })).toBe(false);
   });
 });

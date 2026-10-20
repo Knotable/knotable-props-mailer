@@ -4,6 +4,8 @@ name: SES event destinations
 # destination keyed by campaign_id and narrows the SNS webhook destination to
 # bounces/complaints/rejects/rendering failures. Without "apply" it only shows
 # the current layout and the planned changes. Also checks CloudWatch read access.
+# It also records the SNS destination's topic ARN for the webhook, and fails if
+# AWS_SES_SNS_TOPIC_ARN is set to something the configuration set disagrees with.
 # A push that changes the script or this workflow applies it (idempotent).
 on:
   push:
@@ -33,6 +35,9 @@ jobs:
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_SES_CONFIGURATION_SET: ${{ vars.AWS_SES_CONFIGURATION_SET }}
+      # Lets the script store the live topic ARN where the webhook reads it.
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6

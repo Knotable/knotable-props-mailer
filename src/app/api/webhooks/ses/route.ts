@@ -25,6 +25,8 @@ import { logError } from "@/lib/logger";
 import { checkRateLimitSync } from "@/lib/rateLimit";
 import { slimSesEvent } from "@/lib/sesEventSlim";
 import { firstTagUuid, markDeliveryAccepted, recordDeliveryEvent } from "@/lib/deliveryLedger";
+import { expectedSnsTopicArn, isExpectedSnsTopic } from "@/lib/snsTopic";
+import { FailureLogThrottle } from "@/lib/failureLogThrottle";
 
 // ── SNS message signature verification ────────────────────────────────────────
 // Cache signing certs in memory so we don't fetch the same PEM on every event.
@@ -98,16 +100,6 @@ async function verifySnsSignature(body: Record<string, unknown>): Promise<{ vali
   }
 }
 
-function expectedSnsTopicArn(): string | null {
-  return process.env.AWS_SES_SNS_TOPIC_ARN?.trim() || null;
-}
-
-function isExpectedTopic(body: Record<string, unknown>): boolean {
-  const expected = expectedSnsTopicArn();
-  if (!expected) return true;
-  return body["TopicArn"] === expected;
-}
-
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
@@ -139,12 +131,20 @@ function extractRecipient(sesEventType: string, sesEvent: Record<string, unknown
   return toStringArray(commonHeaders?.["to"])[0] ?? destination[0] ?? null;
 }
 
+// A misconfigured topic or a bad signature repeats for every notification SNS
+// delivers, which during a send is a database write per bounce on the instance
+// this code path was rewritten to stop writing to. Keep the first of each kind,
+// then count the rest until the window rolls over.
+const failureLog = new FailureLogThrottle(5 * 60_000);
+
 async function logWebhookFailure(message: string, payload: Record<string, unknown>) {
+  const { log, suppressed } = failureLog.consider(message);
+  if (!log) return;
   try {
     await logError({
       source: "ses-webhook",
       message,
-      payload,
+      payload: suppressed ? { ...payload, suppressedSinceLastLog: suppressed } : payload,
     });
   } catch (err) {
     console.warn("[ses-webhook] failed to write error log", err);
@@ -224,12 +224,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 400 });
   }
 
-  if (!isExpectedTopic(body)) {
+  if (!(await isExpectedSnsTopic(body["TopicArn"]))) {
     console.warn("[ses-webhook] unexpected SNS topic", body["TopicArn"]);
     await logWebhookFailure("Unexpected SNS topic", {
       messageType,
       topicArn: body["TopicArn"],
-      expectedTopicArn: expectedSnsTopicArn(),
+      expectedTopicArn: await expectedSnsTopicArn(),
     });
     return NextResponse.json({ error: "Unexpected topic" }, { status: 403 });
   }

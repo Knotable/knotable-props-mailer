@@ -30,6 +30,7 @@ import {
   parseSendWindowInput,
   getAutopilotRecord,
   isActiveAutopilot,
+  acknowledgeAutopilotBlock,
   setAutopilotState,
   writeAutopilotRecord,
   type AutopilotRecord,
@@ -1458,6 +1459,46 @@ export async function sendQueuedEmailAndRedirectAction(formData: FormData): Prom
   }
 
   redirect(`/email/monitor?emailId=${parsed.data.id}&notice=${encodeURIComponent(`Approved ${result.recipients?.toLocaleString() ?? ""} recipients. ${result.detail ?? ""} You can close this tab.`)}`);
+}
+
+// Acknowledge a blocked campaign. This is a bookkeeping action only: it clears
+// the health warning for a block the operator has already seen and decided
+// about, and never resumes, re-approves, or sends anything.
+export async function acknowledgeAutopilotBlockAction(
+  formData: FormData,
+): Promise<{ acknowledged: boolean; error?: string }> {
+  try {
+    const auth = await requireCanSendAuthContext();
+    const parsed = EmailIdSchema.safeParse({ id: formData.get("id") });
+    if (!parsed.success) return { acknowledged: false, error: "Invalid email id" };
+
+    const { id } = parsed.data;
+    const supabase = getSupabaseAdmin();
+    if (!(await assertEmailOwned(supabase, id, auth.userId, auth.isBypass))) {
+      return { acknowledged: false, error: "Email not found" };
+    }
+
+    const acknowledged = await acknowledgeAutopilotBlock(id, auth.email);
+    if (!acknowledged) {
+      return { acknowledged: false, error: "This campaign is not blocked." };
+    }
+
+    logAudit({
+      userId: auth.userId,
+      action: "campaign.block_acknowledged",
+      entity: "emails",
+      entityId: id,
+      payload: {},
+    }).catch(console.error);
+
+    revalidatePath("/email/monitor");
+    return { acknowledged: true };
+  } catch (err) {
+    return {
+      acknowledged: false,
+      error: toActionErrorMessage(err, "Unable to acknowledge this block."),
+    };
+  }
 }
 
 // Pause a campaign without canceling or rewriting its queue rows. Completed

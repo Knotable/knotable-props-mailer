@@ -38,6 +38,11 @@ export type AutopilotRecord = {
   eventsBlindNotified?: boolean;
   updatedAt?: string;
   completedAt?: string;
+  // Set when an operator acknowledges a blocked campaign on the Monitor.
+  // `blocked` is terminal and nothing else clears it, so without this the
+  // health warning could only decay on a timer.
+  resolvedAt?: string;
+  resolvedBy?: string;
   lastError?: string;
   errorCount?: number;
   run?: { url?: string | null; startedAt?: string };
@@ -161,6 +166,17 @@ export async function setAutopilotState(emailId: string, state: "paused" | "canc
   return true;
 }
 
+// Clears the health warning for a block the operator has seen and decided
+// about. It does not restart anything: re-approving on the Queue page is still
+// the only way to resume, and that overwrites this record wholesale.
+export async function acknowledgeAutopilotBlock(emailId: string, by: string) {
+  const record = await getAutopilotRecord(emailId);
+  if (!record || record.state !== "blocked") return false;
+  if (record.resolvedAt) return true;
+  await writeAutopilotRecord({ ...record, resolvedAt: new Date().toISOString(), resolvedBy: by });
+  return true;
+}
+
 export type AutopilotDispatchResult = { dispatched: boolean; detail: string };
 
 // Optional instant start. Without a token the 5-minute schedule picks the
@@ -238,7 +254,9 @@ export function describeAutopilot(record: AutopilotRecord | null | undefined, no
     case "canceled":
       return { label: "Canceled", tone: "slate", detail, live: false };
     case "blocked":
-      return { label: "Blocked", tone: "red", detail, live: false };
+      return record.resolvedAt
+        ? { label: "Blocked (acknowledged)", tone: "slate", detail, live: false }
+        : { label: "Blocked", tone: "red", detail, live: false };
     case "complete":
       return { label: "Sent", tone: "green", detail, live: false };
     default:

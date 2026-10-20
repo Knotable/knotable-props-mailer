@@ -18,6 +18,42 @@ For Next.js behavior, read the version-matched bundled documentation under `node
 
 A second, chrome-free interface for AI agents and browser-automation tools. Start at **`/ai`** (public catalog; also advertised by `/llms.txt` and a `ai-agent-interface` meta tag). Every page is script-free, server-rendered HTML with stable ids (`#result[data-ok]`, `#unsent[data-value]`, `#form-<action>`, `#<action>-<field>`, `#submit-<action>`, `dd[data-key=…]`), and the same page as JSON with `?format=json` or `Accept: application/json` (including the actions valid right now and their fields). Actions are form POSTs to `/ai/do/<action>` that call the **same server actions** as the human UI (so exact-count approval, content digest, and deliverability guards are identical); they 303 back with `?result=…&ok=1|0`, or return JSON when `format=json`. Cross-origin POSTs are rejected; sessions are the normal Supabase or bypass cookies (`/ai/login`). Pages: `/ai/status`, `/ai/campaigns[?status&q&limit]`, `/ai/campaigns/new`, `/ai/campaigns/{id}` (+`/log`, `/analytics`), `/ai/lists`, `/ai/lists/{id}[?q&status&page]`. Actions: login_password, login_bypass, logout, save_draft, duplicate, test_to_me, test_send, queue, send, pause, unqueue, edit, mark_sent, retry_failed, delete, list_upsert, list_import, member_suppress. User/permission admin stays human-only. Code: `src/app/ai/`, `src/lib/ai/`. A full sign-in → draft → queue → send → pause run takes ~3 s against `npm run dev:fake`.
 
+## SNS TOPIC COMES FROM AWS, AND BLOCKS ARE ACKNOWLEDGED (2026-10-20)
+
+Two health-banner warnings turned out to be the same shape of bug: state kept in
+two places with nothing reconciling them, surfaced as a count instead of a
+resolution.
+
+**SNS topic ARN.** The webhook verified `TopicArn` against `AWS_SES_SNS_TOPIC_ARN`,
+a hand-typed copy of a value that lives in AWS. It drifted, so every real event
+got a 403 — bounce/complaint ingestion was dead, which blinds the circuit breaker
+and stops the suppression list updating, with nothing failing loudly.
+- Source of truth is now the live configuration set. `scripts/ses-event-destinations.mjs`
+  prints each SNS destination's topic ARN, and on `--apply` stores it in
+  `app_settings` under `ses_sns_topic_arn`. The workflow now needs `SUPABASE_URL`
+  and `SUPABASE_SERVICE_ROLE_KEY`; without them it reports and moves on.
+- `src/lib/snsTopic.ts` resolves it for the webhook, cached 5 minutes per instance
+  (30 s after a failed lookup) so a busy send adds no read per notification.
+  `AWS_SES_SNS_TOPIC_ARN` still overrides for break-glass use, and the script
+  **fails** if it is set to something AWS disagrees with. Nothing configured means
+  "accept any topic", as before — rejecting everything is the worse failure.
+- Repeated webhook rejections no longer write a row each: `src/lib/failureLogThrottle.ts`
+  logs the first of each kind per 5 minutes and reports the suppressed count with
+  the next one through.
+
+**Blocked campaigns.** `blocked` is terminal (`nextCheckAt: null`) and nothing
+cleared it, so `/api/health` counted blocks under 7 days old — an unhandled block
+went quiet on day 8 by itself.
+- `AutopilotRecord` gains `resolvedAt`/`resolvedBy`, set by **Acknowledge block**
+  on the Monitor (`acknowledgeAutopilotBlockAction`). It is bookkeeping only: the
+  campaign stays blocked and only re-approving on the Queue page resumes it.
+- Health counts blocked records with no `resolvedAt`, with no time decay.
+- The banner's SNS fix text was stale — it still said to put Send/Delivery/Open/Click
+  on the SNS destination, which is exactly what 2026-10-19 removed. Rewritten.
+- Banner dismissal (`health-banner.tsx`) was keyed on the critical count, so a
+  warning could not be dismissed at all. It is now keyed on which checks are
+  failing: dismissing hides that exact set, anything new brings it back.
+
 ## NO PER-EMAIL DATABASE WRITES DURING A SEND (2026-10-19)
 
 A 180k send knocked the free Nano Supabase instance over: every recipient

@@ -481,18 +481,21 @@ export async function GET() {
       fix: hasRecentSns
         ? undefined
         : [
-            "AWS Console — one-time setup:",
-            "1. SES → Configuration Sets → Create set, name it e.g. \"knotable-tracking\"",
-            "2. Inside the config set → Event destinations → Add destination → SNS",
-            "   Select event types: Send, Delivery, Bounce, Complaint, Open, Click",
-            "3. Create (or reuse) an SNS topic in the same region as SES",
-            "4. SNS → Topics → your topic → Create subscription",
+            "First check whether events are arriving and being rejected: the latest webhook failure is shown above.",
+            "\"Unexpected SNS topic\" means SES is delivering but the app is refusing. Run GitHub → Actions → \"SES event destinations\" (mode: apply). It reads the live configuration set, prints the SNS topic ARN, and stores it where the webhook reads it. If AWS_SES_SNS_TOPIC_ARN is also set in Vercel it overrides that — clear it unless it matches.",
+            "",
+            "If nothing is arriving at all, wire the path up once in the AWS Console:",
+            "1. SES → Configuration Sets → the set named in AWS_SES_CONFIGURATION_SET (e.g. \"knotable-tracking\")",
+            "2. Event destinations → the SNS destination carries only Bounce, Complaint, Reject, Rendering Failure.",
+            "   Send/Delivery/Open/Click deliberately go to the CloudWatch destination instead — campaign totals come from",
+            "   aggregate metrics, and per-recipient events are what overloaded the database. Do not add them back here.",
+            "3. SNS → Topics → your topic → Create subscription",
             "   Protocol: HTTPS",
             "   Endpoint: https://knotable-props-mailer.vercel.app/api/webhooks/ses",
-            "5. The webhook auto-confirms the subscription — check Vercel logs to verify",
-            "6. Vercel → Environment Variables → set AWS_SES_CONFIGURATION_SET to that configuration set name",
-            "7. Optional hardening: set AWS_SES_SNS_TOPIC_ARN to the SNS topic ARN",
-            "Once wired up, this warning clears automatically after the first event arrives.",
+            "4. The webhook auto-confirms the subscription — check Vercel logs to verify",
+            "5. Re-run the \"SES event destinations\" workflow so the stored topic ARN matches.",
+            "",
+            "Until this is fixed the circuit breaker cannot see bounces or complaints, and the suppression list stops updating.",
           ].join("\n"),
     });
   } catch {
@@ -509,7 +512,10 @@ export async function GET() {
     const records = (autopilotRows ?? [])
       .map((row) => (row as { value?: AutopilotRecord }).value)
       .filter((record): record is AutopilotRecord => Boolean(record?.state));
-    const blocked = records.filter((record) => record.state === "blocked" && Date.now() - Date.parse(record.updatedAt ?? record.approvedAt) < 7 * 24 * 3_600_000);
+    // A block is cleared by acknowledging it on the Monitor (or by re-approving
+    // the campaign, which overwrites the record), never by ageing out. The old
+    // 7-day window meant an unhandled block went quiet on day 8 on its own.
+    const blocked = records.filter((record) => record.state === "blocked" && !record.resolvedAt);
     // Approved campaigns waiting 20+ minutes while no worker has heartbeated
     // anywhere mean the schedule is not firing (workflow disabled, secrets
     // missing, or not merged to the default branch). A campaign queued behind
@@ -533,14 +539,14 @@ export async function GET() {
       message: orphaned.length
         ? `${orphaned.length} approved campaign(s) have had no worker for 20+ minutes.`
         : blocked.length
-          ? `${blocked.length} campaign(s) blocked in the last 7 days; open the Queue page for reasons.`
+          ? `${blocked.length} campaign(s) blocked and not yet acknowledged; the Monitor shows the reason for each.`
           : active.length
             ? `${active.length} campaign(s) in autopilot (${[...new Set(active.map((record) => record.state))].join(", ")}).`
             : "Idle — no approved campaigns waiting.",
       fix: orphaned.length
         ? "GitHub → Actions → SES Autopilot: confirm the workflow is enabled on the default branch and its latest run succeeded (secrets SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY; variable AWS_REGION)."
         : blocked.length
-          ? "Open the campaign monitor for the reason, fix it, then press Send on the Queue page to re-approve."
+          ? "Open /email/monitor for the reason. Fix it and press Send on the Queue page to re-approve, or acknowledge the block there to clear this warning."
           : undefined,
     });
   } catch (error) {
