@@ -1764,6 +1764,13 @@ async function autopilot() {
     if (outcome === "quota" || outcome === "deadline") break;
   }
   if (!emailIdArg) {
+    // List hygiene runs on its own cadence even when nothing is sending, so
+    // bounces/complaints SES recorded (including any the webhook missed during
+    // an outage) mark list members unsubscribed before the next campaign queues.
+    if (!suppressionSynced) {
+      suppressionSynced = true;
+      await syncSesSuppressionList().catch((caught) => console.warn(`SES suppression sync error: ${conciseError(caught)}`));
+    }
     await sendDueReports(await listRecords());
     await refreshRecentSesStats(await listRecords());
     await compactFinishedCampaigns(await listRecords());

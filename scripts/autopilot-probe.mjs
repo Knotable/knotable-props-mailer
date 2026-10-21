@@ -3,6 +3,7 @@
 // `npm ci`: is any approved campaign due for a worker right now?
 import { appendFileSync } from "node:fs";
 import { ACTIVE_STATES, AUTOPILOT_KEY_PREFIX, WORKER_LEASE_KEY, emailIdFromKey, isCompactionDue, isReportDue, orderDueRecords } from "./lib/autopilot-core.mjs";
+import { SES_SUPPRESSION_SYNC_KEY, suppressionSyncDue } from "./lib/ses-suppression.mjs";
 
 const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -31,10 +32,13 @@ async function select(query) {
 }
 
 try {
-  const [rows, leaseRows] = await Promise.all([
+  const [rows, leaseRows, syncRows] = await Promise.all([
     select(`key=like.${encodeURIComponent(`${AUTOPILOT_KEY_PREFIX}*`)}`),
     select(`key=eq.${WORKER_LEASE_KEY}`),
+    select(`key=eq.${encodeURIComponent(SES_SUPPRESSION_SYNC_KEY)}`),
   ]);
+  // The SES suppression-list sync (list hygiene) is due on its own cadence.
+  const suppressionDue = suppressionSyncDue(syncRows[0]?.value ?? null, Date.now());
   const lease = leaseRows[0]?.value;
   const leaseLive = Boolean(lease?.token && Date.parse(lease.expiresAt ?? "") > Date.now());
   const records = rows.map((row) => ({ ...(row.value ?? {}), emailId: row.value?.emailId ?? emailIdFromKey(row.key) }));
@@ -49,9 +53,10 @@ try {
     leaseLive,
     active: active.map((record) => ({ emailId: record.emailId, state: record.state, nextCheckAt: record.nextCheckAt ?? null })),
     due: due.map((record) => record.emailId),
+    suppressionDue,
   }));
   // A live worker re-lists due campaigns after each one, so it will pick these up.
-  setOutput("due", due.length && !leaseLive ? "true" : "false");
+  setOutput("due", (due.length || suppressionDue) && !leaseLive ? "true" : "false");
 } catch (error) {
   // Fail open: the full worker has its own retries and lease.
   console.log(`Probe failed (${error.message}); starting the worker to decide.`);
