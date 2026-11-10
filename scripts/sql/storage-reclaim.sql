@@ -1,0 +1,41 @@
+-- Storage reclamation for the Props Mailer Supabase database.
+-- Run ONLY between sends, one statement at a time, after reading
+-- docs/storage-rationalization.md. Each step is reversible except the
+-- deletes in step 3, which drop history that is already summarised in
+-- email_history_rollups / email_delivery_archive (or archived locally by
+-- scripts/archive-database-history.mjs).
+--
+-- VACUUM FULL takes an ACCESS EXCLUSIVE lock: the table is unreadable for the
+-- duration and it needs free disk equal to the new copy. Do it per table,
+-- largest first, never during a send.
+
+-- STEP 1 — compact finished campaigns (deletes terminal queue rows, keeps a
+-- ~9-bytes-per-recipient archive). Safe, and it is what the scheduled worker
+-- does on its own an hour after the results email.
+-- select public.compact_campaign_history('<email_id>'::uuid);
+
+-- STEP 2 — retention on the event/log tables.
+-- 2a. Opens and delivers older than 90 days: superseded by ledger flags and
+--     ses_event_counters, nothing reads the rows.
+-- delete from public.provider_events
+--  where event_type in ('opened','delivered','clicked')
+--    and received_at < now() - interval '90 days';
+-- 2b. Error logs older than 30 days.
+-- delete from public.error_logs where created_at < now() - interval '30 days';
+-- 2c. Queue metrics older than 30 days.
+-- delete from public.queue_metrics where created_at < now() - interval '30 days';
+
+-- STEP 3 — give the freed pages back to the operating system.
+-- Plain VACUUM only marks pages reusable; only VACUUM FULL / REINDEX shrink
+-- the files. This is the step that actually moves the Supabase usage number.
+-- vacuum (full, analyze) public.mail_queue;
+-- vacuum (full, analyze) public.provider_events;
+-- vacuum (full, analyze) public.error_logs;
+-- vacuum (full, analyze) public.queue_metrics;
+-- vacuum (full, analyze) public.list_members;
+-- reindex table public.mail_queue;
+-- reindex table public.provider_events;
+-- reindex table public.list_members;
+
+-- STEP 4 — re-measure.
+-- select pg_size_pretty(pg_database_size(current_database()));
