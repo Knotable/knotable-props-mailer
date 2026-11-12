@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Review-only, approval-gated security boundaries for Props Mailer AWS-native sending.
+  Nothing is created unless DeploymentApproval is set to APPROVE.
+
+Parameters:
+  DeploymentApproval:
+    Type: String
+    Default: REVIEW_ONLY
+    AllowedValues:
+      - REVIEW_ONLY
+      - APPROVE
+  GitHubRepository:
+    Type: String
+    Default: Knotable/knotable-props-mailer
+  GitHubBranch:
+    Type: String
+    Default: master
+  GitHubOidcProviderArn:
+    Type: String
+    Description: Existing account-level OIDC provider ARN for token.actions.githubusercontent.com.
+  CampaignBucketArn:
+    Type: String
+    Description: ARN of the private campaign-manifest S3 bucket.
+  CampaignStateTableArn:
+    Type: String
+    Description: ARN of the DynamoDB campaign-state table.
+  CampaignStateTableName:
+    Type: String
+    Description: Name of the DynamoDB campaign-state table.
+
+Conditions:
+  Approved: !Equals [!Ref DeploymentApproval, APPROVE]
+
+Resources:
+  UnsubscribeSigningSecret:
+    Type: AWS::SecretsManager::Secret
+    Condition: Approved
+    Properties:
+      Description: HMAC signing secret for SES one-click unsubscribe URLs.
+      GenerateSecretString:
+        PasswordLength: 64
+        ExcludePunctuation: true
+
+  SesNativeWorkerRole:
+    Type: AWS::IAM::Role
+    Condition: Approved
+    Properties:
+      Description: Narrow GitHub Actions role for the immutable SES native worker.
+      MaxSessionDuration: 21600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub "repo:${GitHubRepository}:ref:refs/heads/${GitHubBranch}"
+      Policies:
+        - PolicyName: SesNativeWorkerLeastPrivilege
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadImmutableManifest
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub "${CampaignBucketArn}/*"
+              - Sid: ReadWriteCampaignState
+                Effect: Allow
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:TransactWriteItems
+                Resource: !Ref CampaignStateTableArn
+              - Sid: ReadUnsubscribeSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref UnsubscribeSigningSecret
+              - Sid: SesAccountAndSend
+                Effect: Allow
+                Action:
+                  - ses:GetAccount
+                  - ses:SendEmail
+                  - ses:SendBulkEmail
+                Resource: "*"
+
+  UnsubscribeHandlerRole:
+    Type: AWS::IAM::Role
+    Condition: Approved
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OneClickUnsubscribe
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref UnsubscribeSigningSecret
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !Ref CampaignStateTableArn
+
+  UnsubscribeHandler:
+    Type: AWS::Lambda::Function
+    Condition: Approved
+    Properties:
+      Runtime: python3.13
+      Handler: index.handler
+      Role: !GetAtt UnsubscribeHandlerRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref CampaignStateTableName
+          SECRET_ARN: !Ref UnsubscribeSigningSecret
+      Code:
+        ZipFile: |
+          import base64, hashlib, hmac, html, json, os
+          import boto3
+          from datetime import datetime, timezone
+
+          secrets = boto3.client("secretsmanager")
+          table = boto3.resource("dynamodb").Table(os.environ["STATE_TABLE"])
+          _secret = None
+
+          def response(status, body, content_type="text/plain; charset=utf-8"):
+              return {
+                  "statusCode": status,
+                  "headers": {
+                      "content-type": content_type,
+                      "cache-control": "no-store",
+                      "x-content-type-options": "nosniff",
+                  },
+                  "body": body,
+              }
+
+          def secret():
+              global _secret
+              if _secret is None:
+                  value = secrets.get_secret_value(SecretId=os.environ["SECRET_ARN"])
+                  _secret = value.get("SecretString") or base64.b64decode(value["SecretBinary"]).decode("utf-8")
+              return _secret
+
+          def decode_recipient(value):
+              if not value or len(value) > 1024:
+                  raise ValueError("missing recipient")
+              padding = "=" * (-len(value) % 4)
+              email = base64.urlsafe_b64decode((value + padding).encode("ascii")).decode("utf-8").strip().lower()
+              if "@" not in email or len(email) > 320:
+                  raise ValueError("invalid recipient")
+              return email
+
+          def valid_signature(campaign, email, supplied):
+              if not supplied or len(supplied) != 64:
+                  return False
+              expected = hmac.new(
+                  secret().encode("utf-8"),
+                  f"v1\n{campaign}\n{email}".encode("utf-8"),
+                  hashlib.sha256,
+              ).hexdigest()
+              return hmac.compare_digest(expected, supplied.lower())
+
+          def handler(event, context):
+              params = event.get("queryStringParameters") or {}
+              campaign = (params.get("campaign") or "").strip()
+              signature = (params.get("signature") or "").strip()
+              try:
+                  email = decode_recipient(params.get("recipient"))
+              except Exception:
+                  return response(400, "Invalid unsubscribe link.")
+              if not campaign or len(campaign) > 128 or not valid_signature(campaign, email, signature):
+                  return response(400, "Invalid unsubscribe link.")
+
+              method = (event.get("requestContext", {}).get("http", {}).get("method") or "GET").upper()
+              if method == "GET":
+                  safe_email = html.escape(email)
+                  return response(200, f"<!doctype html><meta charset='utf-8'><title>Unsubscribe</title><p>Unsubscribe {safe_email} from future campaign mail.</p><form method='post'><button type='submit'>Unsubscribe</button></form>", "text/html; charset=utf-8")
+              if method != "POST":
+                  return response(405, "Method not allowed.")
+
+              body = event.get("body") or ""
+              if event.get("isBase64Encoded"):
+                  body = base64.b64decode(body).decode("utf-8", "replace")
+              if body and "List-Unsubscribe=One-Click" not in body:
+                  return response(400, "Invalid one-click unsubscribe request.")
+
+              now = datetime.now(timezone.utc).isoformat()
+              digest = hashlib.sha256(email.encode("utf-8")).hexdigest()
+              table.put_item(Item={
+                  "campaign_id": "!SUPPRESSION",
+                  "recipient_hash": digest,
+                  "email": email,
+                  "reason": "ONE_CLICK_UNSUBSCRIBE",
+                  "source_campaign_id": campaign,
+                  "updated_at": now,
+              })
+              return response(200, "Unsubscribed.")
+
+  UnsubscribeFunctionUrl:
+    Type: AWS::Lambda::Url
+    Condition: Approved
+    Properties:
+      TargetFunctionArn: !GetAtt UnsubscribeHandler.Arn
+      AuthType: NONE
+      InvokeMode: BUFFERED
+
+  UnsubscribeFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Condition: Approved
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref UnsubscribeHandler
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+Outputs:
+  WorkerRoleArn:
+    Condition: Approved
+    Value: !GetAtt SesNativeWorkerRole.Arn
+  UnsubscribeSecretArn:
+    Condition: Approved
+    Value: !Ref UnsubscribeSigningSecret
+  UnsubscribeBaseUrl:
+    Condition: Approved
+    Value: !GetAtt UnsubscribeFunctionUrl.FunctionUrl
